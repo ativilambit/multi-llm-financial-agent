@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from equity_analyst.config import RunConfig
+from equity_analyst.logging_setup import attach_run_file_logging
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.synthesizer import Synthesizer
 from equity_analyst.types import ProviderResponse
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,7 @@ class Orchestrator:
     async def run_async(self, *, dry_run: bool, enable_web_search: bool = True) -> tuple[str, RunArtifacts]:
         rendered = render_prompt(self._config, self._prompt_path)
         out_dir = self._make_output_dir()
+        attach_run_file_logging(out_dir / "agent.log")
 
         provider_files: dict[str, Path] = {
             p: out_dir / _provider_output_filename(p) for p in self._config.providers
@@ -61,6 +66,16 @@ class Orchestrator:
             provider_files=provider_files,
             synthesis_file=synthesis_file,
             run_json=run_json,
+        )
+
+        logger.info(
+            "Run start symbol=%s providers=%s synthesizer=%s dry_run=%s output_dir=%s web_search=%s",
+            self._config.symbol,
+            list(self._config.providers),
+            self._config.synthesizer,
+            dry_run,
+            str(out_dir.resolve()),
+            enable_web_search,
         )
 
         if dry_run:
@@ -96,14 +111,23 @@ class Orchestrator:
                 encoding="utf-8",
             )
             synthesis_file.write_text("\n".join(preview_lines), encoding="utf-8")
+            logger.info("Run end (dry-run) output_dir=%s", str(out_dir.resolve()))
             return ("\n".join(preview_lines), artifacts)
 
         async def _run_one(provider_name: str) -> ProviderResponse:
             provider = self._registry.create(provider_name)
             return await provider.generate(rendered.text, enable_web_search=enable_web_search)
 
+        logger.info("Starting provider generation providers=%s", list(self._config.providers))
         responses_list = await asyncio.gather(*[_run_one(p) for p in self._config.providers])
         responses: dict[str, ProviderResponse] = {r.provider_name: r for r in responses_list}
+        for name, resp in responses.items():
+            logger.info(
+                "Provider finished name=%s model=%s latency_s=%s",
+                name,
+                resp.model,
+                f"{resp.latency_s:.3f}" if resp.latency_s is not None else "n/a",
+            )
 
         for name, resp in responses.items():
             provider_files[name].write_text(resp.text.rstrip() + "\n", encoding="utf-8")
@@ -137,6 +161,12 @@ class Orchestrator:
         }
         run_json.write_text(json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+        logger.info(
+            "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s",
+            str(out_dir.resolve()),
+            synthesis.response.model,
+            f"{synthesis.response.latency_s:.3f}" if synthesis.response.latency_s is not None else "n/a",
+        )
         return (synthesis.response.text, artifacts)
 
     def run_sync(self, *, dry_run: bool, enable_web_search: bool = True) -> str:

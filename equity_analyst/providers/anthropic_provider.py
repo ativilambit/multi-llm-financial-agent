@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, cast
@@ -8,6 +9,8 @@ import anthropic
 
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(LLMProvider):
@@ -26,7 +29,14 @@ class AnthropicProvider(LLMProvider):
         }
         if enable_web_search:
             create_kwargs["tools"] = cast(Any, [{"type": "web_search_20260209", "name": "web_search"}])
-
+        logger.debug(
+            "Anthropic request shape model=%s web_search=%s prompt_chars=%s max_tokens=%s",
+            self._model,
+            enable_web_search,
+            len(prompt),
+            create_kwargs.get("max_tokens"),
+        )
+        logger.info("Calling provider %s", self.name)
         msg = await self._client.messages.create(**create_kwargs)
 
         text_parts: list[str] = []
@@ -41,6 +51,12 @@ class AnthropicProvider(LLMProvider):
             total_tokens=None,
         )
         latency_s = time.perf_counter() - start
+        logger.info(
+            "Completed provider %s model=%s latency_s=%.3f",
+            self.name,
+            self._model,
+            latency_s,
+        )
         return ProviderResponse(
             provider_name=self.name,
             model=self._model,

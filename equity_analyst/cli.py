@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,9 +18,12 @@ from equity_analyst.iterative import (
     compile_refinement_workflow,
     dry_run_compile_only,
 )
+from equity_analyst.logging_setup import attach_run_file_logging, configure_cli_logging
 from equity_analyst.orchestrator import Orchestrator
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -61,6 +65,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output folder name under outputs/ (checkpoint at outputs/<id>/checkpoint.sqlite)",
     )
+    run.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Log level for the equity_analyst logger (stderr and optional per-run agent.log)",
+    )
 
     return parser
 
@@ -84,6 +94,10 @@ async def _run_iterative_cli(
     rendered = render_prompt(cfg, pp)
     reg = ProviderRegistry.default()
     if args.dry_run:
+        logger.info(
+            "Iterative dry-run: no output directory is created; per-run agent.log is not written "
+            "(see README logging section).",
+        )
         nodes = dry_run_compile_only(registry=reg)
         return (
             "# Iterative dry-run\n\n"
@@ -104,9 +118,17 @@ async def _run_iterative_cli(
         out_dir = Path("outputs") / f"{cfg.symbol}_{ts}"
         out_dir.mkdir(parents=True, exist_ok=False)
         thread_id = out_dir.name
+    attach_run_file_logging(out_dir / "agent.log")
+    ckpt = out_dir / "checkpoint.sqlite"
+    logger.info(
+        "Iterative CLI output_dir=%s resume=%s thread_id=%s checkpoint=%s",
+        str(out_dir.resolve()),
+        resume,
+        thread_id,
+        str(ckpt.resolve()),
+    )
     it_dir = out_dir / "iterations"
     it_dir.mkdir(parents=True, exist_ok=True)
-    ckpt = out_dir / "checkpoint.sqlite"
     meta = {
         "iterative": True,
         "thread_id": thread_id,
@@ -132,6 +154,7 @@ async def _run_iterative_cli(
             st["confidence_threshold"] = args.confidence_threshold
             st["enable_web_search"] = args.enable_web_search
             final_state = await app.ainvoke(st, config=config)
+    logger.info("Iterative run finished output_dir=%s", str(out_dir.resolve()))
     return str(final_state.get("final_report", ""))
 
 
@@ -140,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     if args.command == "run":
+        configure_cli_logging(getattr(logging, str(args.log_level)))
         if args.resume and not args.iterative:
             raise SystemExit("--resume requires --iterative")
         cfg = _load_cfg(args)

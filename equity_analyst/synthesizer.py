@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse
+
+logger = logging.getLogger(__name__)
 
 SYNTHESIS_SYSTEM_PROMPT = """You are a synthesis agent. You will be given multiple LLM providers' raw answers to the same 13-section equity/options prompt.
 
@@ -44,6 +47,18 @@ class Synthesizer:
             f"### Original user prompt\n{original_prompt}\n\n"
             f"### Provider responses\n\n" + "\n".join(blocks)
         )
+        logger.info(
+            "Synthesis start provider=%s response_count=%s prompt_chars=%s web_search=%s",
+            self._provider.name,
+            len(responses),
+            len(synthesis_prompt),
+            enable_web_search,
+        )
         resp = await self._provider.generate(synthesis_prompt, enable_web_search=enable_web_search)
+        logger.info(
+            "Synthesis end model=%s latency_s=%s",
+            resp.model,
+            f"{resp.latency_s:.3f}" if resp.latency_s is not None else "n/a",
+        )
         return SynthesisResult(response=resp, prompt=synthesis_prompt)
 

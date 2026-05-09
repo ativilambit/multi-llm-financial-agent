@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import operator
 import re
 from collections.abc import Sequence
@@ -17,6 +18,8 @@ from equity_analyst.config import RunConfig
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.synthesizer import Synthesizer
 from equity_analyst.types import ProviderResponse, ProviderUsage
+
+logger = logging.getLogger(__name__)
 
 VERIFIER_INSTRUCTION = """You are a financial fact-checker. You receive a synthesis about an equity/options thesis.
 
@@ -118,6 +121,14 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         if extra:
             body = f"{body}\n\n### Follow-up verification targets\n{extra}"
         round_idx = len(state.get("provider_responses", []))
+        max_it = state["max_iterations"]
+        logger.info(
+            "Node fan_out iteration=%s max_iterations=%s providers=%s output_dir=%s",
+            round_idx + 1,
+            max_it,
+            list(state["providers"]),
+            str(out.resolve()),
+        )
 
         async def _one(name: str) -> ProviderResponse:
             p = registry.create(name)
@@ -141,6 +152,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
     async def synthesize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
+        round_idx = len(state.get("synthesis_history", []))
+        logger.info(
+            "Node synthesize iteration=%s max_iterations=%s synthesizer=%s",
+            round_idx + 1,
+            state["max_iterations"],
+            state["synthesizer_name"],
+        )
         last = state["provider_responses"][-1]
         raw = last["responses"]
         resp_map: dict[str, ProviderResponse] = {k: _dict_to_response(v) for k, v in raw.items()}
@@ -159,6 +177,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
     async def verify(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
+        round_idx = len(state.get("verification_history", []))
+        logger.info(
+            "Node verify iteration=%s max_iterations=%s verifier=%s",
+            round_idx + 1,
+            state["max_iterations"],
+            state["verifier_name"],
+        )
         syn = state["synthesis_history"][-1]
         prompt = f"{VERIFIER_INSTRUCTION}\n\n### Synthesis\n{syn}"
         verifier = registry.create(state["verifier_name"])
@@ -177,19 +202,34 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         conf = parse_overall_confidence(syn)
         n_rounds = len(state["provider_responses"])
         contrad = ver.get("contradicted") or []
+        max_it = state["max_iterations"]
+        logger.info(
+            "Node route rounds_completed=%s max_iterations=%s overall_confidence=%s contradicted=%s",
+            n_rounds,
+            max_it,
+            f"{conf:.4f}" if conf is not None else "none",
+            len(contrad),
+        )
         if n_rounds >= state["max_iterations"]:
+            logger.info("Route decision: finalize (max_iterations reached)")
             return Command(goto="finalize")
         if conf is not None and conf >= state["confidence_threshold"] and not contrad:
+            logger.info(
+                "Route decision: finalize (confidence >= threshold and no contradictions) threshold=%s",
+                state["confidence_threshold"],
+            )
             return Command(goto="finalize")
         qs: list[str] = []
         for c in contrad:
             qs.append(f"Resolve with primary sources: {c}")
         for u in ver.get("unverifiable") or []:
             qs.append(f"Cite or verify: {u}")
+        logger.info("Route decision: continue (fan_out) followups=%s", len(qs))
         return Command(goto="fan_out", update={"followup_questions": qs})
 
     async def finalize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
+        logger.info("Node finalize output_dir=%s rounds=%s", str(out.resolve()), len(state["provider_responses"]))
         parts: list[str] = [
             f"# Refined equity report: {state['symbol']}\n",
             "## Iteration changelog\n",
@@ -236,10 +276,13 @@ def compile_refinement_workflow(
     g.add_edge("verify", "route")
     g.add_edge("finalize", END)
     ib: list[str] | None = list(interrupt_before) if interrupt_before else None
-    return g.compile(
+    compiled = g.compile(
         checkpointer=checkpointer,
         interrupt_before=ib,
     )
+    node_names = sorted(n for n in compiled.get_graph().nodes if not str(n).startswith("__"))
+    logger.debug("Compiled refinement workflow nodes=%s", node_names)
+    return compiled
 
 
 def build_initial_refinement_state(
@@ -266,4 +309,6 @@ def dry_run_compile_only(*, registry: ProviderRegistry) -> list[str]:
 
     app = compile_refinement_workflow(registry=registry, checkpointer=MemorySaver())
     nodes = app.get_graph().nodes
-    return sorted(n for n in nodes if not str(n).startswith("__"))
+    out = sorted(n for n in nodes if not str(n).startswith("__"))
+    logger.debug("Dry-run graph inspection nodes=%s", out)
+    return out

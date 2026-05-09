@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,9 @@ class _SleepyProvider(LLMProvider):
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_parallel_and_writes_outputs(tmp_path: Path, monkeypatch: Any) -> None:
+async def test_orchestrator_parallel_and_writes_outputs(
+    tmp_path: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.chdir(tmp_path)
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -78,7 +81,8 @@ async def test_orchestrator_parallel_and_writes_outputs(tmp_path: Path, monkeypa
     orch = Orchestrator(config=cfg, prompt_path=prompt_path)
 
     started = asyncio.get_event_loop().time()
-    synthesis, artifacts = await orch.run_async(dry_run=False, enable_web_search=False)
+    with caplog.at_level(logging.INFO, logger="equity_analyst.orchestrator"):
+        synthesis, artifacts = await orch.run_async(dry_run=False, enable_web_search=False)
     out_dir = artifacts.output_dir
     elapsed = asyncio.get_event_loop().time() - started
 
@@ -92,4 +96,7 @@ async def test_orchestrator_parallel_and_writes_outputs(tmp_path: Path, monkeypa
     assert (out_dir / "grok.md").exists()
     assert (out_dir / "synthesis.md").exists()
     assert (out_dir / "run.json").exists()
+    assert (out_dir / "agent.log").exists()
+    assert any("Run start" in r.message for r in caplog.records)
+    assert "Run start" in (out_dir / "agent.log").read_text(encoding="utf-8")
 

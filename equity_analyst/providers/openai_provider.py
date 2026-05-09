@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, cast
@@ -8,6 +9,8 @@ from openai import AsyncOpenAI
 
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(LLMProvider):
@@ -22,7 +25,14 @@ class OpenAIProvider(LLMProvider):
         create_kwargs: dict[str, Any] = {"model": self._model, "input": prompt}
         if enable_web_search:
             create_kwargs["tools"] = cast(Any, [{"type": "web_search"}])
-
+        logger.debug(
+            "OpenAI request shape model=%s web_search=%s prompt_chars=%s tool_count=%s",
+            self._model,
+            enable_web_search,
+            len(prompt),
+            len(create_kwargs.get("tools", []) or []),
+        )
+        logger.info("Calling provider %s", self.name)
         resp = await self._client.responses.create(**create_kwargs)
 
         text_parts: list[str] = []
@@ -40,6 +50,12 @@ class OpenAIProvider(LLMProvider):
             total_tokens=getattr(usage_obj, "total_tokens", None),
         )
         latency_s = time.perf_counter() - start
+        logger.info(
+            "Completed provider %s model=%s latency_s=%.3f",
+            self.name,
+            self._model,
+            latency_s,
+        )
         return ProviderResponse(
             provider_name=self.name,
             model=self._model,
