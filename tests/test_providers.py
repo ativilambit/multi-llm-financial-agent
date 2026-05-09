@@ -27,15 +27,49 @@ class _AnthropicTextBlock:
 class _AnthropicMsg:
     content: list[Any]
     usage: Any
+    model: str = "claude-test-model"
+
+
+class _FakeAnthropicStream:
+    def __init__(self, msg: _AnthropicMsg) -> None:
+        self._msg = msg
+
+    async def until_done(self) -> None:
+        return
+
+    async def get_final_message(self) -> _AnthropicMsg:
+        return self._msg
+
+    async def close(self) -> None:
+        return
+
+
+class _FakeAnthropicStreamCM:
+    def __init__(self, msg: _AnthropicMsg) -> None:
+        self._stream = _FakeAnthropicStream(msg)
+
+    async def __aenter__(self) -> _FakeAnthropicStream:
+        return self._stream
+
+    async def __aexit__(self, *args: object) -> None:
+        return
 
 
 class _FakeAnthropicMessages:
     def __init__(self) -> None:
         self.last_kwargs: dict[str, Any] | None = None
+        self.stream_invoked = False
 
-    async def create(self, **kwargs: Any) -> _AnthropicMsg:
+    def stream(self, **kwargs: Any) -> _FakeAnthropicStreamCM:
+        self.stream_invoked = True
         self.last_kwargs = kwargs
-        return _AnthropicMsg(content=[_AnthropicTextBlock()], usage=_AnthropicUsage())
+        model_id = str(kwargs.get("model", "claude-test-model"))
+        msg = _AnthropicMsg(
+            content=[_AnthropicTextBlock()],
+            usage=_AnthropicUsage(),
+            model=model_id,
+        )
+        return _FakeAnthropicStreamCM(msg)
 
 
 class _FakeAnthropicClient:
@@ -91,15 +125,15 @@ async def test_anthropic_provider_assembles_request_and_parses_usage() -> None:
     p = AnthropicProvider(model="claude-3-5-sonnet-latest", client=fake)  # type: ignore[arg-type]
     resp = await p.generate("hello", enable_web_search=True)
 
+    assert fake.messages.stream_invoked is True
     assert resp.text == "anthropic-answer"
     assert resp.usage.input_tokens == 11
     assert resp.usage.output_tokens == 22
+    assert resp.model == "claude-3-5-sonnet-latest"
     assert fake.messages.last_kwargs is not None
     assert fake.messages.last_kwargs["model"] == "claude-3-5-sonnet-latest"
     assert fake.messages.last_kwargs["messages"][0]["content"] == "hello"
-    assert {"type": "web_search_20260209", "name": "web_search"} in (
-        fake.messages.last_kwargs["tools"] or []
-    )
+    assert {"type": "web_search_20260209", "name": "web_search"} in (fake.messages.last_kwargs["tools"] or [])
 
 
 @pytest.mark.asyncio

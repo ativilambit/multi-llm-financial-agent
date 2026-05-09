@@ -46,13 +46,18 @@ class AnthropicProvider(LLMProvider):
             max_tokens,
         )
         logger.info("Calling provider %s", self.name)
-        msg = await self._client.messages.create(**create_kwargs)
+        # Anthropic requires streaming for requests that may exceed ~10 minutes (e.g. web_search).
+        async with self._client.messages.stream(**create_kwargs) as stream:
+            await stream.until_done()
+            msg = await stream.get_final_message()
 
         text_parts: list[str] = []
         for block in msg.content:
             if getattr(block, "type", None) == "text":
-                text_parts.append(block.text)
+                text_parts.append(str(getattr(block, "text", "")))
         text = "".join(text_parts).strip()
+
+        resolved_model = str(getattr(msg, "model", self._model))
 
         usage = ProviderUsage(
             input_tokens=getattr(msg.usage, "input_tokens", None),
@@ -63,12 +68,12 @@ class AnthropicProvider(LLMProvider):
         logger.info(
             "Completed provider %s model=%s latency_s=%.3f",
             self.name,
-            self._model,
+            resolved_model,
             latency_s,
         )
         return ProviderResponse(
             provider_name=self.name,
-            model=self._model,
+            model=resolved_model,
             text=text,
             usage=usage,
             latency_s=latency_s,
