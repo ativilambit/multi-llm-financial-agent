@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.base import LLMProvider
+from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 
 ProviderFactory = Callable[[], LLMProvider]
@@ -27,5 +28,6 @@ class ProviderRegistry:
         reg = cls()
         reg.register("anthropic", lambda: AnthropicProvider())
         reg.register("openai", lambda: OpenAIProvider())
+        reg.register("gemini", lambda: GeminiProvider())
         return reg
 

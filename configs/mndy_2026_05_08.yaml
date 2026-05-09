@@ -27,6 +27,6 @@ short_interest_lookbacks:
   - "yesterday"
   - "today"
 
-providers: ["anthropic", "openai"]
+providers: ["anthropic", "openai", "gemini"]
 synthesizer: "anthropic"
 

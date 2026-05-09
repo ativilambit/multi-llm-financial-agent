@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
+from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 
 
@@ -112,3 +113,63 @@ async def test_openai_provider_assembles_request_and_parses_usage() -> None:
     assert fake.responses.last_kwargs["model"] == "gpt-5.5"
     assert fake.responses.last_kwargs["input"] == "hello"
     assert {"type": "web_search"} in (fake.responses.last_kwargs["tools"] or [])
+
+
+class _FakeGeminiUsage:
+    prompt_token_count = 5
+    candidates_token_count = 6
+    total_token_count = 11
+
+
+class _FakeGeminiGenerateContentResponse:
+    def __init__(self) -> None:
+        self.usage_metadata = _FakeGeminiUsage()
+
+    @property
+    def text(self) -> str:
+        return "gemini-answer"
+
+
+class _FakeGeminiAioModels:
+    def __init__(self) -> None:
+        self.last_model: str | None = None
+        self.last_contents: str | None = None
+        self.last_config: Any = None
+
+    async def generate_content(self, *, model: str, contents: str, config: Any = None) -> Any:
+        self.last_model = model
+        self.last_contents = contents
+        self.last_config = config
+        return _FakeGeminiGenerateContentResponse()
+
+
+class _FakeGeminiAio:
+    def __init__(self) -> None:
+        self.models = _FakeGeminiAioModels()
+
+
+class _FakeGeminiClient:
+    def __init__(self) -> None:
+        self.aio = _FakeGeminiAio()
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_assembles_request_and_parses_usage() -> None:
+    fake = _FakeGeminiClient()
+    p = GeminiProvider(model="gemini-2.5-flash", client=fake)  # type: ignore[arg-type]
+    resp = await p.generate("hello", enable_web_search=True)
+
+    assert resp.text == "gemini-answer"
+    assert resp.usage.input_tokens == 5
+    assert resp.usage.output_tokens == 6
+    assert resp.usage.total_tokens == 11
+    m = fake.aio.models
+    assert m.last_model == "gemini-2.5-flash"
+    assert m.last_contents == "hello"
+    assert m.last_config is not None
+    assert m.last_config.tools is not None
+    assert m.last_config.tools[0].google_search is not None
+
+    resp2 = await p.generate("hi", enable_web_search=False)
+    assert resp2.text == "gemini-answer"
+    assert m.last_config is None
