@@ -151,6 +151,25 @@ def test_provider_config_optional_max_output_tokens() -> None:
     assert cfg.providers[2].max_output_tokens is None
 
 
+def test_prompt_cache_enabled_defaults_true() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+        }
+    )
+    assert cfg.prompt_cache_enabled is True
+
+
 def test_default_synthesizer_is_gemini() -> None:
     cfg = RunConfig.model_validate(
         {

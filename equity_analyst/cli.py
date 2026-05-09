@@ -110,6 +110,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override RunConfig.synthesizer_max_output_tokens (default from YAML or 24000)",
     )
+    run.add_argument(
+        "--no-prompt-cache",
+        action="store_true",
+        help="Disable Anthropic prompt caching (system/tools breakpoints; 1h TTL when enabled).",
+    )
 
     return parser
 
@@ -128,6 +133,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["synthesizer_max_input_tokens"] = args.synthesizer_max_input_tokens
     if args.synthesizer_max_output_tokens is not None:
         patch["synthesizer_max_output_tokens"] = args.synthesizer_max_output_tokens
+    if getattr(args, "no_prompt_cache", False):
+        patch["prompt_cache_enabled"] = False
     return cfg if not patch else cfg.model_copy(update=patch)
 
 
@@ -204,9 +211,7 @@ async def _run_iterative_cli(
         if resume:
             final_state = await app.ainvoke(None, config=config)
         else:
-            st = build_initial_refinement_state(
-                cfg=cfg, rendered_text=rendered.text, output_dir=out_dir
-            )
+            st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out_dir)
             st["max_iterations"] = args.max_iterations
             st["confidence_threshold"] = args.confidence_threshold
             st["enable_web_search"] = args.enable_web_search

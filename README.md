@@ -41,6 +41,16 @@ python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --no-web-sear
 
 The same flag works in iterative mode. Legacy aliases **`--enable-web-search` / `--no-enable-web-search`** still map to the same setting as `--web-search` / `--no-web-search`.
 
+### Prompt caching (Anthropic fan-out)
+
+Anthropic **Messages API** [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) is **on by default** for equity fan-out: the static persona lives in the `system` turn with an explicit cache breakpoint, and the **last** tool definition (web search, when enabled) is marked so tools + system reuse the same cached prefix on repeated runs with the same template and tool shape. Breakpoints use **`{"type": "ephemeral", "ttl": "1h"}`** so iterative re-runs and back-to-back jobs against one template keep a warm cache longer than the default 5-minute ephemeral TTL.
+
+**Why:** Cached prefix reads are billed at a fraction of full input tokens and skip re-processing that prefix server-side, which usually improves **time-to-first-token** and cuts **input cost** on the stable portion of the prompt (often on the order of **~80%** savings on those cached tokens vs uncached input, depending on model and pricing tier).
+
+**Disable:** `python -m equity_analyst run --config ... --no-prompt-cache` or set `prompt_cache_enabled: false` in YAML on `RunConfig`.
+
+**Minimum cache size:** Anthropic only applies caching when the marked prefix meets a **model-specific minimum** (for example **4096 tokens** for Claude Opus 4.7 / 4.6 / 4.5 per current docs). Shorter prefixes are accepted but **not** cached; watch **INFO** logs from `equity_analyst.providers.anthropic_provider` for `Anthropic cache stats cache_read=...` — non-zero `cache_read` confirms a hit.
+
 YAML may set **per-provider** overrides: optional `model` (API model id for that backend), optional **`max_output_tokens`** (completion budget for that fan-out provider only; falls back to global `max_output_tokens`), `web_search: true|false`, and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **16000** for fan-out — each parallel provider gets this unless overridden per provider), `synthesizer_max_output_tokens` (default **24000** for the final synthesis pass — larger because the synthesizer must weave every provider’s output across all 13 sections), and `verifier_max_output_tokens` (default **1536**, iterative verifier only). **OpenAI** long web-search runs use the **streaming** Responses API so the HTTP connection stays alive across multi-minute tool loops; if you still hit `asyncio` timeout errors, raise **`request_timeout_s`** globally or on specific providers (for example `900` or `1500` seconds on `openai`).
 
 Default fan-out budget is **16,000** tokens per provider. For a 13-section deep-research prompt this is usually enough to avoid truncation in `claude.md` / `openai.md` / `grok.md` / `gemini.md`; if a run still cuts off, raise the global `max_output_tokens` or set a higher **`max_output_tokens`** on specific providers in YAML. Override from the CLI with **`--max-output-tokens`** (fan-out), **`--synthesizer-max-output-tokens`** (synthesis), and **`--verifier-max-output-tokens`** (iterative verify step).

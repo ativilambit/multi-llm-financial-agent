@@ -7,13 +7,21 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from equity_analyst.config import RunConfig
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 
 
 @dataclass(frozen=True)
 class RenderedPrompt:
+    """Rendered equity template.
+
+    ``text`` is preamble + body for non-Anthropic providers and synthesis.
+    ``user_message_text`` is body only (Anthropic caching user turn).
+    """
+
     template_path: str
     text: str
     context: dict[str, Any]
+    user_message_text: str
 
 
 def _derived_context(cfg: RunConfig) -> dict[str, Any]:
@@ -61,6 +69,12 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
     }
     context.update(_derived_context(cfg))
 
-    text = template.render(**context)
-    return RenderedPrompt(template_path=str(prompt_path), text=text, context=context)
+    user_message_text = template.render(**context)
+    text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"
+    return RenderedPrompt(
+        template_path=str(prompt_path),
+        text=text,
+        context=context,
+        user_message_text=user_message_text,
+    )
 

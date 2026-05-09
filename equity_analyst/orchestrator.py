@@ -23,6 +23,7 @@ from equity_analyst.provider_runtime import (
     provider_timeout_s,
     run_error_record,
 )
+from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
@@ -156,10 +157,18 @@ class Orchestrator:
             timeout_s = provider_timeout_s(pc, self._config)
 
             async def _attempt() -> ProviderResponse:
+                mot = fan_out_max_output_tokens(pc, self._config.max_output_tokens)
+                if isinstance(provider, AnthropicProvider):
+                    return await provider.generate(
+                        rendered.text,
+                        enable_web_search=ws,
+                        max_output_tokens=mot,
+                        prompt_cache_enabled=self._config.prompt_cache_enabled,
+                    )
                 return await provider.generate(
                     rendered.text,
                     enable_web_search=ws,
-                    max_output_tokens=fan_out_max_output_tokens(pc, self._config.max_output_tokens),
+                    max_output_tokens=mot,
                 )
 
             try:

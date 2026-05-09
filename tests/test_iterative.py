@@ -14,6 +14,7 @@ from equity_analyst.iterative import (
     dry_run_compile_only,
     parse_overall_confidence,
 )
+from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
@@ -159,7 +160,13 @@ class _SynthCheckpoint(LLMProvider):
 
 
 def _initial_state(cfg: RunConfig, out: Path) -> dict[str, Any]:
-    st = build_initial_refinement_state(cfg=cfg, rendered_text="PROMPT", output_dir=out)
+    rendered = RenderedPrompt(
+        template_path="t",
+        text="PROMPT",
+        context={},
+        user_message_text="U",
+    )
+    st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out)
     st["max_iterations"] = 5
     st["confidence_threshold"] = 0.85
     st["enable_web_search"] = False

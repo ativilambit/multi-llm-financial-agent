@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, ephemeral_cache_control
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.grok_provider import XAI_BASE_URL, GrokProvider
@@ -16,6 +18,8 @@ from equity_analyst.providers.openai_provider import OpenAIProvider
 class _AnthropicUsage:
     input_tokens: int = 11
     output_tokens: int = 22
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 @dataclass
@@ -148,6 +152,96 @@ class _FakeOpenAIResponses:
 class _FakeOpenAIClient:
     def __init__(self) -> None:
         self.responses = _FakeOpenAIResponses()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_prompt_cache_adds_cache_control_to_system_and_tools() -> None:
+    fake = _FakeAnthropicClient()
+    p = AnthropicProvider(model="claude-3-5-sonnet-latest", client=fake)  # type: ignore[arg-type]
+    user_body = "Today price range BODY"
+    full = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_body}"
+    await p.generate(full, enable_web_search=True, prompt_cache_enabled=True)
+
+    assert fake.messages.last_kwargs is not None
+    kw = fake.messages.last_kwargs
+    assert kw["messages"][0]["content"] == user_body
+    sys_blocks = kw["system"]
+    assert isinstance(sys_blocks, list)
+    assert sys_blocks[0]["cache_control"] == ephemeral_cache_control()
+    assert sys_blocks[0]["text"] == EQUITY_ANALYST_SYSTEM_PROMPT
+    tools = kw.get("tools") or []
+    assert tools[-1]["cache_control"] == ephemeral_cache_control()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_prompt_cache_disabled_no_cache_markers() -> None:
+    fake = _FakeAnthropicClient()
+    p = AnthropicProvider(model="claude-3-5-sonnet-latest", client=fake)  # type: ignore[arg-type]
+    user_body = "Today price range BODY"
+    full = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_body}"
+    await p.generate(full, enable_web_search=True, prompt_cache_enabled=False)
+
+    assert fake.messages.last_kwargs is not None
+    kw = fake.messages.last_kwargs
+    assert kw["messages"][0]["content"] == full
+    assert "system" not in kw
+    tool = (kw.get("tools") or [])[0]
+    assert "cache_control" not in tool
+
+
+@pytest.mark.asyncio
+async def test_anthropic_cache_stats_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+
+    @dataclass
+    class _U:
+        input_tokens: int = 678
+        output_tokens: int = 4321
+        cache_read_input_tokens: int = 12345
+        cache_creation_input_tokens: int = 0
+
+    @dataclass
+    class _Msg:
+        content: list[Any]
+        usage: Any
+        model: str = "claude-test-model"
+
+    class _Stream2:
+        def __init__(self, msg: _Msg) -> None:
+            self._msg = msg
+
+        async def until_done(self) -> None:
+            return
+
+        async def get_final_message(self) -> _Msg:
+            return self._msg
+
+    class _StreamCM2:
+        def __init__(self, msg: _Msg) -> None:
+            self._stream = _Stream2(msg)
+
+        async def __aenter__(self) -> _Stream2:
+            return self._stream
+
+        async def __aexit__(self, *args: object) -> None:
+            return
+
+    class _Messages2:
+        def stream(self, **kwargs: Any) -> _StreamCM2:
+            msg = _Msg(content=[_AnthropicTextBlock()], usage=_U())
+            return _StreamCM2(msg)
+
+    class _Client2:
+        def __init__(self) -> None:
+            self.messages = _Messages2()
+
+    fake = _Client2()
+    p = AnthropicProvider(model="claude-3-5-sonnet-latest", client=fake)  # type: ignore[arg-type]
+    full = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\nBODY"
+    await p.generate(full, enable_web_search=False, prompt_cache_enabled=True)
+
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "Anthropic cache stats cache_read=12345 cache_creation=0 input=678 output=4321" in logged
 
 
 @pytest.mark.asyncio

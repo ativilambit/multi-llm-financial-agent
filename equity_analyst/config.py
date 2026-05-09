@@ -88,6 +88,11 @@ class RunConfig(BaseModel):
     retry_base_delay_s: float = Field(default=2.0, gt=0, le=120.0)
     synthesizer_max_input_tokens: int = Field(default=20_000, ge=1024, le=500_000)
 
+    prompt_cache_enabled: bool = Field(
+        default=True,
+        description="When True, Anthropic fan-out uses API prompt caching (1h TTL) on system + tools.",
+    )
+
     @field_validator("synthesizer", mode="before")
     @classmethod
     def _coerce_synthesizer(cls, v: Any) -> Any:

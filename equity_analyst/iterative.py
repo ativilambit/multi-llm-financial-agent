@@ -18,6 +18,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
+from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.provider_runtime import (
     effective_synthesizer_web_search,
     effective_web_search,
@@ -27,6 +28,7 @@ from equity_analyst.provider_runtime import (
     partition_provider_responses,
     run_error_record,
 )
+from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
@@ -164,6 +166,7 @@ class RefinementState(TypedDict, total=False):
     max_iterations: int
     confidence_threshold: float
     enable_web_search: bool
+    prompt_cache_enabled: bool
     providers: list[str]
     provider_configs: list[dict[str, Any]]
     max_output_tokens: int
@@ -233,6 +236,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
             async def _attempt() -> ProviderResponse:
                 mot = fan_out_max_output_tokens(pc, cfg_mot)
+                if isinstance(p, AnthropicProvider):
+                    return await p.generate(
+                        body,
+                        enable_web_search=ws,
+                        max_output_tokens=mot,
+                        prompt_cache_enabled=bool(state.get("prompt_cache_enabled", True)),
+                    )
                 return await p.generate(body, enable_web_search=ws, max_output_tokens=mot)
 
             try:
@@ -400,6 +410,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         err_ev: list[dict[str, Any]] = []
 
         async def _v_attempt() -> ProviderResponse:
+            if isinstance(verifier, AnthropicProvider):
+                return await verifier.generate(
+                    prompt,
+                    enable_web_search=state["enable_web_search"],
+                    max_output_tokens=vmt,
+                    prompt_cache_enabled=False,
+                )
             return await verifier.generate(
                 prompt,
                 enable_web_search=state["enable_web_search"],
@@ -559,15 +576,16 @@ def compile_refinement_workflow(
 def build_initial_refinement_state(
     *,
     cfg: RunConfig,
-    rendered_text: str,
+    rendered: RenderedPrompt,
     output_dir: Path,
 ) -> RefinementState:
     return {
         "symbol": cfg.symbol,
-        "original_prompt": rendered_text,
+        "original_prompt": rendered.text,
         "max_iterations": 3,
         "confidence_threshold": 0.85,
         "enable_web_search": True,
+        "prompt_cache_enabled": cfg.prompt_cache_enabled,
         "providers": cfg.provider_names(),
         "provider_configs": [pc.model_dump() for pc in cfg.providers],
         "max_output_tokens": cfg.max_output_tokens,
