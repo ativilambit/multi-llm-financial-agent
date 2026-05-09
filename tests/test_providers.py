@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, ephemeral_cache_control
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.gemini_provider import GeminiProvider
@@ -316,6 +318,12 @@ class _FakeGeminiAioModels:
         self.last_model: str | None = None
         self.last_contents: str | None = None
         self.last_config: Any = None
+        self.count_tokens_calls = 0
+        self.count_tokens_total = 2000
+
+    async def count_tokens(self, *, model: str, contents: Any, config: Any = None) -> Any:
+        self.count_tokens_calls += 1
+        return SimpleNamespace(total_tokens=self.count_tokens_total, cached_content_token_count=0)
 
     async def generate_content(self, *, model: str, contents: str, config: Any = None) -> Any:
         self.last_model = model
@@ -324,9 +332,19 @@ class _FakeGeminiAioModels:
         return _FakeGeminiGenerateContentResponse()
 
 
+class _FakeGeminiAioCaches:
+    def __init__(self) -> None:
+        self.create_calls = 0
+
+    async def create(self, *, model: str, config: Any = None) -> Any:
+        self.create_calls += 1
+        return SimpleNamespace(name="cachedContents/fake-from-create")
+
+
 class _FakeGeminiAio:
     def __init__(self) -> None:
         self.models = _FakeGeminiAioModels()
+        self.caches = _FakeGeminiAioCaches()
 
 
 class _FakeGeminiClient:
@@ -354,6 +372,84 @@ async def test_gemini_provider_assembles_request_and_parses_usage() -> None:
     resp2 = await p.generate("hi", enable_web_search=False)
     assert resp2.text == "gemini-answer"
     assert m.last_config is None
+
+
+@pytest.mark.asyncio
+async def test_gemini_uses_cache_on_hit(tmp_path: Path) -> None:
+    fake = _FakeGeminiClient()
+    idx = GeminiCacheIndex(path=tmp_path / "idx.json")
+    static = "x" * 4000
+    user = "dynamic-body"
+    full = f"{static}\n\n{user}"
+    p = GeminiProvider(
+        model="gemini-2.5-flash",
+        client=fake,  # type: ignore[arg-type]
+        cache_index=idx,
+        cache_ttl_s=3600,
+    )
+    await p.generate(
+        full,
+        enable_web_search=False,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.aio.caches.create_calls == 1
+    assert fake.aio.models.last_contents == user
+    assert fake.aio.models.last_config is not None
+    assert fake.aio.models.last_config.cached_content == "cachedContents/fake-from-create"
+
+    await p.generate(
+        full,
+        enable_web_search=False,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.aio.caches.create_calls == 1
+    assert fake.aio.models.last_config is not None
+    assert fake.aio.models.last_config.cached_content == "cachedContents/fake-from-create"
+
+
+@pytest.mark.asyncio
+async def test_gemini_skips_cache_when_disabled() -> None:
+    fake = _FakeGeminiClient()
+    static = "x" * 4000
+    user = "u"
+    full = f"{static}\n\n{user}"
+    p = GeminiProvider(model="gemini-2.5-flash", client=fake)  # type: ignore[arg-type]
+    await p.generate(
+        full,
+        enable_web_search=False,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.aio.caches.create_calls == 0
+    assert fake.aio.models.count_tokens_calls == 0
+    assert fake.aio.models.last_contents == full
+    assert getattr(fake.aio.models.last_config, "cached_content", None) in (None,)
+
+
+@pytest.mark.asyncio
+async def test_gemini_skips_cache_when_prefix_too_small(tmp_path: Path) -> None:
+    fake = _FakeGeminiClient()
+    fake.aio.models.count_tokens_total = 100
+    idx = GeminiCacheIndex(path=tmp_path / "idx.json")
+    static = "short"
+    user = "u"
+    full = f"{static}\n\n{user}"
+    p = GeminiProvider(
+        model="gemini-2.5-flash",
+        client=fake,  # type: ignore[arg-type]
+        cache_index=idx,
+    )
+    await p.generate(
+        full,
+        enable_web_search=False,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.aio.caches.create_calls == 0
+    assert fake.aio.models.last_contents == full
+    assert getattr(fake.aio.models.last_config, "cached_content", None) in (None,)
 
 
 def test_grok_provider_uses_xai_base_url(monkeypatch: pytest.MonkeyPatch) -> None:

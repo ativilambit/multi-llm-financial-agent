@@ -113,7 +113,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--no-prompt-cache",
         action="store_true",
-        help="Disable Anthropic prompt caching (system/tools breakpoints; 1h TTL when enabled).",
+        help="Disable prompt caching for Anthropic (system/tools) and Gemini explicit context caches.",
     )
 
     return parser

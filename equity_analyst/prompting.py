@@ -10,6 +10,11 @@ from equity_analyst.config import RunConfig
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 
 
+def split_static_dynamic(rendered: RenderedPrompt) -> tuple[str, str]:
+    """Split equity prompt into (static persona, dynamic user body) matching Anthropic caching."""
+    return EQUITY_ANALYST_SYSTEM_PROMPT, rendered.user_message_text
+
+
 @dataclass(frozen=True)
 class RenderedPrompt:
     """Rendered equity template.

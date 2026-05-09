@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.providers.gemini_provider import GeminiProvider
@@ -19,7 +20,15 @@ class ProviderRegistry:
     def register(self, name: str, factory: ProviderFactory) -> None:
         self._factories[name] = factory
 
-    def create(self, name: str, *, model: str | None = None, client: Any | None = None) -> LLMProvider:
+    def create(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        client: Any | None = None,
+        gemini_cache_index: GeminiCacheIndex | None = None,
+        gemini_cache_ttl_s: int | None = None,
+    ) -> LLMProvider:
         try:
             factory = self._factories[name]
         except KeyError as e:
@@ -29,6 +38,11 @@ class ProviderRegistry:
             kwargs["model"] = model
         if client is not None:
             kwargs["client"] = client
+        if name == "gemini":
+            if gemini_cache_index is not None:
+                kwargs["cache_index"] = gemini_cache_index
+            if gemini_cache_ttl_s is not None:
+                kwargs["cache_ttl_s"] = gemini_cache_ttl_s
         return factory(**kwargs)
 
     @classmethod

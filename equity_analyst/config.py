@@ -90,7 +90,14 @@ class RunConfig(BaseModel):
 
     prompt_cache_enabled: bool = Field(
         default=True,
-        description="When True, Anthropic fan-out uses API prompt caching (1h TTL) on system + tools.",
+        description="When True, Anthropic fan-out uses API prompt caching on system + tools; "
+        "Gemini fan-out uses explicit context caching for the static persona (see gemini_cache_ttl_s).",
+    )
+    gemini_cache_ttl_s: int = Field(
+        default=3600,
+        ge=60,
+        le=86_400,
+        description="TTL (seconds) for Gemini explicit context caches when prompt_cache_enabled is True.",
     )
 
     @field_validator("synthesizer", mode="before")

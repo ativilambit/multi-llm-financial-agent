@@ -18,6 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
+from equity_analyst.gemini_cache import GeminiCacheIndex
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.provider_runtime import (
     effective_synthesizer_web_search,
@@ -29,6 +31,7 @@ from equity_analyst.provider_runtime import (
     run_error_record,
 )
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
+from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
@@ -176,6 +179,7 @@ class RefinementState(TypedDict, total=False):
     retry_max_attempts: int
     retry_base_delay_s: float
     synthesizer_max_input_tokens: int
+    gemini_cache_ttl_s: int
     synthesizer_cfg: dict[str, Any]
     verifier_name: str
     output_dir: str
@@ -214,6 +218,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         names = [pc.name for pc in pcs]
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
+        gemini_cache_index: GeminiCacheIndex | None = (
+            GeminiCacheIndex() if state.get("prompt_cache_enabled", True) else None
+        )
+        gemini_ttl = int(state.get("gemini_cache_ttl_s", 3600))
 
         async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
             start = time.perf_counter()
@@ -230,19 +238,40 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         async def _run_one(pc: ProviderConfig) -> ProviderResponse:
             t0 = time.perf_counter()
-            p = registry.create(pc.name, model=pc.model)
+            p = registry.create(
+                pc.name,
+                model=pc.model,
+                gemini_cache_index=gemini_cache_index,
+                gemini_cache_ttl_s=gemini_ttl,
+            )
             ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
             to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
 
             async def _attempt() -> ProviderResponse:
                 mot = fan_out_max_output_tokens(pc, cfg_mot)
+                pce = bool(state.get("prompt_cache_enabled", True))
                 if isinstance(p, AnthropicProvider):
+                    static = EQUITY_ANALYST_SYSTEM_PROMPT
+                    sep = f"{static}\n\n"
+                    user_only = body[len(sep) :] if body.startswith(sep) else body
                     return await p.generate(
                         body,
                         enable_web_search=ws,
                         max_output_tokens=mot,
-                        prompt_cache_enabled=bool(state.get("prompt_cache_enabled", True)),
+                        prompt_cache_enabled=pce,
+                        user_message_for_cache=user_only,
                     )
+                if isinstance(p, GeminiProvider) and pce and gemini_cache_index is not None:
+                    static = EQUITY_ANALYST_SYSTEM_PROMPT
+                    sep = f"{static}\n\n"
+                    if body.startswith(sep):
+                        return await p.generate(
+                            body,
+                            enable_web_search=ws,
+                            max_output_tokens=mot,
+                            cacheable_prefix=static,
+                            user_message_for_cache=body[len(sep) :],
+                        )
                 return await p.generate(body, enable_web_search=ws, max_output_tokens=mot)
 
             try:
@@ -597,6 +626,7 @@ def build_initial_refinement_state(
         "retry_max_attempts": cfg.retry_max_attempts,
         "retry_base_delay_s": float(cfg.retry_base_delay_s),
         "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
+        "gemini_cache_ttl_s": cfg.gemini_cache_ttl_s,
         "synthesizer_cfg": cfg.synthesizer.model_dump(mode="json"),
         "verifier_name": "anthropic",
         "output_dir": str(output_dir.resolve()),

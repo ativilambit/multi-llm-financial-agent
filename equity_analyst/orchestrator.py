@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from equity_analyst.config import ProviderConfig, RunConfig
+from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.logging_setup import attach_run_file_logging
-from equity_analyst.prompting import render_prompt
+from equity_analyst.prompting import render_prompt, split_static_dynamic
 from equity_analyst.provider_runtime import (
     effective_synthesizer_web_search,
     effective_web_search,
@@ -24,6 +25,7 @@ from equity_analyst.provider_runtime import (
     run_error_record,
 )
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
+from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
@@ -136,6 +138,9 @@ class Orchestrator:
 
         live_t0 = time.perf_counter()
         run_errors: list[dict[str, Any]] = []
+        gemini_cache_index: GeminiCacheIndex | None = (
+            GeminiCacheIndex() if self._config.prompt_cache_enabled else None
+        )
 
         async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
             start = time.perf_counter()
@@ -150,9 +155,16 @@ class Orchestrator:
                         int(time.perf_counter() - start),
                     )
 
+        static_block, user_block = split_static_dynamic(rendered)
+
         async def _run_one(pc: ProviderConfig) -> ProviderResponse:
             t0 = time.perf_counter()
-            provider = self._registry.create(pc.name, model=pc.model)
+            provider = self._registry.create(
+                pc.name,
+                model=pc.model,
+                gemini_cache_index=gemini_cache_index,
+                gemini_cache_ttl_s=self._config.gemini_cache_ttl_s,
+            )
             ws = effective_web_search(run_default=enable_web_search, pc=pc)
             timeout_s = provider_timeout_s(pc, self._config)
 
@@ -164,6 +176,15 @@ class Orchestrator:
                         enable_web_search=ws,
                         max_output_tokens=mot,
                         prompt_cache_enabled=self._config.prompt_cache_enabled,
+                        user_message_for_cache=user_block,
+                    )
+                if isinstance(provider, GeminiProvider) and self._config.prompt_cache_enabled:
+                    return await provider.generate(
+                        rendered.text,
+                        enable_web_search=ws,
+                        max_output_tokens=mot,
+                        cacheable_prefix=static_block,
+                        user_message_for_cache=user_block,
                     )
                 return await provider.generate(
                     rendered.text,
