@@ -48,3 +48,8 @@ short_interest_lookbacks:
 providers: ["anthropic", "openai", "gemini", "grok"]
 synthesizer: "anthropic"
 
+# Optional tuning (defaults shown):
+# retry_max_attempts: 3
+# retry_base_delay_s: 2.0
+# synthesizer_max_input_tokens: 20000
+

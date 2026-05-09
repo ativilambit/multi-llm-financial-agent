@@ -74,8 +74,37 @@ def _build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Log level for the equity_analyst logger (stderr and optional per-run agent.log)",
     )
+    run.add_argument(
+        "--retry-max-attempts",
+        type=int,
+        default=None,
+        help="Override RunConfig.retry_max_attempts (default from YAML or 3)",
+    )
+    run.add_argument(
+        "--retry-base-delay-s",
+        type=float,
+        default=None,
+        help="Override RunConfig.retry_base_delay_s (default from YAML or 2.0)",
+    )
+    run.add_argument(
+        "--synthesizer-max-input-tokens",
+        type=int,
+        default=None,
+        help="Override RunConfig.synthesizer_max_input_tokens (default from YAML or 20000)",
+    )
 
     return parser
+
+
+def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> RunConfig:
+    patch: dict[str, Any] = {}
+    if args.retry_max_attempts is not None:
+        patch["retry_max_attempts"] = args.retry_max_attempts
+    if args.retry_base_delay_s is not None:
+        patch["retry_base_delay_s"] = args.retry_base_delay_s
+    if args.synthesizer_max_input_tokens is not None:
+        patch["synthesizer_max_input_tokens"] = args.synthesizer_max_input_tokens
+    return cfg if not patch else cfg.model_copy(update=patch)
 
 
 def _load_cfg(args: argparse.Namespace) -> RunConfig:
@@ -105,7 +134,8 @@ async def _run_iterative_cli(
         return (
             "# Iterative dry-run\n\n"
             f"Graph nodes: {', '.join(nodes)}\n\n"
-            "## Rendered prompt (excerpt)\n\n" + rendered.text[:8000]
+            "## Rendered prompt (excerpt)\n\n"
+            + rendered.text[:8000]
         )
     out_dir: Path
     thread_id: str
@@ -138,6 +168,7 @@ async def _run_iterative_cli(
         "config": cfg.model_dump(),
         "max_iterations": args.max_iterations,
         "confidence_threshold": args.confidence_threshold,
+        "errors": [],
     }
     if not resume:
         (out_dir / "run.json").write_text(
@@ -168,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         configure_cli_logging(getattr(logging, str(args.log_level)))
         if args.resume and not args.iterative:
             raise SystemExit("--resume requires --iterative")
-        cfg = _load_cfg(args)
+        cfg = _apply_cli_config_overrides(_load_cfg(args), args)
         if args.symbol:
             cfg.symbol = args.symbol
 

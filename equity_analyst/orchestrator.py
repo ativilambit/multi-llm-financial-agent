@@ -17,10 +17,17 @@ from equity_analyst.provider_runtime import (
     effective_web_search,
     failure_response,
     failure_response_from_completed,
+    partition_provider_responses,
     provider_timeout_s,
+    run_error_record,
 )
 from equity_analyst.providers.registry import ProviderRegistry
-from equity_analyst.synthesizer import SynthesisResult, Synthesizer
+from equity_analyst.retry import async_retry_call
+from equity_analyst.synthesizer import (
+    SynthesisResult,
+    Synthesizer,
+    format_synthesis_artifact_markdown,
+)
 from equity_analyst.types import ProviderResponse
 
 logger = logging.getLogger(__name__)
@@ -58,9 +65,7 @@ class Orchestrator:
         out.mkdir(parents=True, exist_ok=False)
         return out
 
-    async def run_async(
-        self, *, dry_run: bool, enable_web_search: bool = True
-    ) -> tuple[str, RunArtifacts]:
+    async def run_async(self, *, dry_run: bool, enable_web_search: bool = True) -> tuple[str, RunArtifacts]:
         rendered = render_prompt(self._config, self._prompt_path)
         out_dir = self._make_output_dir()
         attach_run_file_logging(out_dir / "agent.log")
@@ -111,9 +116,7 @@ class Orchestrator:
                         "providers": {
                             pc.name: {
                                 "enabled": True,
-                                "web_search": effective_web_search(
-                                    run_default=enable_web_search, pc=pc
-                                ),
+                                "web_search": effective_web_search(run_default=enable_web_search, pc=pc),
                             }
                             for pc in self._config.providers
                         },
@@ -129,6 +132,7 @@ class Orchestrator:
             return ("\n".join(preview_lines), artifacts)
 
         live_t0 = time.perf_counter()
+        run_errors: list[dict[str, Any]] = []
 
         async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
             start = time.perf_counter()
@@ -148,12 +152,21 @@ class Orchestrator:
             provider = self._registry.create(pc.name)
             ws = effective_web_search(run_default=enable_web_search, pc=pc)
             timeout_s = provider_timeout_s(pc, self._config)
+
+            async def _attempt() -> ProviderResponse:
+                return await provider.generate(
+                    rendered.text,
+                    enable_web_search=ws,
+                    max_output_tokens=self._config.max_output_tokens,
+                )
+
             try:
                 return await asyncio.wait_for(
-                    provider.generate(
-                        rendered.text,
-                        enable_web_search=ws,
-                        max_output_tokens=self._config.max_output_tokens,
+                    async_retry_call(
+                        _attempt,
+                        provider=pc.name,
+                        max_attempts=self._config.retry_max_attempts,
+                        base_delay_s=self._config.retry_base_delay_s,
                     ),
                     timeout=timeout_s,
                 )
@@ -208,21 +221,62 @@ class Orchestrator:
                     responses=responses,
                     enable_web_search=enable_web_search,
                     max_output_tokens=self._config.max_output_tokens,
+                    synthesizer_max_input_tokens=self._config.synthesizer_max_input_tokens,
+                    retry_max_attempts=self._config.retry_max_attempts,
+                    retry_base_delay_s=self._config.retry_base_delay_s,
                 ),
                 timeout=float(self._config.request_timeout_s),
             )
+        except asyncio.CancelledError:
+            raise
         except TimeoutError as exc:
+            logger.error(
+                "Synthesis failed: provider=%s error_type=%s detail=%r",
+                self._config.synthesizer,
+                type(exc).__name__,
+                exc,
+            )
+            run_errors.append(run_error_record(stage="synthesis", provider=self._config.synthesizer, exc=exc))
+            synthesis_resp = failure_response_from_completed(
+                self._config.synthesizer,
+                exc,
+                started_perf=syn_t0,
+            )
+            synthesis = SynthesisResult(response=synthesis_resp, prompt="(synthesis stage timed out)")
+        except Exception as exc:
+            logger.error(
+                "Synthesis failed: provider=%s error_type=%s detail=%r",
+                self._config.synthesizer,
+                type(exc).__name__,
+                exc,
+            )
+            run_errors.append(run_error_record(stage="synthesis", provider=self._config.synthesizer, exc=exc))
             synthesis_resp = failure_response_from_completed(
                 self._config.synthesizer,
                 exc,
                 started_perf=syn_t0,
             )
             synthesis = SynthesisResult(
-                response=synthesis_resp, prompt="(synthesis stage timed out)"
+                response=synthesis_resp,
+                prompt=f"(synthesis exception: {type(exc).__name__})",
             )
         syn_wall_s = time.perf_counter() - syn_t0
 
-        synthesis_file.write_text(synthesis.response.text.rstrip() + "\n", encoding="utf-8")
+        _, failed_only = partition_provider_responses(responses)
+        if synthesis.response.model == "error:AllProvidersFailed":
+            run_errors.append(
+                {
+                    "stage": "synthesis",
+                    "provider": self._config.synthesizer,
+                    "error_type": "AllProvidersFailed",
+                    "detail": f"excluded_failed_providers={sorted(failed_only)}",
+                }
+            )
+
+        synthesis_file.write_text(
+            format_synthesis_artifact_markdown(synthesis=synthesis, responses=responses),
+            encoding="utf-8",
+        )
 
         total_wall_s = time.perf_counter() - live_t0
         timing: dict[str, Any] = {
@@ -259,6 +313,7 @@ class Orchestrator:
                 "usage": asdict(synthesis.response.usage),
                 "latency_s": synthesis.response.latency_s,
             },
+            "errors": run_errors,
         }
         run_json.write_text(json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -266,9 +321,7 @@ class Orchestrator:
             "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s timing=%s",
             str(out_dir.resolve()),
             synthesis.response.model,
-            f"{synthesis.response.latency_s:.3f}"
-            if synthesis.response.latency_s is not None
-            else "n/a",
+            f"{synthesis.response.latency_s:.3f}" if synthesis.response.latency_s is not None else "n/a",
             timing,
         )
         return (synthesis.response.text, artifacts)

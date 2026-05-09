@@ -22,9 +22,16 @@ from equity_analyst.provider_runtime import (
     effective_web_search,
     failure_response,
     failure_response_from_completed,
+    partition_provider_responses,
+    run_error_record,
 )
 from equity_analyst.providers.registry import ProviderRegistry
-from equity_analyst.synthesizer import SynthesisResult, Synthesizer
+from equity_analyst.retry import async_retry_call
+from equity_analyst.synthesizer import (
+    SynthesisResult,
+    Synthesizer,
+    format_synthesis_artifact_markdown,
+)
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
@@ -160,6 +167,9 @@ class RefinementState(TypedDict, total=False):
     max_output_tokens: int
     verifier_max_output_tokens: int
     request_timeout_s: float
+    retry_max_attempts: int
+    retry_base_delay_s: float
+    synthesizer_max_input_tokens: int
     synthesizer_name: str
     verifier_name: str
     output_dir: str
@@ -168,6 +178,7 @@ class RefinementState(TypedDict, total=False):
     verification_history: Annotated[list[dict[str, list[str]]], operator.add]
     followup_questions: Annotated[list[str], operator.add]
     timing_events: Annotated[list[dict[str, Any]], operator.add]
+    error_events: Annotated[list[dict[str, Any]], operator.add]
     final_report: str
 
 
@@ -195,6 +206,8 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
         mot = int(state.get("max_output_tokens", 4096))
         names = [pc.name for pc in pcs]
+        retry_max = int(state.get("retry_max_attempts", 3))
+        retry_base = float(state.get("retry_base_delay_s", 2.0))
 
         async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
             start = time.perf_counter()
@@ -214,9 +227,18 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             p = registry.create(pc.name)
             ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
             to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+
+            async def _attempt() -> ProviderResponse:
+                return await p.generate(body, enable_web_search=ws, max_output_tokens=mot)
+
             try:
                 return await asyncio.wait_for(
-                    p.generate(body, enable_web_search=ws, max_output_tokens=mot),
+                    async_retry_call(
+                        _attempt,
+                        provider=pc.name,
+                        max_attempts=retry_max,
+                        base_delay_s=retry_base,
+                    ),
                     timeout=to,
                 )
             except asyncio.CancelledError:
@@ -280,8 +302,12 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         syn = Synthesizer(synth_backend)
         mot = int(state.get("max_output_tokens", 4096))
         timeout_syn = float(state.get("request_timeout_s", 180.0))
+        syn_max_in = int(state.get("synthesizer_max_input_tokens", 20_000))
+        retry_max = int(state.get("retry_max_attempts", 3))
+        retry_base = float(state.get("retry_base_delay_s", 2.0))
         s0 = time.perf_counter()
         it_no = round_idx + 1
+        err_ev: list[dict[str, Any]] = []
         try:
             result = await asyncio.wait_for(
                 syn.synthesize(
@@ -289,20 +315,58 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     responses=resp_map,
                     enable_web_search=state["enable_web_search"],
                     max_output_tokens=mot,
+                    synthesizer_max_input_tokens=syn_max_in,
+                    retry_max_attempts=retry_max,
+                    retry_base_delay_s=retry_base,
                 ),
                 timeout=timeout_syn,
             )
+        except asyncio.CancelledError:
+            raise
         except TimeoutError as exc:
-            err = failure_response_from_completed(state["synthesizer_name"], exc, started_perf=s0)
-            result = SynthesisResult(response=err, prompt="(synthesis stage timed out)")
+            logger.error(
+                "Synthesis failed: provider=%s error_type=%s detail=%r",
+                state["synthesizer_name"],
+                type(exc).__name__,
+                exc,
+            )
+            err_ev.append(run_error_record(stage="synthesis", provider=state["synthesizer_name"], exc=exc))
+            err_resp = failure_response_from_completed(state["synthesizer_name"], exc, started_perf=s0)
+            result = SynthesisResult(response=err_resp, prompt="(synthesis stage timed out)")
+        except Exception as exc:
+            logger.error(
+                "Synthesis failed: provider=%s error_type=%s detail=%r",
+                state["synthesizer_name"],
+                type(exc).__name__,
+                exc,
+            )
+            err_ev.append(run_error_record(stage="synthesis", provider=state["synthesizer_name"], exc=exc))
+            err_resp = failure_response_from_completed(state["synthesizer_name"], exc, started_perf=s0)
+            result = SynthesisResult(
+                response=err_resp,
+                prompt=f"(synthesis exception: {type(exc).__name__})",
+            )
         syn_wall = time.perf_counter() - s0
-        text = result.response.text
+        _, failed_only = partition_provider_responses(resp_map)
+        if result.response.model == "error:AllProvidersFailed":
+            err_ev.append(
+                {
+                    "stage": "synthesis",
+                    "provider": state["synthesizer_name"],
+                    "error_type": "AllProvidersFailed",
+                    "detail": f"excluded_failed_providers={sorted(failed_only)}",
+                }
+            )
+        text = format_synthesis_artifact_markdown(synthesis=result, responses=resp_map)
         iter_dir = out / "iterations"
         (iter_dir / f"iteration_{round_idx + 1}_synthesis.md").write_text(text + "\n", encoding="utf-8")
-        return {
-            "synthesis_history": [text],
+        out_update: dict[str, Any] = {
+            "synthesis_history": [result.response.text],
             "timing_events": [{"iteration": it_no, "synthesis_wall_s": syn_wall}],
         }
+        if err_ev:
+            out_update["error_events"] = err_ev
+        return out_update
 
     async def verify(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
@@ -319,18 +383,48 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         verifier = registry.create(state["verifier_name"])
         vmt = int(state.get("verifier_max_output_tokens", 1536))
         timeout_v = float(state.get("request_timeout_s", 180.0))
+        retry_max = int(state.get("retry_max_attempts", 3))
+        retry_base = float(state.get("retry_base_delay_s", 2.0))
         v0 = time.perf_counter()
         it_no = round_idx + 1
+        err_ev: list[dict[str, Any]] = []
+
+        async def _v_attempt() -> ProviderResponse:
+            return await verifier.generate(
+                prompt,
+                enable_web_search=state["enable_web_search"],
+                max_output_tokens=vmt,
+            )
+
         try:
             resp = await asyncio.wait_for(
-                verifier.generate(
-                    prompt,
-                    enable_web_search=state["enable_web_search"],
-                    max_output_tokens=vmt,
+                async_retry_call(
+                    _v_attempt,
+                    provider=state["verifier_name"],
+                    max_attempts=retry_max,
+                    base_delay_s=retry_base,
                 ),
                 timeout=timeout_v,
             )
+        except asyncio.CancelledError:
+            raise
         except TimeoutError as exc:
+            logger.error(
+                "Verification failed: provider=%s error_type=%s detail=%r",
+                state["verifier_name"],
+                type(exc).__name__,
+                exc,
+            )
+            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
+            resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
+        except Exception as exc:
+            logger.error(
+                "Verification failed: provider=%s error_type=%s detail=%r",
+                state["verifier_name"],
+                type(exc).__name__,
+                exc,
+            )
+            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         ver_wall = time.perf_counter() - v0
         data = _parse_verifier_json(resp.text)
@@ -338,10 +432,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         (iter_dir / f"iteration_{round_idx + 1}_verify.md").write_text(
             json.dumps(data, indent=2) + "\n", encoding="utf-8"
         )
-        return {
+        out_v: dict[str, Any] = {
             "verification_history": [data],
             "timing_events": [{"iteration": it_no, "verify_wall_s": ver_wall}],
         }
+        if err_ev:
+            out_v["error_events"] = err_ev
+        return out_v
 
     def route(state: RefinementState) -> Command[Any]:
         syn = state["synthesis_history"][-1]
@@ -405,6 +502,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             else {}
         )
         meta["timing"] = timing_summary
+        prior_errs = meta.get("errors")
+        if not isinstance(prior_errs, list):
+            prior_errs = []
+        merged_errs: list[Any] = list(prior_errs) + list(state.get("error_events", []))
+        meta["errors"] = merged_errs
         run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         logger.info("Iterative wall-clock timing summary: %s", timing_summary)
 
@@ -462,6 +564,10 @@ def build_initial_refinement_state(
         "verifier_max_output_tokens": cfg.verifier_max_output_tokens,
         "request_timeout_s": float(cfg.request_timeout_s),
         "timing_events": [],
+        "error_events": [],
+        "retry_max_attempts": cfg.retry_max_attempts,
+        "retry_base_delay_s": float(cfg.retry_base_delay_s),
+        "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
         "synthesizer_name": cfg.synthesizer,
         "verifier_name": "anthropic",
         "output_dir": str(output_dir.resolve()),
