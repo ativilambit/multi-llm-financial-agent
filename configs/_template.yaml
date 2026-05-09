@@ -73,7 +73,7 @@ providers:
 # Object form (recommended for synthesis-only overrides):
 synthesizer:
   name: gemini
-  model: gemini-2.5-pro
+  model: gemini-3.1-pro-preview
   web_search: true
   request_timeout_s: 240
 

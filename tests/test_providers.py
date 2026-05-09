@@ -11,7 +11,7 @@ import pytest
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, ephemeral_cache_control
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
-from equity_analyst.providers.gemini_provider import GeminiProvider
+from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL, GeminiProvider
 from equity_analyst.providers.grok_provider import XAI_BASE_URL, GrokProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 
@@ -371,6 +371,16 @@ class _FakeGeminiAio:
 class _FakeGeminiClient:
     def __init__(self) -> None:
         self.aio = _FakeGeminiAio()
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_default_model_is_latest_pro() -> None:
+    fake = _FakeGeminiClient()
+    p = GeminiProvider(client=fake)  # type: ignore[arg-type]
+    resp = await p.generate("hello", enable_web_search=False)
+
+    assert resp.model == DEFAULT_GEMINI_MODEL
+    assert fake.aio.models.last_model == DEFAULT_GEMINI_MODEL
 
 
 @pytest.mark.asyncio

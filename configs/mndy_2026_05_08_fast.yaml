@@ -47,5 +47,6 @@ providers:
     request_timeout_s: 180
 synthesizer:
   name: gemini
+  model: gemini-3.1-pro-preview
   web_search: false         # synthesis from the three answers, no extra search
   request_timeout_s: 180

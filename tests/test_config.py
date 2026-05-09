@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
+from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL
 
 
 def test_providers_object_form_and_defaults() -> None:
@@ -243,3 +244,11 @@ def test_mndy_fast_config_hybrid_web_search_and_shared_fields_match_standard() -
     assert by_name["grok"].web_search is False
     assert by_name["openai"].web_search is True
     assert fast_cfg.synthesizer.web_search is False
+
+
+def test_mndy_configs_use_latest_gemini_pro_synthesizer() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    for filename in ("mndy_2026_05_08.yaml", "mndy_2026_05_08_fast.yaml"):
+        cfg = load_config(str(repo / "configs" / filename))
+        assert cfg.synthesizer.name == "gemini"
+        assert cfg.synthesizer.model == DEFAULT_GEMINI_MODEL

@@ -15,6 +15,7 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 _FLASH_MIN_CACHE_TOKENS = 1024
 _PRO_MIN_CACHE_TOKENS = 4096
 
@@ -35,7 +36,7 @@ class GeminiProvider(LLMProvider):
     def __init__(
         self,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = DEFAULT_GEMINI_MODEL,
         client: Any | None = None,
         cache_index: GeminiCacheIndex | None = None,
         cache_ttl_s: int = 3600,

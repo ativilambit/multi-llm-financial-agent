@@ -5,11 +5,19 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from equity_analyst.gemini_cache import CacheEntry, GeminiCacheIndex, prefix_sha256
+from equity_analyst.providers.gemini_provider import gemini_explicit_cache_min_input_tokens
 
 
 def test_prefix_sha256_stable() -> None:
     assert prefix_sha256("hello") == prefix_sha256("hello")
     assert prefix_sha256("hello") != prefix_sha256("hello ")
+
+
+def test_gemini_cache_minimums_route_by_model_family() -> None:
+    assert gemini_explicit_cache_min_input_tokens("gemini-3.1-pro-preview") == 4096
+    assert gemini_explicit_cache_min_input_tokens("gemini-3-flash-preview") == 1024
+    assert gemini_explicit_cache_min_input_tokens("gemini-2.5-pro") == 4096
+    assert gemini_explicit_cache_min_input_tokens("gemini-2.5-flash") == 1024
 
 
 def test_index_store_lookup(tmp_path: Path) -> None:
