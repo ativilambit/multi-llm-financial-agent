@@ -19,7 +19,7 @@ target_dates:
 next_trading_day: "Tues May 12"
 followup_open_date: "Mon May 18"
 
-historical_quarters: 11
+historical_quarters: 6
 short_interest_lookbacks:
   - "last two months back"
   - "last month"

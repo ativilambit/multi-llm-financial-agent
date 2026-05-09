@@ -25,7 +25,7 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
             "target_dates": ["Mon May 11", "Fri May 15", "Fri May 22", "Fri May 29", "Fri Jun 5"],
             "next_trading_day": "Tues May 12",
             "followup_open_date": "Mon May 18",
-            "historical_quarters": 11,
+            "historical_quarters": 6,
             "short_interest_lookbacks": ["last two months back", "last month", "last week", "yesterday", "today"],
             "providers": ["anthropic", "openai"],
             "synthesizer": "anthropic",
