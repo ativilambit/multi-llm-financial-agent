@@ -36,8 +36,13 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     rendered = render_prompt(cfg, prompt_path)
     text = rendered.text
 
-    for i in range(1, 14):
+    for i in range(1, 12):
         assert f"{i}." in text
+    assert "12." not in text
+    assert "13." not in text
+    assert "Evaluate other prompts" not in text
+    assert "Suggest additional prompts" not in text
+    assert "\n5. Also, what were all the relevant short interest" in text
 
     assert "{{" not in text
     assert "MNDY" in text
