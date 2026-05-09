@@ -103,6 +103,27 @@ def test_synthesizer_string_and_object_form() -> None:
     assert c2.synthesizer.request_timeout_s == 240
 
 
+def test_default_synthesizer_max_output_tokens() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+        }
+    )
+    assert cfg.synthesizer_max_output_tokens == 24_000
+    assert cfg.max_output_tokens == 4096
+    assert cfg.synthesizer_max_output_tokens != cfg.max_output_tokens
+
+
 def test_default_synthesizer_is_gemini() -> None:
     cfg = RunConfig.model_validate(
         {

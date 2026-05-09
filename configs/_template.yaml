@@ -74,6 +74,10 @@ synthesizer:
   request_timeout_s: 240
 
 # Optional tuning (defaults shown):
+# max_output_tokens: 4096
+#   — completion budget for each fan-out provider (parallel answers).
+# synthesizer_max_output_tokens: 24000
+#   — much larger than max_output_tokens: synthesis must reconcile all providers across 13 sections.
 # retry_max_attempts: 3
 # retry_base_delay_s: 2.0
 # synthesizer_max_input_tokens: 20000

@@ -81,6 +81,7 @@ class RunConfig(BaseModel):
     max_output_tokens: int = Field(default=4096, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
     verifier_max_output_tokens: int = Field(default=1536, ge=256, le=32_768)
+    synthesizer_max_output_tokens: int = Field(default=24_000, ge=1024, le=128_000)
 
     retry_max_attempts: int = Field(default=3, ge=1, le=20)
     retry_base_delay_s: float = Field(default=2.0, gt=0, le=120.0)

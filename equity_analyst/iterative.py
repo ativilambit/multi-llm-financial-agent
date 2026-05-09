@@ -167,6 +167,7 @@ class RefinementState(TypedDict, total=False):
     provider_configs: list[dict[str, Any]]
     max_output_tokens: int
     verifier_max_output_tokens: int
+    synthesizer_max_output_tokens: int
     request_timeout_s: float
     retry_max_attempts: int
     retry_base_delay_s: float
@@ -302,7 +303,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         resp_map: dict[str, ProviderResponse] = {k: _dict_to_response(v) for k, v in raw.items()}
         synth_backend = registry.create(syn_cfg.name, model=syn_cfg.model)
         syn = Synthesizer(synth_backend)
-        mot = int(state.get("max_output_tokens", 4096))
+        synth_mot = int(state.get("synthesizer_max_output_tokens", 24_000))
         timeout_syn = (
             float(syn_cfg.request_timeout_s)
             if syn_cfg.request_timeout_s is not None
@@ -321,7 +322,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     original_prompt=state["original_prompt"],
                     responses=resp_map,
                     enable_web_search=syn_ws,
-                    max_output_tokens=mot,
+                    max_output_tokens=synth_mot,
                     synthesizer_max_input_tokens=syn_max_in,
                     retry_max_attempts=retry_max,
                     retry_base_delay_s=retry_base,
@@ -569,6 +570,7 @@ def build_initial_refinement_state(
         "provider_configs": [pc.model_dump() for pc in cfg.providers],
         "max_output_tokens": cfg.max_output_tokens,
         "verifier_max_output_tokens": cfg.verifier_max_output_tokens,
+        "synthesizer_max_output_tokens": cfg.synthesizer_max_output_tokens,
         "request_timeout_s": float(cfg.request_timeout_s),
         "timing_events": [],
         "error_events": [],

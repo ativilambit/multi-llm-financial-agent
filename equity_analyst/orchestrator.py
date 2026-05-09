@@ -224,7 +224,7 @@ class Orchestrator:
                     original_prompt=rendered.text,
                     responses=responses,
                     enable_web_search=syn_ws,
-                    max_output_tokens=self._config.max_output_tokens,
+                    max_output_tokens=self._config.synthesizer_max_output_tokens,
                     synthesizer_max_input_tokens=self._config.synthesizer_max_input_tokens,
                     retry_max_attempts=self._config.retry_max_attempts,
                     retry_base_delay_s=self._config.retry_base_delay_s,

@@ -448,3 +448,121 @@ async def test_yaml_model_override_passed_to_provider_registry(
     await orch.run_async(dry_run=False, enable_web_search=False)
     assert captured.get("model") == "custom-opus-from-yaml"
 
+
+class _RecordingMaxOut(LLMProvider):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.last_max_output_tokens: int | None = None
+
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
+        self.last_max_output_tokens = max_output_tokens
+        return ProviderResponse(
+            provider_name=self.name,
+            model="fake",
+            text="x",
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_gets_separate_max_output_tokens_from_fan_out(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    fan_a = _RecordingMaxOut("anthropic")
+    fan_b = _RecordingMaxOut("openai")
+    synth = _RecordingMaxOut("gemini")
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": ["anthropic", "openai"],
+            "synthesizer": "gemini",
+            "max_output_tokens": 4096,
+            "synthesizer_max_output_tokens": 24_000,
+        }
+    )
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: fan_a)
+        reg.register("openai", lambda **_: fan_b)
+        reg.register("gemini", lambda **_: synth)
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+    assert fan_a.last_max_output_tokens == 4096
+    assert fan_b.last_max_output_tokens == 4096
+    assert synth.last_max_output_tokens == 24_000
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_max_output_tokens_cli_override_applied(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    synth = _RecordingMaxOut("gemini")
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": ["anthropic", "openai"],
+            "synthesizer": "gemini",
+        }
+    ).model_copy(update={"synthesizer_max_output_tokens": 50_000})
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: synth)
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+    assert synth.last_max_output_tokens == 50_000
+

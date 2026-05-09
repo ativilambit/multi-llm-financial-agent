@@ -92,6 +92,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override RunConfig.synthesizer_max_input_tokens (default from YAML or 20000)",
     )
+    run.add_argument(
+        "--synthesizer-max-output-tokens",
+        type=int,
+        default=None,
+        help="Override RunConfig.synthesizer_max_output_tokens (default from YAML or 24000)",
+    )
 
     return parser
 
@@ -104,6 +110,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["retry_base_delay_s"] = args.retry_base_delay_s
     if args.synthesizer_max_input_tokens is not None:
         patch["synthesizer_max_input_tokens"] = args.synthesizer_max_input_tokens
+    if args.synthesizer_max_output_tokens is not None:
+        patch["synthesizer_max_output_tokens"] = args.synthesizer_max_output_tokens
     return cfg if not patch else cfg.model_copy(update=patch)
 
 

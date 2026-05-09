@@ -41,7 +41,7 @@ python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --no-web-sear
 
 The same flag works in iterative mode. Legacy aliases **`--enable-web-search` / `--no-enable-web-search`** still map to the same setting as `--web-search` / `--no-web-search`.
 
-YAML may set **per-provider** overrides: optional `model` (API model id for that backend), `web_search: true|false`, and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **4096**), and `verifier_max_output_tokens` (default **1536**, iterative verifier only).
+YAML may set **per-provider** overrides: optional `model` (API model id for that backend), `web_search: true|false`, and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **4096** for fan-out), `synthesizer_max_output_tokens` (default **24000** for the final synthesis pass — much larger because the synthesizer must cover every provider’s output across all 13 sections), and `verifier_max_output_tokens` (default **1536**, iterative verifier only).
 
 **Anthropic** defaults to **Opus** (`claude-opus-4-7` unless you set `model`), which has substantially higher input-token rate limits on the standard tier (on the order of **~500k** tokens per minute) than Sonnet (often around **~30k** tokens per minute). Override with `model` under `providers` if you need a different snapshot. See [Anthropic model IDs](https://docs.anthropic.com/en/docs/about-claude/models/model-ids-and-versions).
 
@@ -50,6 +50,7 @@ YAML may set **per-provider** overrides: optional `model` (API model id for that
 ```yaml
 request_timeout_s: 180
 max_output_tokens: 4096
+synthesizer_max_output_tokens: 24000
 verifier_max_output_tokens: 1536
 providers:
   - name: anthropic
