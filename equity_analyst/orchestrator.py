@@ -29,6 +29,8 @@ def _provider_output_filename(provider_name: str) -> str:
         return "openai.md"
     if provider_name == "gemini":
         return "gemini.md"
+    if provider_name == "grok":
+        return "grok.md"
     return f"{provider_name}.md"
 
 

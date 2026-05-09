@@ -8,7 +8,7 @@
 # - target_dates: List of dates referenced in the prompt
 # - next_trading_day: Next trading day after earnings
 # - followup_open_date: A later follow-up open date referenced in the prompt
-# - providers: Which provider backends to run in parallel (e.g. "anthropic", "openai", "gemini")
+# - providers: Which provider backends to run in parallel (e.g. "anthropic", "openai", "gemini", "grok")
 # - synthesizer: Which provider to use for consensus synthesis
 #
 # Optional:
@@ -45,6 +45,6 @@ short_interest_lookbacks:
   - "yesterday"
   - "today"
 
-providers: ["anthropic", "openai", "gemini"]
+providers: ["anthropic", "openai", "gemini", "grok"]
 synthesizer: "anthropic"
 

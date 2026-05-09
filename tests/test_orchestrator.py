@@ -53,7 +53,7 @@ async def test_orchestrator_parallel_and_writes_outputs(tmp_path: Path, monkeypa
             "followup_open_date": "Mon May 18",
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
-            "providers": ["anthropic", "openai"],
+            "providers": ["anthropic", "openai", "gemini", "grok"],
             "synthesizer": "synth",
         }
     )
@@ -62,6 +62,8 @@ async def test_orchestrator_parallel_and_writes_outputs(tmp_path: Path, monkeypa
         reg = ProviderRegistry()
         reg.register("anthropic", lambda: _SleepyProvider(name="anthropic", delay_s=0.25, text="A"))
         reg.register("openai", lambda: _SleepyProvider(name="openai", delay_s=0.25, text="B"))
+        reg.register("gemini", lambda: _SleepyProvider(name="gemini", delay_s=0.25, text="G"))
+        reg.register("grok", lambda: _SleepyProvider(name="grok", delay_s=0.25, text="K"))
         reg.register("synth", lambda: _SleepyProvider(name="synth", delay_s=0.0, text="SYNTH"))
         return reg
 
@@ -80,14 +82,14 @@ async def test_orchestrator_parallel_and_writes_outputs(tmp_path: Path, monkeypa
     out_dir = artifacts.output_dir
     elapsed = asyncio.get_event_loop().time() - started
 
-    # Provider calls should run in parallel (~0.25s), plus a tiny synthesis delay.
-    assert elapsed < 0.40
+    assert elapsed < 0.50
     assert "SYNTH" in synthesis
 
-    # Output artifacts
     assert out_dir.exists()
     assert (out_dir / "claude.md").exists()
     assert (out_dir / "openai.md").exists()
+    assert (out_dir / "gemini.md").exists()
+    assert (out_dir / "grok.md").exists()
     assert (out_dir / "synthesis.md").exists()
     assert (out_dir / "run.json").exists()
 

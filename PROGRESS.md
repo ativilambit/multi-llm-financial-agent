@@ -11,3 +11,9 @@
 [2026-05-09 04:00:38 UTC] Final dry-run successful (MNDY config, standard CLI).
 
 [2026-05-09 04:00:38 UTC] Commit done: feat: complete MVP with Anthropic + OpenAI providers and synthesizer.
+
+[2026-05-09 04:01:49 UTC] Gemini provider scaffolded (google-genai, registry, configs, .env.example).
+
+[2026-05-09 04:01:49 UTC] Gemini provider tested and passing (test_gemini_provider_assembles_request_and_parses_usage).
+
+[2026-05-09 04:01:49 UTC] Commit done: feat: add Gemini provider with Google Search grounding.

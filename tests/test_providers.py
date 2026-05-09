@@ -7,6 +7,7 @@ import pytest
 
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.gemini_provider import GeminiProvider
+from equity_analyst.providers.grok_provider import XAI_BASE_URL, GrokProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 
 
@@ -173,3 +174,34 @@ async def test_gemini_provider_assembles_request_and_parses_usage() -> None:
     resp2 = await p.generate("hi", enable_web_search=False)
     assert resp2.text == "gemini-answer"
     assert m.last_config is None
+
+
+def test_grok_provider_uses_xai_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def _ctor(**kwargs: Any) -> _FakeOpenAIClient:
+        captured.update(kwargs)
+        return _FakeOpenAIClient()
+
+    monkeypatch.setattr("equity_analyst.providers.grok_provider.AsyncOpenAI", _ctor)
+    GrokProvider(model="grok-4.3")
+    assert captured.get("base_url") == XAI_BASE_URL
+
+
+@pytest.mark.asyncio
+async def test_grok_provider_assembles_request_and_parses_usage() -> None:
+    fake = _FakeOpenAIClient()
+    p = GrokProvider(model="grok-4.3", client=fake)  # type: ignore[arg-type]
+    resp = await p.generate("hello", enable_web_search=True)
+
+    assert resp.text == "openai-answer"
+    assert resp.usage.input_tokens == 3
+    assert fake.responses.last_kwargs is not None
+    assert fake.responses.last_kwargs["model"] == "grok-4.3"
+    assert fake.responses.last_kwargs["input"] == "hello"
+    tools = fake.responses.last_kwargs.get("tools") or []
+    assert {"type": "web_search"} in tools
+
+    await p.generate("hi", enable_web_search=False)
+    assert fake.responses.last_kwargs is not None
+    assert fake.responses.last_kwargs.get("tools") in (None, [])
