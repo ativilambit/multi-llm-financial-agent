@@ -252,3 +252,27 @@ def test_mndy_configs_use_latest_gemini_pro_synthesizer() -> None:
         cfg = load_config(str(repo / "configs" / filename))
         assert cfg.synthesizer.name == "gemini"
         assert cfg.synthesizer.model == DEFAULT_GEMINI_MODEL
+
+
+GEMINI_FAN_OUT_FLASH_MODEL = "gemini-3-flash-preview"
+
+
+def test_mndy_standard_config_has_four_fan_out_providers_with_gemini_flash() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    cfg = load_config(str(repo / "configs" / "mndy_2026_05_08.yaml"))
+    names = [p.name for p in cfg.providers]
+    assert names == ["anthropic", "openai", "grok", "gemini"]
+    by_name = {p.name: p for p in cfg.providers}
+    assert by_name["gemini"].model == GEMINI_FAN_OUT_FLASH_MODEL
+    assert by_name["gemini"].request_timeout_s == 600
+
+
+def test_mndy_fast_config_has_four_fan_out_providers_with_gemini_flash() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    cfg = load_config(str(repo / "configs" / "mndy_2026_05_08_fast.yaml"))
+    names = [p.name for p in cfg.providers]
+    assert names == ["anthropic", "openai", "grok", "gemini"]
+    by_name = {p.name: p for p in cfg.providers}
+    assert by_name["gemini"].model == GEMINI_FAN_OUT_FLASH_MODEL
+    assert by_name["gemini"].web_search is False
+    assert by_name["gemini"].request_timeout_s == 180

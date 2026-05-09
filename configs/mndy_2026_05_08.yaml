@@ -35,6 +35,9 @@ providers:
     request_timeout_s: 600
   - name: grok
     request_timeout_s: 600
+  - name: gemini
+    model: gemini-3-flash-preview
+    request_timeout_s: 600
 synthesizer:
   name: gemini
   model: gemini-3.1-pro-preview

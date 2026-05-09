@@ -1,7 +1,7 @@
 # Hybrid fast config for MNDY:
 #   - OpenAI does deep web_search (grounded, slow ~3-5 min)
-#   - Anthropic + Grok reason from priors (fast ~10-30s each)
-#   - Synthesizer compares all three without extra search
+#   - Anthropic + Grok + Gemini Flash reason from priors (fast ~10-30s each)
+#   - Synthesizer compares all four without extra search
 # Total wall-clock: ~3-5 min vs ~5-8 min for the full-search config.
 # Use this for faster iteration; use mndy_2026_05_08.yaml for highest-quality grounded runs.
 
@@ -45,8 +45,12 @@ providers:
   - name: grok
     web_search: false       # fast reasoner
     request_timeout_s: 180
+  - name: gemini
+    model: gemini-3-flash-preview
+    web_search: false       # fast reasoner
+    request_timeout_s: 180
 synthesizer:
   name: gemini
   model: gemini-3.1-pro-preview
-  web_search: false         # synthesis from the three answers, no extra search
+  web_search: false         # synthesis from the four answers, no extra search
   request_timeout_s: 180

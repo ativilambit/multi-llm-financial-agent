@@ -25,8 +25,8 @@ Stock-specific YAML lives under `configs/`. Copy either file as a starting point
 
 | File | Use case |
 |------|----------|
-| `configs/mndy_2026_05_08.yaml` | Default MNDY run: all three fan-out providers use long timeouts; web search follows each provider’s default (typically on). Best for highest-quality grounded research. |
-| `configs/mndy_2026_05_08_fast.yaml` | Hybrid speed: **OpenAI** alone runs deep `web_search`; **Anthropic** and **Grok** reason without search; **Gemini** synthesizer has no extra search. Shorter wall-clock for iteration. |
+| `configs/mndy_2026_05_08.yaml` | Default MNDY run: all four fan-out providers (**Anthropic**, **OpenAI**, **Grok**, **Gemini Flash**) use long timeouts; web search follows each provider’s default (typically on). **Synthesis** runs on **Gemini 3.1 Pro Preview**. Best for highest-quality grounded research. |
+| `configs/mndy_2026_05_08_fast.yaml` | Hybrid speed: **OpenAI** alone runs deep `web_search`; **Anthropic**, **Grok**, and **Gemini Flash** reason without search; **Gemini 3.1 Pro Preview** synthesizer has no extra search. Shorter wall-clock for iteration. |
 
 ## Standard mode
 
@@ -68,7 +68,8 @@ When **`prompt_cache_enabled`** is true and **Gemini** is in the fan-out provide
 - **TTL:** set **`gemini_cache_ttl_s`** on `RunConfig` (default **3600**, allowed range **60–86400** seconds). Storage is billed for how long the cache lives; short TTLs avoid paying for unused cache time.
 - **Disable:** same as Anthropic—`--no-prompt-cache` or `prompt_cache_enabled: false` turns off Gemini explicit caching as well.
 - **Logs:** `equity_analyst.providers.gemini_provider` emits **`Gemini cache hit`** / **`Gemini cache miss creating new entry`** at **INFO** when caching applies.
-- **Minimum size:** Gemini enforces a **model-dependent** minimum token count for context caching (see the [Context caching](https://ai.google.dev/gemini-api/docs/caching) doc table—for **Gemini 2.5 Flash** this is **1024** tokens; for **Gemini 2.5 Pro**, **4096**). Smaller personas skip caching and use the normal uncached request path.
+- **Minimum size:** Gemini enforces a **model-dependent** minimum token count for context caching (see the [Context caching](https://ai.google.dev/gemini-api/docs/caching) doc table—**Gemini 3 Flash Preview** and **Gemini 2.5 Flash** require **1024** tokens; **Gemini 3.1 Pro Preview** and **Gemini 2.5 Pro** require **4096**). Smaller personas skip caching and use the normal uncached request path.
+- **Choosing the fan-out Gemini model:** the MNDY configs use **`gemini-3-flash-preview`** for fan-out (lower caching threshold, cheaper, fast reasoner) and reserve **`gemini-3.1-pro-preview`** for synthesis (where the much larger synthesizer system prompt easily clears the 4,096-token Pro minimum). If you put Pro in the fan-out list with a small persona, the per-request cache will silently skip and you'll pay full input price each call.
 
 YAML may set **per-provider** overrides: optional `model` (API model id for that backend), optional **`max_output_tokens`** (completion budget for that fan-out provider only; falls back to global `max_output_tokens`), `web_search: true|false`, and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **16000** for fan-out — each parallel provider gets this unless overridden per provider), `synthesizer_max_output_tokens` (default **24000** for the final synthesis pass — larger because the synthesizer must weave every provider’s output across all 13 sections), and `verifier_max_output_tokens` (default **1536**, iterative verifier only). **OpenAI** long web-search runs use the **streaming** Responses API so the HTTP connection stays alive across multi-minute tool loops; if you still hit `asyncio` timeout errors, raise **`request_timeout_s`** globally or on specific providers (for example `900` or `1500` seconds on `openai`).
 
@@ -78,7 +79,7 @@ Default fan-out budget is **16,000** tokens per provider. For a 13-section deep-
 
 **OpenAI** uses the **streaming** Responses API (`stream=True`) for all fan-out calls so long web-search tool loops stay connected instead of timing out on a single blocking HTTP response.
 
-**Synthesizer** defaults to **Gemini** so synthesis runs on a different provider than typical Anthropic fan-out, which avoids stacking the same provider’s rate limits on both parallel answers and the long synthesis prompt. Configure it as a string (`synthesizer: gemini`) or as an object with `name`, optional `model`, optional `web_search`, and optional `request_timeout_s`.
+**Synthesizer** defaults to **Gemini** (`gemini-3.1-pro-preview` per `GeminiProvider.DEFAULT_GEMINI_MODEL`) so synthesis runs on a different model than typical Anthropic fan-out, which avoids stacking the same provider’s rate limits on both parallel answers and the long synthesis prompt. Configure it as a string (`synthesizer: gemini`) or as an object with `name`, optional `model`, optional `web_search`, and optional `request_timeout_s`.
 
 ```yaml
 request_timeout_s: 180
@@ -93,11 +94,14 @@ providers:
   - name: openai
     model: gpt-5.5
     web_search: false
+  - name: grok
+    max_output_tokens: 12000
   - name: gemini
+    model: gemini-3-flash-preview
     request_timeout_s: 120
 synthesizer:
   name: gemini
-  model: gemini-2.5-pro
+  model: gemini-3.1-pro-preview
   web_search: true
   request_timeout_s: 240
 ```

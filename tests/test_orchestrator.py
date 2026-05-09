@@ -12,7 +12,9 @@ import pytest
 
 from equity_analyst.config import RunConfig
 from equity_analyst.orchestrator import Orchestrator
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.providers.base import LLMProvider
+from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -623,6 +625,155 @@ async def test_fan_out_per_provider_max_output_tokens_override(
     assert rec_a.last_max_output_tokens == 24_000
     assert rec_o.last_max_output_tokens == 8888
     assert rec_g.last_max_output_tokens == 12_000
+
+
+class _RecordingGeminiFanOut(GeminiProvider):
+    """Real GeminiProvider subclass so orchestrator's isinstance check fires; records generate kwargs."""
+
+    name = "gemini"
+
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, Any] | None = None
+
+    async def generate(  # type: ignore[override]
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        cacheable_prefix: str | None = None,
+        user_message_for_cache: str | None = None,
+    ) -> ProviderResponse:
+        self.last_kwargs = {
+            "prompt": prompt,
+            "enable_web_search": enable_web_search,
+            "max_output_tokens": max_output_tokens,
+            "cacheable_prefix": cacheable_prefix,
+            "user_message_for_cache": user_message_for_cache,
+        }
+        return ProviderResponse(
+            provider_name="gemini",
+            model="gemini-3-flash-preview",
+            text="G",
+            usage=ProviderUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            raw=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_fan_out_gemini_receives_cacheable_prefix_when_caching_enabled(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    fan_gem = _RecordingGeminiFanOut()
+    synth_gem = _RecordingGeminiFanOut()
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": [
+                {"name": "anthropic"},
+                {"name": "openai"},
+                {"name": "grok"},
+                {"name": "gemini", "model": "gemini-3-flash-preview"},
+            ],
+            "synthesizer": "gemini",
+            "prompt_cache_enabled": True,
+        }
+    )
+
+    gemini_calls = iter([fan_gem, synth_gem])
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("grok", lambda **_: _SleepyProvider(name="grok", delay_s=0.0, text="K"))
+        reg.register("gemini", lambda **_: next(gemini_calls))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+
+    assert fan_gem.last_kwargs is not None
+    assert fan_gem.last_kwargs["cacheable_prefix"] == EQUITY_ANALYST_SYSTEM_PROMPT
+    assert fan_gem.last_kwargs["user_message_for_cache"] is not None
+    assert EQUITY_ANALYST_SYSTEM_PROMPT not in fan_gem.last_kwargs["user_message_for_cache"]
+
+
+@pytest.mark.asyncio
+async def test_fan_out_gemini_skips_cacheable_prefix_when_caching_disabled(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    fan_gem = _RecordingGeminiFanOut()
+    synth_gem = _RecordingGeminiFanOut()
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": [
+                {"name": "openai"},
+                {"name": "gemini", "model": "gemini-3-flash-preview"},
+            ],
+            "synthesizer": "gemini",
+            "prompt_cache_enabled": False,
+        }
+    )
+
+    gemini_calls = iter([fan_gem, synth_gem])
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: next(gemini_calls))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+
+    assert fan_gem.last_kwargs is not None
+    assert fan_gem.last_kwargs["cacheable_prefix"] is None
 
 
 @pytest.mark.asyncio
