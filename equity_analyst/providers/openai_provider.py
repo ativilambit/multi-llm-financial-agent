@@ -13,6 +13,34 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 logger = logging.getLogger(__name__)
 
 
+def _text_from_response_output(resp: Any) -> str:
+    text_parts: list[str] = []
+    for item in getattr(resp, "output", []) or []:
+        if getattr(item, "type", None) == "message":
+            for c in getattr(item, "content", []) or []:
+                if getattr(c, "type", None) in {"output_text", "text"} and getattr(c, "text", None):
+                    text_parts.append(str(c.text))
+    return "\n".join([t for t in text_parts if t]).strip()
+
+
+async def _consume_responses_stream(stream: Any) -> tuple[str, Any | None]:
+    """Read an AsyncStream of ResponseStreamEvent; return (text, final Response or None)."""
+    text_chunks: list[str] = []
+    final: Any | None = None
+    async for event in stream:
+        et = getattr(event, "type", None)
+        if et == "response.output_text.delta":
+            delta = getattr(event, "delta", None)
+            if delta:
+                text_chunks.append(str(delta))
+        elif et == "response.completed":
+            final = getattr(event, "response", None)
+    text = "".join(text_chunks).strip()
+    if not text and final is not None:
+        text = _text_from_response_output(final)
+    return text, final
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
@@ -28,7 +56,7 @@ class OpenAIProvider(LLMProvider):
         max_output_tokens: int | None = None,
     ) -> ProviderResponse:
         start = time.perf_counter()
-        create_kwargs: dict[str, Any] = {"model": self._model, "input": prompt}
+        create_kwargs: dict[str, Any] = {"model": self._model, "input": prompt, "stream": True}
         if max_output_tokens is not None:
             create_kwargs["max_output_tokens"] = max_output_tokens
         if enable_web_search:
@@ -41,19 +69,10 @@ class OpenAIProvider(LLMProvider):
             len(create_kwargs.get("tools", []) or []),
         )
         logger.info("Calling provider %s", self.name)
-        resp = await self._client.responses.create(**create_kwargs)
+        stream = await self._client.responses.create(**create_kwargs)
+        text, resp = await _consume_responses_stream(stream)
 
-        text_parts: list[str] = []
-        for item in getattr(resp, "output", []) or []:
-            if getattr(item, "type", None) == "message":
-                for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", None) in {"output_text", "text"} and getattr(
-                        c, "text", None
-                    ):
-                        text_parts.append(str(c.text))
-        text = "\n".join([t for t in text_parts if t]).strip()
-
-        usage_obj = getattr(resp, "usage", None)
+        usage_obj = getattr(resp, "usage", None) if resp is not None else None
         usage = ProviderUsage(
             input_tokens=getattr(usage_obj, "input_tokens", None),
             output_tokens=getattr(usage_obj, "output_tokens", None),

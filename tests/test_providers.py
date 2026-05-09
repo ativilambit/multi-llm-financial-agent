@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -102,12 +103,42 @@ class _OpenAIResp:
     usage: Any
 
 
+class _FakeOpenAIStream:
+    """Minimal async iterator mimicking AsyncStream[ResponseStreamEvent]."""
+
+    def __init__(self, *, final: _OpenAIResp) -> None:
+        self._events: list[Any] = [
+            SimpleNamespace(type="response.output_text.delta", delta="openai-"),
+            SimpleNamespace(type="response.output_text.delta", delta="answer"),
+            SimpleNamespace(type="response.completed", response=final),
+        ]
+        self._idx = 0
+
+    def __aiter__(self) -> _FakeOpenAIStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._idx >= len(self._events):
+            raise StopAsyncIteration
+        ev = self._events[self._idx]
+        self._idx += 1
+        return ev
+
+
 class _FakeOpenAIResponses:
     def __init__(self) -> None:
         self.last_kwargs: dict[str, Any] | None = None
+        self.stream_invoked = False
 
     async def create(self, **kwargs: Any) -> Any:
         self.last_kwargs = kwargs
+        if kwargs.get("stream"):
+            self.stream_invoked = True
+            final = _OpenAIResp(
+                output=[_OpenAIOutputMessage(content=[_OpenAIOutputContent()])],
+                usage=_OpenAIUsage(),
+            )
+            return _FakeOpenAIStream(final=final)
         return _OpenAIResp(
             output=[_OpenAIOutputMessage(content=[_OpenAIOutputContent()])],
             usage=_OpenAIUsage(),
@@ -142,6 +173,7 @@ async def test_openai_provider_assembles_request_and_parses_usage() -> None:
     p = OpenAIProvider(model="gpt-5.5", client=fake)  # type: ignore[arg-type]
     resp = await p.generate("hello", enable_web_search=True)
 
+    assert fake.responses.stream_invoked is True
     assert resp.text == "openai-answer"
     assert resp.usage.input_tokens == 3
     assert resp.usage.output_tokens == 4
@@ -149,6 +181,7 @@ async def test_openai_provider_assembles_request_and_parses_usage() -> None:
     assert fake.responses.last_kwargs is not None
     assert fake.responses.last_kwargs["model"] == "gpt-5.5"
     assert fake.responses.last_kwargs["input"] == "hello"
+    assert fake.responses.last_kwargs.get("stream") is True
     assert {"type": "web_search"} in (fake.responses.last_kwargs["tools"] or [])
 
 
