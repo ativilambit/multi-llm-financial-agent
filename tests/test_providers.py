@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
@@ -95,10 +95,16 @@ class _OpenAIOutputMessage:
 
 
 @dataclass
+class _OpenAIInputTokenDetails:
+    cached_tokens: int = 512
+
+
+@dataclass
 class _OpenAIUsage:
     input_tokens: int = 3
     output_tokens: int = 4
     total_tokens: int = 7
+    input_tokens_details: Any = field(default_factory=_OpenAIInputTokenDetails)
 
 
 @dataclass
@@ -262,6 +268,17 @@ async def test_anthropic_provider_assembles_request_and_parses_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_cache_stats_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    fake = _FakeOpenAIClient()
+    p = OpenAIProvider(model="gpt-5.5", client=fake)  # type: ignore[arg-type]
+    await p.generate("hello", enable_web_search=True)
+
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "OpenAI cache stats cache_read=512 input=3 output=4" in logged
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_assembles_request_and_parses_usage() -> None:
     fake = _FakeOpenAIClient()
     p = OpenAIProvider(model="gpt-5.5", client=fake)  # type: ignore[arg-type]
@@ -349,6 +366,17 @@ def test_grok_provider_uses_xai_base_url(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr("equity_analyst.providers.grok_provider.AsyncOpenAI", _ctor)
     GrokProvider(model="grok-4.3")
     assert captured.get("base_url") == XAI_BASE_URL
+
+
+@pytest.mark.asyncio
+async def test_grok_cache_stats_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    fake = _FakeOpenAIClient()
+    p = GrokProvider(model="grok-4.3", client=fake)  # type: ignore[arg-type]
+    await p.generate("hello", enable_web_search=True)
+
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "Grok cache stats cache_read=512 input=3 output=4" in logged
 
 
 @pytest.mark.asyncio

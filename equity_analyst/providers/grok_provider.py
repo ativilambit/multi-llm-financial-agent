@@ -15,6 +15,27 @@ logger = logging.getLogger(__name__)
 XAI_BASE_URL = "https://api.x.ai/v1"
 
 
+def _prompt_cache_read_tokens(usage_obj: Any) -> int | None:
+    """Best-effort read of xAI/Grok prompt cache hits (OpenAI-compatible usage shape)."""
+    if usage_obj is None:
+        return None
+    for attr in ("cached_tokens", "input_tokens_cached"):
+        v = getattr(usage_obj, attr, None)
+        if v is not None:
+            return int(v)
+    itd = getattr(usage_obj, "input_tokens_details", None)
+    if itd is not None:
+        v = getattr(itd, "cached_tokens", None)
+        if v is not None:
+            return int(v)
+    ptd = getattr(usage_obj, "prompt_tokens_details", None)
+    if ptd is not None:
+        v = getattr(ptd, "cached_tokens", None)
+        if v is not None:
+            return int(v)
+    return None
+
+
 class GrokProvider(LLMProvider):
     name = "grok"
 
@@ -52,9 +73,7 @@ class GrokProvider(LLMProvider):
         for item in getattr(resp, "output", []) or []:
             if getattr(item, "type", None) == "message":
                 for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", None) in {"output_text", "text"} and getattr(
-                        c, "text", None
-                    ):
+                    if getattr(c, "type", None) in {"output_text", "text"} and getattr(c, "text", None):
                         text_parts.append(str(c.text))
         text = "\n".join([t for t in text_parts if t]).strip()
 
@@ -71,6 +90,18 @@ class GrokProvider(LLMProvider):
             self._model,
             latency_s,
         )
+        cache_read = _prompt_cache_read_tokens(usage_obj)
+        if cache_read is not None:
+            in_tok = getattr(usage_obj, "input_tokens", None)
+            out_tok = getattr(usage_obj, "output_tokens", None)
+            logger.info(
+                "Grok cache stats cache_read=%s input=%s output=%s latency_s=%.3f model=%s",
+                cache_read,
+                in_tok,
+                out_tok,
+                latency_s,
+                self._model,
+            )
         return ProviderResponse(
             provider_name=self.name,
             model=self._model,

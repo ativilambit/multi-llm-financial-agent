@@ -144,6 +144,10 @@ When the CLI writes a run under `outputs/<symbol>_<timestamp>/` (standard mode, 
 
 **Iterative `--dry-run`** does not create an output directory, so no `agent.log` is produced for that path; use stderr only or run without `--dry-run` to capture a file.
 
+### Caching
+
+OpenAI and Grok cache hits are logged automatically when present (`cache_read=<N>`). Caching is automatic for both providers — no setup required.
+
 ## Development checks
 
 ```bash

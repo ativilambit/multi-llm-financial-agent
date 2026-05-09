@@ -13,6 +13,27 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 logger = logging.getLogger(__name__)
 
 
+def _prompt_cache_read_tokens(usage_obj: Any) -> int | None:
+    """Best-effort read of provider-reported prompt cache hits from a usage object."""
+    if usage_obj is None:
+        return None
+    for attr in ("cached_tokens", "input_tokens_cached"):
+        v = getattr(usage_obj, attr, None)
+        if v is not None:
+            return int(v)
+    itd = getattr(usage_obj, "input_tokens_details", None)
+    if itd is not None:
+        v = getattr(itd, "cached_tokens", None)
+        if v is not None:
+            return int(v)
+    ptd = getattr(usage_obj, "prompt_tokens_details", None)
+    if ptd is not None:
+        v = getattr(ptd, "cached_tokens", None)
+        if v is not None:
+            return int(v)
+    return None
+
+
 def _text_from_response_output(resp: Any) -> str:
     text_parts: list[str] = []
     for item in getattr(resp, "output", []) or []:
@@ -85,6 +106,18 @@ class OpenAIProvider(LLMProvider):
             self._model,
             latency_s,
         )
+        cache_read = _prompt_cache_read_tokens(usage_obj)
+        if cache_read is not None:
+            in_tok = getattr(usage_obj, "input_tokens", None)
+            out_tok = getattr(usage_obj, "output_tokens", None)
+            logger.info(
+                "OpenAI cache stats cache_read=%s input=%s output=%s latency_s=%.3f model=%s",
+                cache_read,
+                in_tok,
+                out_tok,
+                latency_s,
+                self._model,
+            )
         return ProviderResponse(
             provider_name=self.name,
             model=self._model,
