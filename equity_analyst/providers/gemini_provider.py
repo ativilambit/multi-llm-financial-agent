@@ -21,13 +21,22 @@ class GeminiProvider(LLMProvider):
         self._model = model
         self._client = client or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+    ) -> ProviderResponse:
         start = time.perf_counter()
-        config: types.GenerateContentConfig | None = None
+        cfg_parts: dict[str, Any] = {}
         if enable_web_search:
-            config = types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            )
+            cfg_parts["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        if max_output_tokens is not None:
+            cfg_parts["max_output_tokens"] = max_output_tokens
+        config: types.GenerateContentConfig | None = (
+            types.GenerateContentConfig(**cfg_parts) if cfg_parts else None
+        )
         logger.debug(
             "Gemini request shape model=%s web_search=%s prompt_chars=%s",
             self._model,

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import operator
 import re
+import time
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -14,16 +17,23 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from equity_analyst.config import RunConfig
+from equity_analyst.config import ProviderConfig, RunConfig
+from equity_analyst.provider_runtime import (
+    effective_web_search,
+    failure_response,
+    failure_response_from_completed,
+)
 from equity_analyst.providers.registry import ProviderRegistry
-from equity_analyst.synthesizer import Synthesizer
+from equity_analyst.synthesizer import SynthesisResult, Synthesizer
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
 
-VERIFIER_INSTRUCTION = """You are a financial fact-checker. You receive a synthesis about an equity/options thesis.
+VERIFIER_INSTRUCTION = """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
+numerical and factual claims about an equity/options thesis (and lines mentioning low confidence).
 
-Use web search where helpful. Focus on numerical claims (PCR, analyst targets, historical post-earnings moves, short interest, price levels).
+Use web search only when needed to check those claims. Do not spend effort re-verifying narrative sections
+that are not represented in the excerpt.
 
 Reply with ONLY valid JSON (no markdown fences) in this exact shape:
 {"verified": ["string claims that check out"], "contradicted": ["string claims that conflict with sources"], "unverifiable": ["string claims that cannot be verified from available data"]}
@@ -47,6 +57,22 @@ def parse_overall_confidence(text: str) -> float | None:
     if v < 0.0 or v > 1.0:
         return None
     return v
+
+
+def _excerpt_for_verifier(synthesis: str, *, max_chars: int = 12000) -> str:
+    lines = synthesis.splitlines()
+    picked: list[str] = []
+    for line in lines:
+        low = line.lower()
+        if "confidence" in low and "low" in low:
+            picked.append(line)
+            continue
+        if any(ch.isdigit() for ch in line) or "$" in line or "%" in line or "pcr" in low:
+            picked.append(line)
+    body = "\n".join(picked) if picked else synthesis
+    if len(body) > max_chars:
+        body = body[:max_chars] + "\n...(truncated for verification scope)..."
+    return body
 
 
 def _response_to_dict(r: ProviderResponse) -> dict[str, Any]:
@@ -96,6 +122,33 @@ def _parse_verifier_json(text: str) -> dict[str, list[str]]:
     return out
 
 
+def merge_timing_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    acc: dict[int, dict[str, float]] = defaultdict(dict)
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        it = int(ev.get("iteration", 0))
+        for k in ("providers_parallel_wall_s", "synthesis_wall_s", "verify_wall_s"):
+            if k in ev and isinstance(ev[k], (int, float)):
+                acc[it][k] = float(ev[k])
+    rounds_out: dict[str, Any] = {}
+    total_seq = 0.0
+    for it in sorted(acc):
+        d = acc[it]
+        pw = d.get("providers_parallel_wall_s", 0.0)
+        sw = d.get("synthesis_wall_s", 0.0)
+        vw = d.get("verify_wall_s", 0.0)
+        seq = pw + sw + vw
+        total_seq += seq
+        rounds_out[str(it)] = {
+            "providers_parallel_wall_s": round(pw, 3),
+            "synthesis_wall_s": round(sw, 3),
+            "verify_wall_s": round(vw, 3),
+            "sequential_round_wall_s": round(seq, 3),
+        }
+    return {"iterations": rounds_out, "total_sequential_wall_s": round(total_seq, 3)}
+
+
 class RefinementState(TypedDict, total=False):
     symbol: str
     original_prompt: str
@@ -103,6 +156,10 @@ class RefinementState(TypedDict, total=False):
     confidence_threshold: float
     enable_web_search: bool
     providers: list[str]
+    provider_configs: list[dict[str, Any]]
+    max_output_tokens: int
+    verifier_max_output_tokens: int
+    request_timeout_s: float
     synthesizer_name: str
     verifier_name: str
     output_dir: str
@@ -110,6 +167,7 @@ class RefinementState(TypedDict, total=False):
     synthesis_history: Annotated[list[str], operator.add]
     verification_history: Annotated[list[dict[str, list[str]]], operator.add]
     followup_questions: Annotated[list[str], operator.add]
+    timing_events: Annotated[list[dict[str, Any]], operator.add]
     final_report: str
 
 
@@ -130,13 +188,63 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             str(out.resolve()),
         )
 
-        async def _one(name: str) -> ProviderResponse:
-            p = registry.create(name)
-            return await p.generate(body, enable_web_search=state["enable_web_search"])
+        pcs_raw = state.get("provider_configs")
+        if not pcs_raw:
+            pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
+        pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
+        cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
+        mot = int(state.get("max_output_tokens", 4096))
+        names = [pc.name for pc in pcs]
 
-        names = state["providers"]
-        res_list = await asyncio.gather(*[_one(n) for n in names])
-        responses: dict[str, ProviderResponse] = {r.provider_name: r for r in res_list}
+        async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
+            start = time.perf_counter()
+            while True:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=30.0)
+                    return
+                except TimeoutError:
+                    logger.info(
+                        "Still waiting on providers=%s (%ss elapsed)",
+                        provider_names,
+                        int(time.perf_counter() - start),
+                    )
+
+        async def _run_one(pc: ProviderConfig) -> ProviderResponse:
+            t0 = time.perf_counter()
+            p = registry.create(pc.name)
+            ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
+            to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+            try:
+                return await asyncio.wait_for(
+                    p.generate(body, enable_web_search=ws, max_output_tokens=mot),
+                    timeout=to,
+                )
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError as exc:
+                return failure_response_from_completed(pc.name, exc, started_perf=t0)
+
+        stop_hb = asyncio.Event()
+        hb = asyncio.create_task(_heartbeat(stop_hb, names))
+        batch_t0 = time.perf_counter()
+        try:
+            res_list = await asyncio.gather(*[_run_one(pc) for pc in pcs], return_exceptions=True)
+        finally:
+            stop_hb.set()
+            hb.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hb
+
+        responses: dict[str, ProviderResponse] = {}
+        for pc, item in zip(pcs, res_list, strict=True):
+            if isinstance(item, ProviderResponse):
+                responses[pc.name] = item
+            elif isinstance(item, Exception):
+                responses[pc.name] = failure_response(pc.name, item, latency_s=None)
+            else:
+                raise item
+
+        parallel_wall = time.perf_counter() - batch_t0
 
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +256,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         )
 
         ser = {"responses": {k: _response_to_dict(v) for k, v in responses.items()}}
-        return {"provider_responses": [ser]}
+        it_no = round_idx + 1
+        return {
+            "provider_responses": [ser],
+            "timing_events": [
+                {"iteration": it_no, "providers_parallel_wall_s": parallel_wall},
+            ],
+        }
 
     async def synthesize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
@@ -164,16 +278,31 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         resp_map: dict[str, ProviderResponse] = {k: _dict_to_response(v) for k, v in raw.items()}
         synth_backend = registry.create(state["synthesizer_name"])
         syn = Synthesizer(synth_backend)
-        result = await syn.synthesize(
-            original_prompt=state["original_prompt"],
-            responses=resp_map,
-            enable_web_search=state["enable_web_search"],
-        )
+        mot = int(state.get("max_output_tokens", 4096))
+        timeout_syn = float(state.get("request_timeout_s", 180.0))
+        s0 = time.perf_counter()
+        it_no = round_idx + 1
+        try:
+            result = await asyncio.wait_for(
+                syn.synthesize(
+                    original_prompt=state["original_prompt"],
+                    responses=resp_map,
+                    enable_web_search=state["enable_web_search"],
+                    max_output_tokens=mot,
+                ),
+                timeout=timeout_syn,
+            )
+        except TimeoutError as exc:
+            err = failure_response_from_completed(state["synthesizer_name"], exc, started_perf=s0)
+            result = SynthesisResult(response=err, prompt="(synthesis stage timed out)")
+        syn_wall = time.perf_counter() - s0
         text = result.response.text
-        round_idx = len(state.get("synthesis_history", []))
         iter_dir = out / "iterations"
         (iter_dir / f"iteration_{round_idx + 1}_synthesis.md").write_text(text + "\n", encoding="utf-8")
-        return {"synthesis_history": [text]}
+        return {
+            "synthesis_history": [text],
+            "timing_events": [{"iteration": it_no, "synthesis_wall_s": syn_wall}],
+        }
 
     async def verify(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
@@ -185,16 +314,34 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             state["verifier_name"],
         )
         syn = state["synthesis_history"][-1]
-        prompt = f"{VERIFIER_INSTRUCTION}\n\n### Synthesis\n{syn}"
+        focus = _excerpt_for_verifier(syn)
+        prompt = f"{VERIFIER_INSTRUCTION}\n\n### Synthesis excerpt\n{focus}\n"
         verifier = registry.create(state["verifier_name"])
-        resp = await verifier.generate(prompt, enable_web_search=state["enable_web_search"])
+        vmt = int(state.get("verifier_max_output_tokens", 1536))
+        timeout_v = float(state.get("request_timeout_s", 180.0))
+        v0 = time.perf_counter()
+        it_no = round_idx + 1
+        try:
+            resp = await asyncio.wait_for(
+                verifier.generate(
+                    prompt,
+                    enable_web_search=state["enable_web_search"],
+                    max_output_tokens=vmt,
+                ),
+                timeout=timeout_v,
+            )
+        except TimeoutError as exc:
+            resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
+        ver_wall = time.perf_counter() - v0
         data = _parse_verifier_json(resp.text)
-        round_idx = len(state.get("verification_history", []))
         iter_dir = out / "iterations"
         (iter_dir / f"iteration_{round_idx + 1}_verify.md").write_text(
             json.dumps(data, indent=2) + "\n", encoding="utf-8"
         )
-        return {"verification_history": [data]}
+        return {
+            "verification_history": [data],
+            "timing_events": [{"iteration": it_no, "verify_wall_s": ver_wall}],
+        }
 
     def route(state: RefinementState) -> Command[Any]:
         syn = state["synthesis_history"][-1]
@@ -249,6 +396,18 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             ver = state["verification_history"][i - 1] if i <= len(state["verification_history"]) else {}
             block = f"# Iteration {i}\n\n## Synthesis\n\n{syn}\n\n## Verification\n\n{json.dumps(ver, indent=2)}\n"
             (iter_dir / f"iteration_{i}.md").write_text(block, encoding="utf-8")
+
+        run_json = out / "run.json"
+        timing_summary = merge_timing_events(state.get("timing_events", []))
+        meta = (
+            json.loads(run_json.read_text(encoding="utf-8"))
+            if run_json.is_file()
+            else {}
+        )
+        meta["timing"] = timing_summary
+        run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        logger.info("Iterative wall-clock timing summary: %s", timing_summary)
+
         return {"final_report": report}
 
     return {
@@ -297,7 +456,12 @@ def build_initial_refinement_state(
         "max_iterations": 3,
         "confidence_threshold": 0.85,
         "enable_web_search": True,
-        "providers": list(cfg.providers),
+        "providers": cfg.provider_names(),
+        "provider_configs": [pc.model_dump() for pc in cfg.providers],
+        "max_output_tokens": cfg.max_output_tokens,
+        "verifier_max_output_tokens": cfg.verifier_max_output_tokens,
+        "request_timeout_s": float(cfg.request_timeout_s),
+        "timing_events": [],
         "synthesizer_name": cfg.synthesizer,
         "verifier_name": "anthropic",
         "output_dir": str(output_dir.resolve()),

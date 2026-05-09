@@ -97,7 +97,9 @@ async def test_anthropic_provider_assembles_request_and_parses_usage() -> None:
     assert fake.messages.last_kwargs is not None
     assert fake.messages.last_kwargs["model"] == "claude-3-5-sonnet-latest"
     assert fake.messages.last_kwargs["messages"][0]["content"] == "hello"
-    assert {"type": "web_search_20260209", "name": "web_search"} in (fake.messages.last_kwargs["tools"] or [])
+    assert {"type": "web_search_20260209", "name": "web_search"} in (
+        fake.messages.last_kwargs["tools"] or []
+    )
 
 
 @pytest.mark.asyncio

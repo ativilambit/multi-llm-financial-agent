@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +47,9 @@ class _Txt(LLMProvider):
         self.name = name
         self._text = text
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         return ProviderResponse(
             provider_name=self.name,
             model="m",
@@ -61,7 +64,9 @@ class _SynthCalls(LLMProvider):
         self.name = name
         self.calls = 0
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         self.calls += 1
         if self.calls <= 2:
             body = "low\nOVERALL_CONFIDENCE: 0.2\n"
@@ -81,7 +86,9 @@ class _VerCalls(LLMProvider):
         self.name = name
         self.calls = 0
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         self.calls += 1
         if self.calls == 1:
             payload = '{"verified":[],"contradicted":["numbers look off"],"unverifiable":[]}'
@@ -100,7 +107,9 @@ class _SynthLow(LLMProvider):
     def __init__(self, name: str) -> None:
         self.name = name
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         return ProviderResponse(
             provider_name=self.name,
             model="m",
@@ -114,7 +123,9 @@ class _VerBad(LLMProvider):
     def __init__(self, name: str) -> None:
         self.name = name
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         return ProviderResponse(
             provider_name=self.name,
             model="m",
@@ -129,13 +140,11 @@ class _SynthCheckpoint(LLMProvider):
         self.name = name
         self.calls = 0
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         self.calls += 1
-        body = (
-            "a\nOVERALL_CONFIDENCE: 0.1\n"
-            if self.calls < 2
-            else "b\nOVERALL_CONFIDENCE: 0.99\n"
-        )
+        body = "a\nOVERALL_CONFIDENCE: 0.1\n" if self.calls < 2 else "b\nOVERALL_CONFIDENCE: 0.99\n"
         return ProviderResponse(
             provider_name=self.name,
             model="m",
@@ -158,14 +167,24 @@ async def test_loop_converges_when_synthesis_high_confidence(tmp_path: Path) -> 
     reg = ProviderRegistry()
     reg.register("openai", lambda: _Txt("openai", "fan"))
     reg.register("synth", lambda: _Txt("synth", "ok\nOVERALL_CONFIDENCE: 0.95\n"))
-    reg.register("anthropic", lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
+    reg.register(
+        "anthropic",
+        lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
-    final = await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t1"}})
+    final = await app.ainvoke(
+        _initial_state(cfg, out), config={"configurable": {"thread_id": "t1"}}
+    )
     assert len(final["provider_responses"]) == 1
     assert (out / "synthesis.md").is_file()
+    run_json = out / "run.json"
+    assert run_json.is_file()
+    meta = json.loads(run_json.read_text(encoding="utf-8"))
+    assert "timing" in meta
+    assert "iterations" in meta["timing"]
 
 
 @pytest.mark.asyncio
@@ -174,12 +193,17 @@ async def test_loop_continues_on_low_confidence(tmp_path: Path) -> None:
     reg.register("openai", lambda: _Txt("openai", "fan"))
     synth = _SynthCalls("synth")
     reg.register("synth", lambda: synth)
-    reg.register("anthropic", lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
+    reg.register(
+        "anthropic",
+        lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
-    final = await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t2"}})
+    final = await app.ainvoke(
+        _initial_state(cfg, out), config={"configurable": {"thread_id": "t2"}}
+    )
     assert len(final["provider_responses"]) == 3
 
 
@@ -223,7 +247,10 @@ async def test_checkpoint_resume(tmp_path: Path) -> None:
     reg.register("openai", lambda: _Txt("openai", "fan"))
     synth_ck = _SynthCheckpoint("synth")
     reg.register("synth", lambda: synth_ck)
-    reg.register("anthropic", lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
+    reg.register(
+        "anthropic",
+        lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()

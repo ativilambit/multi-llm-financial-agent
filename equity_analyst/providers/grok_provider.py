@@ -25,9 +25,17 @@ class GrokProvider(LLMProvider):
             base_url=XAI_BASE_URL,
         )
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+    ) -> ProviderResponse:
         start = time.perf_counter()
         create_kwargs: dict[str, Any] = {"model": self._model, "input": prompt}
+        if max_output_tokens is not None:
+            create_kwargs["max_output_tokens"] = max_output_tokens
         if enable_web_search:
             create_kwargs["tools"] = [{"type": "web_search"}]
         logger.debug(
@@ -44,7 +52,9 @@ class GrokProvider(LLMProvider):
         for item in getattr(resp, "output", []) or []:
             if getattr(item, "type", None) == "message":
                 for c in getattr(item, "content", []) or []:
-                    if getattr(c, "type", None) in {"output_text", "text"} and getattr(c, "text", None):
+                    if getattr(c, "type", None) in {"output_text", "text"} and getattr(
+                        c, "text", None
+                    ):
                         text_parts.append(str(c.text))
         text = "\n".join([t for t in text_parts if t]).strip()
 

@@ -37,6 +37,7 @@ class Synthesizer:
         original_prompt: str,
         responses: dict[str, ProviderResponse],
         enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
     ) -> SynthesisResult:
         blocks: list[str] = []
         for name, resp in responses.items():
@@ -54,11 +55,14 @@ class Synthesizer:
             len(synthesis_prompt),
             enable_web_search,
         )
-        resp = await self._provider.generate(synthesis_prompt, enable_web_search=enable_web_search)
+        resp = await self._provider.generate(
+            synthesis_prompt,
+            enable_web_search=enable_web_search,
+            max_output_tokens=max_output_tokens,
+        )
         logger.info(
             "Synthesis end model=%s latency_s=%s",
             resp.model,
             f"{resp.latency_s:.3f}" if resp.latency_s is not None else "n/a",
         )
         return SynthesisResult(response=resp, prompt=synthesis_prompt)
-

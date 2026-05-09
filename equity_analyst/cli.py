@@ -48,10 +48,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Render prompt and show requests without calling any provider APIs",
     )
     run.add_argument(
+        "--web-search",
         "--enable-web-search",
+        dest="enable_web_search",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable providers' web search tools where supported",
+        help="Enable web search tools where supported; use --no-web-search for faster runs. "
+        "Legacy: --enable-web-search / --no-enable-web-search.",
     )
     run.add_argument(
         "--iterative",
@@ -102,8 +105,7 @@ async def _run_iterative_cli(
         return (
             "# Iterative dry-run\n\n"
             f"Graph nodes: {', '.join(nodes)}\n\n"
-            "## Rendered prompt (excerpt)\n\n"
-            + rendered.text[:8000]
+            "## Rendered prompt (excerpt)\n\n" + rendered.text[:8000]
         )
     out_dir: Path
     thread_id: str

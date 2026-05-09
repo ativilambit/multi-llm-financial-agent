@@ -13,7 +13,9 @@ class _RecordingProvider(LLMProvider):
     def __init__(self) -> None:
         self.last_prompt: str | None = None
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         self.last_prompt = prompt
         return ProviderResponse(
             provider_name="recording",
@@ -53,4 +55,3 @@ async def test_synthesizer_includes_all_provider_outputs_and_instructions() -> N
     assert "Provider: openai" in p.last_prompt
     assert "disagreements" in p.last_prompt.lower()
     assert "confidence" in p.last_prompt.lower()
-

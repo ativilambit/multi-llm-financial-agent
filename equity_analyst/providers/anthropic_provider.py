@@ -18,23 +18,34 @@ class AnthropicProvider(LLMProvider):
 
     def __init__(self, *, model: str = "claude-sonnet-4-6", client: Any | None = None) -> None:
         self._model = model
-        self._client = client or anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        self._client = client or anthropic.AsyncAnthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY")
+        )
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+    ) -> ProviderResponse:
         start = time.perf_counter()
+        max_tokens = max_output_tokens if max_output_tokens is not None else 4096
         create_kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
         if enable_web_search:
-            create_kwargs["tools"] = cast(Any, [{"type": "web_search_20260209", "name": "web_search"}])
+            create_kwargs["tools"] = cast(
+                Any, [{"type": "web_search_20260209", "name": "web_search"}]
+            )
         logger.debug(
             "Anthropic request shape model=%s web_search=%s prompt_chars=%s max_tokens=%s",
             self._model,
             enable_web_search,
             len(prompt),
-            create_kwargs.get("max_tokens"),
+            max_tokens,
         )
         logger.info("Calling provider %s", self.name)
         msg = await self._client.messages.create(**create_kwargs)
@@ -65,4 +76,3 @@ class AnthropicProvider(LLMProvider):
             latency_s=latency_s,
             raw=msg,
         )
-

@@ -20,7 +20,9 @@ class _SleepyProvider(LLMProvider):
         self._delay_s = delay_s
         self._text = text
 
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
         await asyncio.sleep(self._delay_s)
         return ProviderResponse(
             provider_name=self.name,
@@ -99,4 +101,3 @@ async def test_orchestrator_parallel_and_writes_outputs(
     assert (out_dir / "agent.log").exists()
     assert any("Run start" in r.message for r in caplog.records)
     assert "Run start" in (out_dir / "agent.log").read_text(encoding="utf-8")
-

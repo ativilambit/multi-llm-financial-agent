@@ -9,6 +9,11 @@ class LLMProvider(abc.ABC):
     name: str
 
     @abc.abstractmethod
-    async def generate(self, prompt: str, *, enable_web_search: bool = True) -> ProviderResponse:
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+    ) -> ProviderResponse:
         raise NotImplementedError
-

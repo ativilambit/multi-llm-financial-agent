@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from equity_analyst.config import RunConfig
+from equity_analyst.config import ProviderConfig, RunConfig
 from equity_analyst.logging_setup import attach_run_file_logging
 from equity_analyst.prompting import render_prompt
+from equity_analyst.provider_runtime import (
+    effective_web_search,
+    failure_response,
+    failure_response_from_completed,
+    provider_timeout_s,
+)
 from equity_analyst.providers.registry import ProviderRegistry
-from equity_analyst.synthesizer import Synthesizer
+from equity_analyst.synthesizer import SynthesisResult, Synthesizer
 from equity_analyst.types import ProviderResponse
 
 logger = logging.getLogger(__name__)
@@ -50,14 +58,15 @@ class Orchestrator:
         out.mkdir(parents=True, exist_ok=False)
         return out
 
-    async def run_async(self, *, dry_run: bool, enable_web_search: bool = True) -> tuple[str, RunArtifacts]:
+    async def run_async(
+        self, *, dry_run: bool, enable_web_search: bool = True
+    ) -> tuple[str, RunArtifacts]:
         rendered = render_prompt(self._config, self._prompt_path)
         out_dir = self._make_output_dir()
         attach_run_file_logging(out_dir / "agent.log")
 
-        provider_files: dict[str, Path] = {
-            p: out_dir / _provider_output_filename(p) for p in self._config.providers
-        }
+        names = self._config.provider_names()
+        provider_files: dict[str, Path] = {p: out_dir / _provider_output_filename(p) for p in names}
         synthesis_file = out_dir / "synthesis.md"
         run_json = out_dir / "run.json"
 
@@ -71,7 +80,7 @@ class Orchestrator:
         logger.info(
             "Run start symbol=%s providers=%s synthesizer=%s dry_run=%s output_dir=%s web_search=%s",
             self._config.symbol,
-            list(self._config.providers),
+            names,
             self._config.synthesizer,
             dry_run,
             str(out_dir.resolve()),
@@ -83,10 +92,10 @@ class Orchestrator:
                 "# DRY RUN (no API calls made)",
                 "",
                 f"Symbol: {self._config.symbol}",
-                f"Providers: {', '.join(self._config.providers)}",
+                f"Providers: {', '.join(names)}",
                 f"Synthesizer: {self._config.synthesizer}",
                 f"Template: {rendered.template_path}",
-                f"Web search enabled: {enable_web_search}",
+                f"Web search (run default): {enable_web_search}",
                 "",
                 "## Rendered prompt",
                 rendered.text.rstrip(),
@@ -100,8 +109,13 @@ class Orchestrator:
                         "config": self._config.model_dump(),
                         "template_path": rendered.template_path,
                         "providers": {
-                            p: {"enabled": True, "web_search": enable_web_search}
-                            for p in self._config.providers
+                            pc.name: {
+                                "enabled": True,
+                                "web_search": effective_web_search(
+                                    run_default=enable_web_search, pc=pc
+                                ),
+                            }
+                            for pc in self._config.providers
                         },
                     },
                     indent=2,
@@ -114,13 +128,66 @@ class Orchestrator:
             logger.info("Run end (dry-run) output_dir=%s", str(out_dir.resolve()))
             return ("\n".join(preview_lines), artifacts)
 
-        async def _run_one(provider_name: str) -> ProviderResponse:
-            provider = self._registry.create(provider_name)
-            return await provider.generate(rendered.text, enable_web_search=enable_web_search)
+        live_t0 = time.perf_counter()
 
-        logger.info("Starting provider generation providers=%s", list(self._config.providers))
-        responses_list = await asyncio.gather(*[_run_one(p) for p in self._config.providers])
-        responses: dict[str, ProviderResponse] = {r.provider_name: r for r in responses_list}
+        async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
+            start = time.perf_counter()
+            while True:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=30.0)
+                    return
+                except TimeoutError:
+                    logger.info(
+                        "Still waiting on providers=%s (%ss elapsed)",
+                        provider_names,
+                        int(time.perf_counter() - start),
+                    )
+
+        async def _run_one(pc: ProviderConfig) -> ProviderResponse:
+            t0 = time.perf_counter()
+            provider = self._registry.create(pc.name)
+            ws = effective_web_search(run_default=enable_web_search, pc=pc)
+            timeout_s = provider_timeout_s(pc, self._config)
+            try:
+                return await asyncio.wait_for(
+                    provider.generate(
+                        rendered.text,
+                        enable_web_search=ws,
+                        max_output_tokens=self._config.max_output_tokens,
+                    ),
+                    timeout=timeout_s,
+                )
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError as exc:
+                return failure_response_from_completed(pc.name, exc, started_perf=t0)
+
+        logger.info("Starting provider generation providers=%s", names)
+        stop_hb = asyncio.Event()
+        hb = asyncio.create_task(_heartbeat(stop_hb, names))
+        batch_t0 = time.perf_counter()
+        try:
+            responses_list = await asyncio.gather(
+                *[_run_one(pc) for pc in self._config.providers],
+                return_exceptions=True,
+            )
+        finally:
+            stop_hb.set()
+            hb.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hb
+
+        responses: dict[str, ProviderResponse] = {}
+        for pc, item in zip(self._config.providers, responses_list, strict=True):
+            if isinstance(item, ProviderResponse):
+                responses[pc.name] = item
+            elif isinstance(item, Exception):
+                responses[pc.name] = failure_response(pc.name, item, latency_s=None)
+            else:
+                raise item
+
+        parallel_batch_wall_s = time.perf_counter() - batch_t0
+
         for name, resp in responses.items():
             logger.info(
                 "Provider finished name=%s model=%s latency_s=%s",
@@ -133,16 +200,50 @@ class Orchestrator:
             provider_files[name].write_text(resp.text.rstrip() + "\n", encoding="utf-8")
 
         synth_provider = self._registry.create(self._config.synthesizer)
-        synthesis = await Synthesizer(synth_provider).synthesize(
-            original_prompt=rendered.text, responses=responses, enable_web_search=enable_web_search
-        )
+        syn_t0 = time.perf_counter()
+        try:
+            synthesis = await asyncio.wait_for(
+                Synthesizer(synth_provider).synthesize(
+                    original_prompt=rendered.text,
+                    responses=responses,
+                    enable_web_search=enable_web_search,
+                    max_output_tokens=self._config.max_output_tokens,
+                ),
+                timeout=float(self._config.request_timeout_s),
+            )
+        except TimeoutError as exc:
+            synthesis_resp = failure_response_from_completed(
+                self._config.synthesizer,
+                exc,
+                started_perf=syn_t0,
+            )
+            synthesis = SynthesisResult(
+                response=synthesis_resp, prompt="(synthesis stage timed out)"
+            )
+        syn_wall_s = time.perf_counter() - syn_t0
+
         synthesis_file.write_text(synthesis.response.text.rstrip() + "\n", encoding="utf-8")
+
+        total_wall_s = time.perf_counter() - live_t0
+        timing: dict[str, Any] = {
+            "parallel_provider_batch_wall_s": round(parallel_batch_wall_s, 3),
+            "synthesis_wall_s": round(syn_wall_s, 3),
+            "total_wall_s": round(total_wall_s, 3),
+            "per_provider": {
+                n: {
+                    "latency_s": responses[n].latency_s,
+                    "model": responses[n].model,
+                }
+                for n in names
+            },
+        }
 
         run_meta: dict[str, Any] = {
             "dry_run": False,
             "timestamp_utc": datetime.now(tz=UTC).isoformat(),
             "config": self._config.model_dump(),
             "template_path": rendered.template_path,
+            "timing": timing,
             "providers": {
                 name: {
                     "provider_name": resp.provider_name,
@@ -162,10 +263,13 @@ class Orchestrator:
         run_json.write_text(json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
         logger.info(
-            "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s",
+            "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s timing=%s",
             str(out_dir.resolve()),
             synthesis.response.model,
-            f"{synthesis.response.latency_s:.3f}" if synthesis.response.latency_s is not None else "n/a",
+            f"{synthesis.response.latency_s:.3f}"
+            if synthesis.response.latency_s is not None
+            else "n/a",
+            timing,
         )
         return (synthesis.response.text, artifacts)
 
@@ -174,4 +278,3 @@ class Orchestrator:
             self.run_async(dry_run=dry_run, enable_web_search=enable_web_search)
         )
         return text
-

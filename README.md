@@ -31,6 +31,37 @@ Dry-run (no API calls; writes preview under `outputs/`):
 python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --dry-run
 ```
 
+### Web search and performance
+
+Provider web search tools are **on by default** and are often the dominant source of latency. For faster runs, disable them:
+
+```bash
+python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --no-web-search
+```
+
+The same flag works in iterative mode. Legacy aliases **`--enable-web-search` / `--no-enable-web-search`** still map to the same setting as `--web-search` / `--no-web-search`.
+
+YAML may set **per-provider** overrides (`web_search: true|false`) and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **4096**), and `verifier_max_output_tokens` (default **1536**, iterative verifier only).
+
+```yaml
+request_timeout_s: 180
+max_output_tokens: 4096
+verifier_max_output_tokens: 1536
+providers:
+  - name: anthropic
+    web_search: true
+  - name: openai
+    web_search: false
+  - name: gemini
+    request_timeout_s: 120
+```
+
+The simple list form remains valid: `providers: ["anthropic", "openai"]`.
+
+### Run timing (`run.json`)
+
+After a **live** standard run, `run.json` includes a **`timing`** object: `parallel_provider_batch_wall_s`, `synthesis_wall_s`, `total_wall_s`, and `per_provider` latency snapshots. Iterative runs add a **`timing`** summary when `finalize` runs (per-iteration provider, synthesis, and verify wall times plus `total_sequential_wall_s`). INFO logs also emit a heartbeat every **30s** while waiting on a provider batch.
+
 ## Iterative mode
 
 Iterative runs use a LangGraph `StateGraph` with nodes `fan_out` → `synthesize` → `verify` → `route` → (`fan_out` again or `finalize`). Each round:
