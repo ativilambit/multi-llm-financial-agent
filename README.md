@@ -158,6 +158,16 @@ When the CLI writes a run under `outputs/<symbol>_<timestamp>/` (standard mode, 
 
 OpenAI and Grok cache hits are logged automatically when present (`cache_read=<N>`). Caching is automatic for both providers — no setup required.
 
+## Customizing prompts
+
+These plain-text and template files control model instructions without editing Python:
+
+- `prompts/equity_analyst_system.md` — persona / instructions (cached as the Anthropic system prompt and prepended for other providers).
+- `prompts/equity_analyst.j2` — the 13 numbered sections, a Jinja template with `{{ symbol }}`, `{{ today_low }}`, and the other template variables.
+- `prompts/synthesizer_system.md` — how the synthesizer compares provider answers and formats the consensus.
+
+Edits take effect on the next CLI run; you do not need to change code or restart a long-lived process.
+
 ## Development checks
 
 ```bash

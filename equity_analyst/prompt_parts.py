@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-# Verbatim persona / instruction preamble formerly in prompts/equity_analyst.j2 line 1,
-# through the triple-check sentence (dynamic price/session line moved to the user template).
-EQUITY_ANALYST_SYSTEM_PROMPT = (
-    "as the buy-side top 0.0001% equity investment strategist and analyst and top equity and "
-    "options portfolio manager, shows your best equity analysis work by running deep and thoughtful "
-    "real-time, checks, analysis, reasoning, and research models, including the best available models "
-    "and based on the latest and the most up-to-date time data, step-by-step research and analyses "
-    "and today's most recent options price action in . Before answering, triple-check your answers "
-    "for accuracy, validity, and correctness to the highest possible level."
-)
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_PROMPT_FILE_CACHE: dict[str, str] = {}
+
+
+def _load_prompt_file(name: str) -> str:
+    if name not in _PROMPT_FILE_CACHE:
+        path = _PROMPTS_DIR / name
+        _PROMPT_FILE_CACHE[name] = path.read_text(encoding="utf-8").rstrip()
+    return _PROMPT_FILE_CACHE[name]
+
+
+def __getattr__(name: str) -> str:
+    if name == "EQUITY_ANALYST_SYSTEM_PROMPT":
+        return _load_prompt_file("equity_analyst_system.md")
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
 
 
 def ephemeral_cache_control(*, ttl_1h: bool = True) -> dict[str, Any]:
