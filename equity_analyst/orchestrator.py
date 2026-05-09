@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from equity_analyst.config import ProviderConfig, RunConfig
+from equity_analyst.drive_uploader import maybe_upload_run_to_drive
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.logging_setup import attach_run_file_logging
 from equity_analyst.prompting import render_prompt, split_static_dynamic
@@ -133,6 +134,8 @@ class Orchestrator:
                 encoding="utf-8",
             )
             synthesis_file.write_text("\n".join(preview_lines), encoding="utf-8")
+            if self._config.drive_upload_enabled:
+                await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
             logger.info("Run end (dry-run) output_dir=%s", str(out_dir.resolve()))
             return ("\n".join(preview_lines), artifacts)
 
@@ -353,6 +356,9 @@ class Orchestrator:
             "errors": run_errors,
         }
         run_json.write_text(json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        if self._config.drive_upload_enabled:
+            await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
 
         logger.info(
             "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s timing=%s",

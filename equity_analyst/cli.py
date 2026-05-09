@@ -120,6 +120,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not force Anthropic tool_choice when web search is enabled (default: force at least one tool).",
     )
+    run.add_argument(
+        "--upload-to-drive",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable Google Drive upload for this run (overrides YAML / DRIVE_UPLOAD_ENABLED).",
+    )
+    run.add_argument(
+        "--drive-folder-id",
+        default=None,
+        help="Google Drive folder ID for this run's upload root (overrides drive_root_folder_id / env).",
+    )
 
     return parser
 
@@ -142,6 +153,10 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["prompt_cache_enabled"] = False
     if getattr(args, "no_force_tool_use", False):
         patch["anthropic_force_tool_use"] = False
+    if getattr(args, "upload_to_drive", None) is not None:
+        patch["drive_upload_enabled"] = bool(args.upload_to_drive)
+    if getattr(args, "drive_folder_id", None):
+        patch["drive_root_folder_id"] = str(args.drive_folder_id)
     return cfg if not patch else cfg.model_copy(update=patch)
 
 

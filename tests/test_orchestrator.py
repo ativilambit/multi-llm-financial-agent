@@ -835,3 +835,171 @@ async def test_per_provider_request_timeout_override_honored(
     assert wait_for_timeouts.count(600.0) == 1
     assert 180.0 in wait_for_timeouts
 
+
+@pytest.mark.asyncio
+async def test_drive_upload_invoked_and_run_json_has_url(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": ["anthropic", "openai"],
+            "synthesizer": "gemini",
+            "drive_upload_enabled": True,
+            "drive_credentials_path": str(tmp_path / "sa.json"),
+            "drive_root_folder_id": "ROOT",
+        }
+    )
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    uploads: list[Path] = []
+
+    async def fake_drive(c: RunConfig, out: Path, **kwargs: Any) -> str | None:
+        uploads.append(out)
+        p = out / "run.json"
+        meta = json.loads(p.read_text(encoding="utf-8"))
+        meta["drive_folder_url"] = "https://drive.google.com/drive/folders/xyz"
+        p.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return meta["drive_folder_url"]
+
+    monkeypatch.setattr(orch_mod, "maybe_upload_run_to_drive", fake_drive)
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+    assert len(uploads) == 1
+    out_dir = uploads[0]
+    meta = json.loads((out_dir / "run.json").read_text(encoding="utf-8"))
+    assert meta.get("drive_folder_url") == "https://drive.google.com/drive/folders/xyz"
+
+
+@pytest.mark.asyncio
+async def test_drive_upload_disabled_skips_hook(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": ["anthropic", "openai"],
+            "synthesizer": "gemini",
+            "drive_upload_enabled": False,
+        }
+    )
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    called = False
+
+    async def fake_drive(*_a: Any, **_k: Any) -> str | None:
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(orch_mod, "maybe_upload_run_to_drive", fake_drive)
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_drive_upload_failure_still_completes_run(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": ["anthropic", "openai"],
+            "synthesizer": "gemini",
+            "drive_upload_enabled": True,
+            "drive_credentials_path": str(tmp_path / "sa.json"),
+            "drive_root_folder_id": "ROOT",
+        }
+    )
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    async def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("upload exploded")
+
+    monkeypatch.setattr("equity_analyst.drive_uploader.asyncio.to_thread", boom)
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    text, artifacts = await orch.run_async(dry_run=False, enable_web_search=False)
+    assert "SYNTH" in text
+    assert (artifacts.output_dir / "run.json").is_file()
+    meta = json.loads((artifacts.output_dir / "run.json").read_text(encoding="utf-8"))
+    assert "drive_folder_url" not in meta
+

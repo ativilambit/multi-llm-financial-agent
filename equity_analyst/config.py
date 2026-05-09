@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Self, TextIO
@@ -105,6 +106,19 @@ class RunConfig(BaseModel):
         "use at least one tool (avoids empty refusals when tools are available).",
     )
 
+    drive_upload_enabled: bool = Field(
+        default=False,
+        description="When True, upload the run output directory to Google Drive after the run completes.",
+    )
+    drive_credentials_path: str | None = Field(
+        default=None,
+        description="Path to a Google Cloud service-account JSON key with Drive API access.",
+    )
+    drive_root_folder_id: str | None = Field(
+        default=None,
+        description="Google Drive folder ID (under which a per-run subfolder is created).",
+    )
+
     @field_validator("synthesizer", mode="before")
     @classmethod
     def _coerce_synthesizer(cls, v: Any) -> Any:
@@ -142,6 +156,22 @@ class RunConfig(BaseModel):
         if not self.providers:
             raise ValueError("providers must contain at least one entry")
         return self
+
+    @model_validator(mode="after")
+    def _drive_env_fallback(self) -> Self:
+        updates: dict[str, Any] = {}
+        env_flag = os.environ.get("DRIVE_UPLOAD_ENABLED")
+        if env_flag is not None:
+            updates["drive_upload_enabled"] = env_flag.strip().lower() in ("1", "true", "yes", "on")
+        if self.drive_credentials_path is None:
+            p = os.environ.get("DRIVE_CREDENTIALS_PATH")
+            if p and str(p).strip():
+                updates["drive_credentials_path"] = str(p).strip()
+        if self.drive_root_folder_id is None:
+            f = os.environ.get("DRIVE_ROOT_FOLDER_ID")
+            if f and str(f).strip():
+                updates["drive_root_folder_id"] = str(f).strip()
+        return self.model_copy(update=updates) if updates else self
 
     def provider_names(self) -> list[str]:
         return [p.name for p in self.providers]

@@ -276,3 +276,34 @@ def test_mndy_fast_config_has_four_fan_out_providers_with_gemini_flash() -> None
     assert by_name["gemini"].model == GEMINI_FAN_OUT_FLASH_MODEL
     assert by_name["gemini"].web_search is False
     assert by_name["gemini"].request_timeout_s == 180
+
+
+def test_drive_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DRIVE_UPLOAD_ENABLED", "true")
+    monkeypatch.setenv("DRIVE_CREDENTIALS_PATH", "/tmp/sa.json")
+    monkeypatch.setenv("DRIVE_ROOT_FOLDER_ID", "folder123")
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+            "drive_upload_enabled": False,
+            "drive_credentials_path": None,
+            "drive_root_folder_id": None,
+        }
+    )
+    assert cfg.drive_upload_enabled is True
+    assert cfg.drive_credentials_path == "/tmp/sa.json"
+    assert cfg.drive_root_folder_id == "folder123"
+    monkeypatch.delenv("DRIVE_UPLOAD_ENABLED", raising=False)
+    monkeypatch.delenv("DRIVE_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("DRIVE_ROOT_FOLDER_ID", raising=False)

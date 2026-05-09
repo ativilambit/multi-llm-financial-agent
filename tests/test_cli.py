@@ -95,3 +95,36 @@ def test_cli_synthesizer_max_output_tokens_override(tmp_path: Path) -> None:
     assert base.synthesizer_max_output_tokens == 24_000
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.synthesizer_max_output_tokens == 50_000
+
+
+def test_cli_drive_upload_and_folder_overrides(tmp_path: Path) -> None:
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "drive_upload_enabled": False,
+                "drive_root_folder_id": "old",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["run", "--config", str(yml), "--upload-to-drive", "--drive-folder-id", "newroot"]
+    )
+    base = _load_cfg(args)
+    cfg = _apply_cli_config_overrides(base, args)
+    assert cfg.drive_upload_enabled is True
+    assert cfg.drive_root_folder_id == "newroot"

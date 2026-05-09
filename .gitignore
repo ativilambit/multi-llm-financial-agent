@@ -1,4 +1,5 @@
 .DS_Store
+*.swp
 .venv/
 __pycache__/
 .pytest_cache/
@@ -13,5 +14,7 @@ dist/
 build/
 
 .env
+*.sa.json
+**/secrets/
 outputs/
 

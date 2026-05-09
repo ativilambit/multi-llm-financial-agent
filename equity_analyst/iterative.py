@@ -18,6 +18,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
+from equity_analyst.drive_uploader import maybe_upload_run_to_drive_raw
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
@@ -191,6 +192,9 @@ class RefinementState(TypedDict, total=False):
     timing_events: Annotated[list[dict[str, Any]], operator.add]
     error_events: Annotated[list[dict[str, Any]], operator.add]
     final_report: str
+    drive_upload_enabled: bool
+    drive_credentials_path: str | None
+    drive_root_folder_id: str | None
 
 
 def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
@@ -570,6 +574,18 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         logger.info("Iterative wall-clock timing summary: %s", timing_summary)
 
+        if bool(state.get("drive_upload_enabled", False)):
+            cred_raw = state.get("drive_credentials_path")
+            root_raw = state.get("drive_root_folder_id")
+            await maybe_upload_run_to_drive_raw(
+                drive_upload_enabled=True,
+                drive_credentials_path=cred_raw if isinstance(cred_raw, str) else None,
+                drive_root_folder_id=root_raw if isinstance(root_raw, str) else None,
+                out_dir=out,
+                run_id=out.name,
+                append_synthesis_footer=True,
+            )
+
         return {"final_report": report}
 
     return {
@@ -635,6 +651,9 @@ def build_initial_refinement_state(
         "synthesizer_cfg": cfg.synthesizer.model_dump(mode="json"),
         "verifier_name": "anthropic",
         "output_dir": str(output_dir.resolve()),
+        "drive_upload_enabled": cfg.drive_upload_enabled,
+        "drive_credentials_path": cfg.drive_credentials_path,
+        "drive_root_folder_id": cfg.drive_root_folder_id,
     }
 
 

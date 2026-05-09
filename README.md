@@ -19,6 +19,46 @@ Copy `.env.example` to `.env` and set keys for the providers you enable in confi
 - `GEMINI_API_KEY`
 - `XAI_API_KEY` (Grok)
 
+## Google Drive auto-upload
+
+After each standard or iterative run finishes writing `outputs/<run-id>/` (including `run.json`), you can optionally mirror that folder to Google Drive using a **Google Cloud service account** JSON key. The CLI creates a subfolder named after the run id under a folder you choose, uploads every file (preserving paths such as `iterations/`), skips dotfiles, and appends `drive_folder_url` to `run.json` on success. Iterative runs also append the link to the footer of `synthesis.md`. Upload failures are logged and never fail the analysis run.
+
+### Service account setup
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create or pick a project, then **IAM & Admin → Service Accounts → Create service account** (any name).
+2. **Keys → Add key → Create new key → JSON** and download the key file (keep it private; do not commit it).
+3. **APIs & Services → Library → Google Drive API → Enable**.
+4. In Google Drive, create or pick a destination folder, open it, and copy the **folder id** from the URL (`https://drive.google.com/drive/folders/<this-part>`).
+5. **Share that folder** with the service account email from the JSON (`client_email`) as **Editor** (required so the SA can create the run subfolder and upload files).
+
+### Configuration
+
+In YAML (paths can use shell-style expansion such as `"${HOME}/secrets/..."` when your shell expands them before load, or use absolute paths):
+
+```yaml
+drive_upload_enabled: true
+drive_credentials_path: "${HOME}/secrets/equity-analyst-drive-sa.json"
+drive_root_folder_id: "1AbCdEf...your-folder-id..."
+```
+
+Environment fallbacks (optional; if `DRIVE_UPLOAD_ENABLED` is set, it overrides the YAML boolean; missing credential or folder id values can be filled from env):
+
+- `DRIVE_UPLOAD_ENABLED=true|false`
+- `DRIVE_CREDENTIALS_PATH`
+- `DRIVE_ROOT_FOLDER_ID`
+
+Per-run CLI overrides:
+
+```bash
+python -m equity_analyst run --config ... --upload-to-drive --drive-folder-id <folder-id>
+python -m equity_analyst run --config ... --no-upload-to-drive
+```
+
+### Caveats
+
+- Quota for uploads is charged to the **service account’s** Drive storage, not necessarily your personal account’s, unless you use a shared drive / organization setup that maps differently.
+- Files land in the folder you shared; anyone who can **view** that Drive folder can see uploaded runs. Treat the folder and sharing like sensitive storage.
+
 ## Configs
 
 Stock-specific YAML lives under `configs/`. Copy either file as a starting point for a new symbol and edit prices, dates, and lookbacks.
