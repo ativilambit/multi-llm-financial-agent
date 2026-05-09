@@ -18,6 +18,7 @@ from equity_analyst.provider_runtime import (
     effective_web_search,
     failure_response,
     failure_response_from_completed,
+    fan_out_max_output_tokens,
     partition_provider_responses,
     provider_timeout_s,
     run_error_record,
@@ -158,7 +159,7 @@ class Orchestrator:
                 return await provider.generate(
                     rendered.text,
                     enable_web_search=ws,
-                    max_output_tokens=self._config.max_output_tokens,
+                    max_output_tokens=fan_out_max_output_tokens(pc, self._config.max_output_tokens),
                 )
 
             try:

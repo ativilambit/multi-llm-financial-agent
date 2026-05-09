@@ -87,6 +87,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override RunConfig.retry_base_delay_s (default from YAML or 2.0)",
     )
     run.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=None,
+        help="Override RunConfig.max_output_tokens for fan-out providers (default from YAML or 16000)",
+    )
+    run.add_argument(
+        "--verifier-max-output-tokens",
+        type=int,
+        default=None,
+        help="Override RunConfig.verifier_max_output_tokens (iterative verifier only; default 1536)",
+    )
+    run.add_argument(
         "--synthesizer-max-input-tokens",
         type=int,
         default=None,
@@ -108,6 +120,10 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["retry_max_attempts"] = args.retry_max_attempts
     if args.retry_base_delay_s is not None:
         patch["retry_base_delay_s"] = args.retry_base_delay_s
+    if args.max_output_tokens is not None:
+        patch["max_output_tokens"] = args.max_output_tokens
+    if args.verifier_max_output_tokens is not None:
+        patch["verifier_max_output_tokens"] = args.verifier_max_output_tokens
     if args.synthesizer_max_input_tokens is not None:
         patch["synthesizer_max_input_tokens"] = args.synthesizer_max_input_tokens
     if args.synthesizer_max_output_tokens is not None:

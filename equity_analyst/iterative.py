@@ -23,6 +23,7 @@ from equity_analyst.provider_runtime import (
     effective_web_search,
     failure_response,
     failure_response_from_completed,
+    fan_out_max_output_tokens,
     partition_provider_responses,
     run_error_record,
 )
@@ -206,7 +207,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
         pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
         cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
-        mot = int(state.get("max_output_tokens", 4096))
+        cfg_mot = int(state.get("max_output_tokens", 16_000))
         names = [pc.name for pc in pcs]
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
@@ -231,6 +232,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
 
             async def _attempt() -> ProviderResponse:
+                mot = fan_out_max_output_tokens(pc, cfg_mot)
                 return await p.generate(body, enable_web_search=ws, max_output_tokens=mot)
 
             try:

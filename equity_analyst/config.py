@@ -17,6 +17,7 @@ class ProviderConfig(BaseModel):
     model: str | None = None
     web_search: bool | None = None
     request_timeout_s: float | None = Field(default=None, gt=0)
+    max_output_tokens: int | None = Field(default=None, ge=256, le=128_000)
 
     @field_validator("name")
     @classmethod
@@ -78,7 +79,7 @@ class RunConfig(BaseModel):
         default_factory=lambda: SynthesizerConfig(name="gemini"),
     )
 
-    max_output_tokens: int = Field(default=4096, ge=256, le=128_000)
+    max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
     verifier_max_output_tokens: int = Field(default=1536, ge=256, le=32_768)
     synthesizer_max_output_tokens: int = Field(default=24_000, ge=1024, le=128_000)

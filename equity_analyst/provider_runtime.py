@@ -53,6 +53,12 @@ def provider_timeout_s(pc: ProviderConfig, cfg: RunConfig) -> float:
     return float(cfg.request_timeout_s)
 
 
+def fan_out_max_output_tokens(pc: ProviderConfig, global_max_output_tokens: int) -> int:
+    if pc.max_output_tokens is not None:
+        return int(pc.max_output_tokens)
+    return int(global_max_output_tokens)
+
+
 def failure_response(name: str, exc: BaseException, *, latency_s: float | None) -> ProviderResponse:
     label = "timeout" if isinstance(exc, TimeoutError) else type(exc).__name__
     model = f"error:{label}"
