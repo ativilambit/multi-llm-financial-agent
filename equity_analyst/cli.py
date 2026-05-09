@@ -115,6 +115,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable prompt caching for Anthropic (system/tools) and Gemini explicit context caches.",
     )
+    run.add_argument(
+        "--no-force-tool-use",
+        action="store_true",
+        help="Do not force Anthropic tool_choice when web search is enabled (default: force at least one tool).",
+    )
 
     return parser
 
@@ -135,6 +140,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["synthesizer_max_output_tokens"] = args.synthesizer_max_output_tokens
     if getattr(args, "no_prompt_cache", False):
         patch["prompt_cache_enabled"] = False
+    if getattr(args, "no_force_tool_use", False):
+        patch["anthropic_force_tool_use"] = False
     return cfg if not patch else cfg.model_copy(update=patch)
 
 

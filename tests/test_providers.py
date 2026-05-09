@@ -267,6 +267,27 @@ async def test_anthropic_provider_assembles_request_and_parses_usage() -> None:
     assert fake.messages.last_kwargs["model"] == "claude-3-5-sonnet-latest"
     assert fake.messages.last_kwargs["messages"][0]["content"] == "hello"
     assert {"type": "web_search_20260209", "name": "web_search"} in (fake.messages.last_kwargs["tools"] or [])
+    assert fake.messages.last_kwargs.get("tool_choice") == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_tool_choice_when_force_enabled() -> None:
+    fake = _FakeAnthropicClient()
+    p = AnthropicProvider(model="claude-3-5-sonnet-latest", client=fake)  # type: ignore[arg-type]
+    await p.generate("hello", enable_web_search=True, force_tool_use=True)
+
+    assert fake.messages.last_kwargs is not None
+    assert fake.messages.last_kwargs.get("tool_choice") == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_no_tool_choice_when_force_disabled() -> None:
+    fake = _FakeAnthropicClient()
+    p = AnthropicProvider(model="claude-3-5-sonnet-latest", client=fake)  # type: ignore[arg-type]
+    await p.generate("hello", enable_web_search=True, force_tool_use=False)
+
+    assert fake.messages.last_kwargs is not None
+    assert "tool_choice" not in fake.messages.last_kwargs
 
 
 @pytest.mark.asyncio

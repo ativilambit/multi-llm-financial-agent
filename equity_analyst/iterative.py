@@ -170,6 +170,7 @@ class RefinementState(TypedDict, total=False):
     confidence_threshold: float
     enable_web_search: bool
     prompt_cache_enabled: bool
+    anthropic_force_tool_use: bool
     providers: list[str]
     provider_configs: list[dict[str, Any]]
     max_output_tokens: int
@@ -260,6 +261,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         max_output_tokens=mot,
                         prompt_cache_enabled=pce,
                         user_message_for_cache=user_only,
+                        force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
                     )
                 if isinstance(p, GeminiProvider) and pce and gemini_cache_index is not None:
                     static = EQUITY_ANALYST_SYSTEM_PROMPT
@@ -367,6 +369,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     synthesizer_max_input_tokens=syn_max_in,
                     retry_max_attempts=retry_max,
                     retry_base_delay_s=retry_base,
+                    anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
                 ),
                 timeout=timeout_syn,
             )
@@ -445,6 +448,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     enable_web_search=state["enable_web_search"],
                     max_output_tokens=vmt,
                     prompt_cache_enabled=False,
+                    force_tool_use=False,
                 )
             return await verifier.generate(
                 prompt,
@@ -615,6 +619,7 @@ def build_initial_refinement_state(
         "confidence_threshold": 0.85,
         "enable_web_search": True,
         "prompt_cache_enabled": cfg.prompt_cache_enabled,
+        "anthropic_force_tool_use": cfg.anthropic_force_tool_use,
         "providers": cfg.provider_names(),
         "provider_configs": [pc.model_dump() for pc in cfg.providers],
         "max_output_tokens": cfg.max_output_tokens,

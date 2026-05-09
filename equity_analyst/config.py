@@ -99,6 +99,11 @@ class RunConfig(BaseModel):
         le=86_400,
         description="TTL (seconds) for Gemini explicit context caches when prompt_cache_enabled is True.",
     )
+    anthropic_force_tool_use: bool = Field(
+        default=True,
+        description="When True and web search is enabled for Anthropic, set tool_choice so the model must "
+        "use at least one tool (avoids empty refusals when tools are available).",
+    )
 
     @field_validator("synthesizer", mode="before")
     @classmethod

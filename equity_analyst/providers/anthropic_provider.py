@@ -38,6 +38,7 @@ class AnthropicProvider(LLMProvider):
         max_output_tokens: int | None = None,
         prompt_cache_enabled: bool = True,
         user_message_for_cache: str | None = None,
+        force_tool_use: bool = True,
     ) -> ProviderResponse:
         start = time.perf_counter()
         max_tokens = max_output_tokens if max_output_tokens is not None else 4096
@@ -75,6 +76,8 @@ class AnthropicProvider(LLMProvider):
             if use_cache_breakpoints:
                 tool["cache_control"] = ephemeral_cache_control()
             create_kwargs["tools"] = cast(Any, [tool])
+            if force_tool_use:
+                create_kwargs["tool_choice"] = {"type": "any"}
 
         logger.debug(
             "Anthropic request shape model=%s web_search=%s prompt_chars=%s max_tokens=%s "

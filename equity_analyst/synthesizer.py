@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.provider_runtime import partition_provider_responses
+from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.retry import async_retry_call
 from equity_analyst.types import ProviderResponse, ProviderUsage
@@ -134,6 +135,7 @@ class Synthesizer:
         synthesizer_max_input_tokens: int = 20_000,
         retry_max_attempts: int = 3,
         retry_base_delay_s: float = 2.0,
+        anthropic_force_tool_use: bool = True,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -191,6 +193,13 @@ class Synthesizer:
         )
 
         async def _call() -> ProviderResponse:
+            if isinstance(self._provider, AnthropicProvider):
+                return await self._provider.generate(
+                    synthesis_prompt,
+                    enable_web_search=enable_web_search,
+                    max_output_tokens=max_output_tokens,
+                    force_tool_use=anthropic_force_tool_use,
+                )
             return await self._provider.generate(
                 synthesis_prompt,
                 enable_web_search=enable_web_search,

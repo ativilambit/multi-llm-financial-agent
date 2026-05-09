@@ -177,6 +177,7 @@ class Orchestrator:
                         max_output_tokens=mot,
                         prompt_cache_enabled=self._config.prompt_cache_enabled,
                         user_message_for_cache=user_block,
+                        force_tool_use=self._config.anthropic_force_tool_use,
                     )
                 if isinstance(provider, GeminiProvider) and self._config.prompt_cache_enabled:
                     return await provider.generate(
@@ -259,6 +260,7 @@ class Orchestrator:
                     synthesizer_max_input_tokens=self._config.synthesizer_max_input_tokens,
                     retry_max_attempts=self._config.retry_max_attempts,
                     retry_base_delay_s=self._config.retry_base_delay_s,
+                    anthropic_force_tool_use=self._config.anthropic_force_tool_use,
                 ),
                 timeout=syn_timeout,
             )
