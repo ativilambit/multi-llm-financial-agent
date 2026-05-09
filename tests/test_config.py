@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
-from equity_analyst.config import RunConfig, SynthesizerConfig
+from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
 
 
 def test_providers_object_form_and_defaults() -> None:
@@ -217,3 +219,27 @@ def test_unknown_provider_or_synthesizer_rejected(
         base["synthesizer"] = synth
     with pytest.raises(ValueError, match=msg):
         RunConfig.model_validate(base)
+
+
+def test_mndy_fast_config_hybrid_web_search_and_shared_fields_match_standard() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    standard_path = repo / "configs" / "mndy_2026_05_08.yaml"
+    fast_path = repo / "configs" / "mndy_2026_05_08_fast.yaml"
+
+    standard_raw = yaml.safe_load(standard_path.read_text(encoding="utf-8"))
+    fast_raw = yaml.safe_load(fast_path.read_text(encoding="utf-8"))
+
+    def _without_providers_synth(d: dict[str, Any]) -> dict[str, Any]:
+        out = dict(d)
+        out.pop("providers", None)
+        out.pop("synthesizer", None)
+        return out
+
+    assert _without_providers_synth(standard_raw) == _without_providers_synth(fast_raw)
+
+    fast_cfg = load_config(str(fast_path))
+    by_name = {p.name: p for p in fast_cfg.providers}
+    assert by_name["anthropic"].web_search is False
+    assert by_name["grok"].web_search is False
+    assert by_name["openai"].web_search is True
+    assert fast_cfg.synthesizer.web_search is False

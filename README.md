@@ -19,6 +19,15 @@ Copy `.env.example` to `.env` and set keys for the providers you enable in confi
 - `GEMINI_API_KEY`
 - `XAI_API_KEY` (Grok)
 
+## Configs
+
+Stock-specific YAML lives under `configs/`. Copy either file as a starting point for a new symbol and edit prices, dates, and lookbacks.
+
+| File | Use case |
+|------|----------|
+| `configs/mndy_2026_05_08.yaml` | Default MNDY run: all three fan-out providers use long timeouts; web search follows each provider’s default (typically on). Best for highest-quality grounded research. |
+| `configs/mndy_2026_05_08_fast.yaml` | Hybrid speed: **OpenAI** alone runs deep `web_search`; **Anthropic** and **Grok** reason without search; **Gemini** synthesizer has no extra search. Shorter wall-clock for iteration. |
+
 ## Standard mode
 
 ```bash
