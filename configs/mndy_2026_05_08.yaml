@@ -31,7 +31,9 @@ providers:
   - name: anthropic
     model: claude-opus-4-7
   - name: openai
+    request_timeout_s: 600
   - name: grok
+    request_timeout_s: 600
 synthesizer:
   name: gemini
 

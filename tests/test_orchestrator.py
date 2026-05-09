@@ -624,3 +624,63 @@ async def test_fan_out_per_provider_max_output_tokens_override(
     assert rec_o.last_max_output_tokens == 8888
     assert rec_g.last_max_output_tokens == 12_000
 
+
+@pytest.mark.asyncio
+async def test_per_provider_request_timeout_override_honored(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    wait_for_timeouts: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def capturing_wait_for(fut: Any, timeout: float | None = None) -> Any:
+        if timeout is not None:
+            wait_for_timeouts.append(float(timeout))
+        return await real_wait_for(fut, timeout)
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "request_timeout_s": 180,
+            "providers": [
+                {"name": "anthropic", "model": "claude-opus-4-7"},
+                {"name": "openai", "request_timeout_s": 600},
+            ],
+            "synthesizer": "gemini",
+        }
+    )
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.asyncio, "wait_for", capturing_wait_for)
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+
+    assert wait_for_timeouts.count(600.0) == 1
+    assert 180.0 in wait_for_timeouts
+
