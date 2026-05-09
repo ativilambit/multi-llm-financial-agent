@@ -341,9 +341,13 @@ class _FakeGeminiAioModels:
         self.last_config: Any = None
         self.count_tokens_calls = 0
         self.count_tokens_total = 2000
+        self.last_count_contents: Any = None
+        self.last_count_config: Any = None
 
     async def count_tokens(self, *, model: str, contents: Any, config: Any = None) -> Any:
         self.count_tokens_calls += 1
+        self.last_count_contents = contents
+        self.last_count_config = config
         return SimpleNamespace(total_tokens=self.count_tokens_total, cached_content_token_count=0)
 
     async def generate_content(self, *, model: str, contents: str, config: Any = None) -> Any:
@@ -409,7 +413,8 @@ async def test_gemini_provider_assembles_request_and_parses_usage() -> None:
 async def test_gemini_uses_cache_on_hit(tmp_path: Path) -> None:
     fake = _FakeGeminiClient()
     idx = GeminiCacheIndex(path=tmp_path / "idx.json")
-    static = "x" * 4000
+    # Rough char estimate len//4 must clear Flash min (1024) so count_tokens runs.
+    static = "x" * 5000
     user = "dynamic-body"
     full = f"{static}\n\n{user}"
     p = GeminiProvider(
@@ -464,7 +469,8 @@ async def test_gemini_skips_cache_when_prefix_too_small(tmp_path: Path) -> None:
     fake = _FakeGeminiClient()
     fake.aio.models.count_tokens_total = 100
     idx = GeminiCacheIndex(path=tmp_path / "idx.json")
-    static = "short"
+    # Long enough for rough estimate to pass; precise count still below Flash minimum.
+    static = "x" * 5000
     user = "u"
     full = f"{static}\n\n{user}"
     p = GeminiProvider(
@@ -478,6 +484,63 @@ async def test_gemini_skips_cache_when_prefix_too_small(tmp_path: Path) -> None:
         cacheable_prefix=static,
         user_message_for_cache=user,
     )
+    assert fake.aio.caches.create_calls == 0
+    assert fake.aio.models.count_tokens_calls == 1
+    assert fake.aio.models.last_count_contents == static
+    assert fake.aio.models.last_contents == full
+    assert getattr(fake.aio.models.last_config, "cached_content", None) in (None,)
+
+
+class _FakeGeminiAioModelsCountTokensRaise(_FakeGeminiAioModels):
+    async def count_tokens(self, *, model: str, contents: Any, config: Any = None) -> Any:
+        raise ValueError("contents are required.")
+
+
+@pytest.mark.asyncio
+async def test_gemini_count_tokens_failure_falls_back_gracefully(tmp_path: Path) -> None:
+    fake = _FakeGeminiClient()
+    fake.aio.models = _FakeGeminiAioModelsCountTokensRaise()
+    idx = GeminiCacheIndex(path=tmp_path / "idx.json")
+    static = "x" * 5000
+    user = "dynamic-body"
+    full = f"{static}\n\n{user}"
+    p = GeminiProvider(
+        model="gemini-2.5-flash",
+        client=fake,  # type: ignore[arg-type]
+        cache_index=idx,
+    )
+    resp = await p.generate(
+        full,
+        enable_web_search=False,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert resp.text == "gemini-answer"
+    assert fake.aio.caches.create_calls == 0
+    assert fake.aio.models.last_contents == full
+    assert getattr(fake.aio.models.last_config, "cached_content", None) in (None,)
+
+
+@pytest.mark.asyncio
+async def test_gemini_skips_count_tokens_when_estimate_below_minimum(tmp_path: Path) -> None:
+    fake = _FakeGeminiClient()
+    idx = GeminiCacheIndex(path=tmp_path / "idx.json")
+    static = "a" * 200
+    user = "u"
+    full = f"{static}\n\n{user}"
+    p = GeminiProvider(
+        model="gemini-2.5-flash",
+        client=fake,  # type: ignore[arg-type]
+        cache_index=idx,
+    )
+    resp = await p.generate(
+        full,
+        enable_web_search=False,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert resp.text == "gemini-answer"
+    assert fake.aio.models.count_tokens_calls == 0
     assert fake.aio.caches.create_calls == 0
     assert fake.aio.models.last_contents == full
     assert getattr(fake.aio.models.last_config, "cached_content", None) in (None,)

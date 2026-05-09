@@ -47,12 +47,18 @@ class GeminiProvider(LLMProvider):
         self._cache_ttl_s = cache_ttl_s
 
     async def _count_cache_prefix_tokens(self, cacheable_prefix: str) -> int:
-        resp = await self._client.aio.models.count_tokens(
-            model=self._model,
-            contents=[],
-            config=types.CountTokensConfig(system_instruction=cacheable_prefix),
-        )
-        return int(resp.total_tokens or 0)
+        try:
+            resp = await self._client.aio.models.count_tokens(
+                model=self._model,
+                contents=cacheable_prefix,
+            )
+            return int(resp.total_tokens or 0)
+        except Exception as e:
+            logger.warning(
+                "Gemini count_tokens failed; skipping cache feasibility check error=%s",
+                type(e).__name__,
+            )
+            return 0
 
     async def generate(
         self,
@@ -83,15 +89,24 @@ class GeminiProvider(LLMProvider):
         prefix_tokens = 0
         if use_cache:
             assert cacheable_prefix is not None
-            prefix_tokens = await self._count_cache_prefix_tokens(cacheable_prefix)
-            if prefix_tokens < min_toks:
+            rough_estimate = len(cacheable_prefix) // 4
+            if rough_estimate < min_toks:
                 logger.info(
-                    "Gemini cache skipped prefix_tokens=%s min_required=%s model=%s",
-                    prefix_tokens,
+                    "Gemini cache skipped (rough estimate below min) prefix_chars=%s rough_tokens=%s min=%s",
+                    len(cacheable_prefix),
+                    rough_estimate,
                     min_toks,
-                    self._model,
                 )
                 use_cache = False
+            else:
+                prefix_tokens = await self._count_cache_prefix_tokens(cacheable_prefix)
+                if prefix_tokens < min_toks:
+                    logger.info(
+                        "Gemini cache skipped (precise count below min) prefix_tokens=%s min=%s",
+                        prefix_tokens,
+                        min_toks,
+                    )
+                    use_cache = False
 
         cfg_parts: dict[str, Any] = {}
         if enable_web_search:
