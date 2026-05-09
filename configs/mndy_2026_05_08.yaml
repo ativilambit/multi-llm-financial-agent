@@ -1,0 +1,32 @@
+symbol: MNDY
+company_name:
+
+today_low: 68
+today_high: 74
+current_price: 73.24
+today_date: "Fri May 8, 2026"
+today_session: "after the market trading window"
+
+earnings_date: "Mon May 11 2026"
+earnings_timing: "early morning et, before the market open"
+
+target_dates:
+  - "Mon May 11"
+  - "Fri May 15"
+  - "Fri May 22"
+  - "Fri May 29"
+  - "Fri Jun 5"
+next_trading_day: "Tues May 12"
+followup_open_date: "Mon May 18"
+
+historical_quarters: 11
+short_interest_lookbacks:
+  - "last two months back"
+  - "last month"
+  - "last week"
+  - "yesterday"
+  - "today"
+
+providers: ["anthropic", "openai"]
+synthesizer: "anthropic"
+

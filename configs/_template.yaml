@@ -1,0 +1,50 @@
+# Copy this file to create a new run config.
+#
+# Required:
+# - symbol: Stock ticker symbol (e.g. "MNDY")
+# - today_low / today_high / current_price: Today's trading range and current price
+# - today_date / today_session: Human-readable timestamp context (e.g. "Fri May 8, 2026")
+# - earnings_date / earnings_timing: Human-readable earnings timing text
+# - target_dates: List of dates referenced in the prompt
+# - next_trading_day: Next trading day after earnings
+# - followup_open_date: A later follow-up open date referenced in the prompt
+# - providers: Which provider backends to run in parallel
+# - synthesizer: Which provider to use for consensus synthesis
+#
+# Optional:
+# - company_name: Company name (informational; not required by the base prompt)
+# - historical_quarters: Number of quarters to include in the empirical move table
+# - short_interest_lookbacks: Phrases describing lookback windows to ask for
+
+symbol: "TICKER"
+company_name: "Optional Company Name"
+
+today_low: 0
+today_high: 0
+current_price: 0
+today_date: "Fri May 8, 2026"
+today_session: "after the market trading window"
+
+earnings_date: "Mon May 11 2026"
+earnings_timing: "early morning et, before the market open"
+
+target_dates:
+  - "Mon May 11"
+  - "Fri May 15"
+  - "Fri May 22"
+  - "Fri May 29"
+  - "Fri Jun 5"
+next_trading_day: "Tues May 12"
+followup_open_date: "Mon May 18"
+
+historical_quarters: 11
+short_interest_lookbacks:
+  - "last two months back"
+  - "last month"
+  - "last week"
+  - "yesterday"
+  - "today"
+
+providers: ["anthropic", "openai"]
+synthesizer: "anthropic"
+
