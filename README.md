@@ -41,7 +41,11 @@ python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --no-web-sear
 
 The same flag works in iterative mode. Legacy aliases **`--enable-web-search` / `--no-enable-web-search`** still map to the same setting as `--web-search` / `--no-web-search`.
 
-YAML may set **per-provider** overrides (`web_search: true|false`) and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **4096**), and `verifier_max_output_tokens` (default **1536**, iterative verifier only).
+YAML may set **per-provider** overrides: optional `model` (API model id for that backend), `web_search: true|false`, and optional **per-provider timeouts** (`request_timeout_s`). Global defaults: `request_timeout_s` (default **180** seconds), `max_output_tokens` (default **4096**), and `verifier_max_output_tokens` (default **1536**, iterative verifier only).
+
+**Anthropic** defaults to **Opus** (`claude-opus-4-7` unless you set `model`), which has substantially higher input-token rate limits on the standard tier (on the order of **~500k** tokens per minute) than Sonnet (often around **~30k** tokens per minute). Override with `model` under `providers` if you need a different snapshot. See [Anthropic model IDs](https://docs.anthropic.com/en/docs/about-claude/models/model-ids-and-versions).
+
+**Synthesizer** defaults to **Gemini** so synthesis runs on a different provider than typical Anthropic fan-out, which avoids stacking the same provider’s rate limits on both parallel answers and the long synthesis prompt. Configure it as a string (`synthesizer: gemini`) or as an object with `name`, optional `model`, optional `web_search`, and optional `request_timeout_s`.
 
 ```yaml
 request_timeout_s: 180
@@ -49,14 +53,21 @@ max_output_tokens: 4096
 verifier_max_output_tokens: 1536
 providers:
   - name: anthropic
+    model: claude-opus-4-7
     web_search: true
   - name: openai
+    model: gpt-5.5
     web_search: false
   - name: gemini
     request_timeout_s: 120
+synthesizer:
+  name: gemini
+  model: gemini-2.5-pro
+  web_search: true
+  request_timeout_s: 240
 ```
 
-The simple list form remains valid: `providers: ["anthropic", "openai"]`.
+The simple list form remains valid: `providers: ["anthropic", "openai"]`. A bare `synthesizer: openai` string is still accepted.
 
 ### Run timing (`run.json`)
 

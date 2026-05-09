@@ -70,19 +70,19 @@ async def test_orchestrator_timeout_does_not_block_other_providers(
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": [
-                {"name": "slow", "request_timeout_s": 0.15},
-                {"name": "fast"},
+                {"name": "anthropic", "request_timeout_s": 0.15},
+                {"name": "openai"},
             ],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
             "request_timeout_s": 5.0,
         }
     )
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("slow", lambda: _Slow(name="slow", delay_s=2.0, text="S"))
-        reg.register("fast", lambda: _Slow(name="fast", delay_s=0.05, text="F"))
-        reg.register("synth", lambda: _Slow(name="synth", delay_s=0.0, text="SYN"))
+        reg.register("anthropic", lambda **_: _Slow(name="anthropic", delay_s=2.0, text="S"))
+        reg.register("openai", lambda **_: _Slow(name="openai", delay_s=0.05, text="F"))
+        reg.register("gemini", lambda **_: _Slow(name="gemini", delay_s=0.0, text="SYN"))
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -98,17 +98,15 @@ async def test_orchestrator_timeout_does_not_block_other_providers(
     run_meta = json.loads((artifacts.output_dir / "run.json").read_text(encoding="utf-8"))
 
     assert "SYN" in synthesis
-    slow = run_meta["providers"]["slow"]
+    slow = run_meta["providers"]["anthropic"]
     assert slow["model"] == "error:timeout"
-    assert run_meta["providers"]["fast"]["model"] == "fake"
+    assert run_meta["providers"]["openai"]["model"] == "fake"
     assert "timing" in run_meta
     assert "parallel_provider_batch_wall_s" in run_meta["timing"]
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_one_provider_failure_others_continue(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+async def test_orchestrator_one_provider_failure_others_continue(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
     repo_root = Path(__file__).resolve().parents[1]
     prompt_path = repo_root / "prompts" / "equity_analyst.j2"
@@ -129,17 +127,17 @@ async def test_orchestrator_one_provider_failure_others_continue(
             "followup_open_date": "Mon May 18",
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
-            "providers": ["boom", "fast"],
-            "synthesizer": "synth",
+            "providers": ["anthropic", "openai"],
+            "synthesizer": "gemini",
             "request_timeout_s": 5.0,
         }
     )
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("boom", lambda: _Boom(name="boom"))
-        reg.register("fast", lambda: _Slow(name="fast", delay_s=0.05, text="F"))
-        reg.register("synth", lambda: _Slow(name="synth", delay_s=0.0, text="SYN"))
+        reg.register("anthropic", lambda **_: _Boom(name="anthropic"))
+        reg.register("openai", lambda **_: _Slow(name="openai", delay_s=0.05, text="F"))
+        reg.register("gemini", lambda **_: _Slow(name="gemini", delay_s=0.0, text="SYN"))
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -155,8 +153,8 @@ async def test_orchestrator_one_provider_failure_others_continue(
     run_meta = json.loads((artifacts.output_dir / "run.json").read_text(encoding="utf-8"))
 
     assert "SYN" in synthesis
-    assert run_meta["providers"]["boom"]["model"] == "error:RuntimeError"
-    assert run_meta["providers"]["fast"]["model"] == "fake"
+    assert run_meta["providers"]["anthropic"]["model"] == "error:RuntimeError"
+    assert run_meta["providers"]["openai"]["model"] == "fake"
 
 
 def test_yaml_per_provider_web_search_override(tmp_path: Path) -> None:
@@ -218,7 +216,7 @@ async def test_run_json_timing_present_after_live_run(tmp_path: Path, monkeypatc
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": ["anthropic", "openai"],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
         }
     )
 
@@ -228,11 +226,7 @@ async def test_run_json_timing_present_after_live_run(tmp_path: Path, monkeypatc
             self._text = text
 
         async def generate(
-            self,
-            prompt: str,
-            *,
-            enable_web_search: bool = True,
-            max_output_tokens: int | None = None,
+            self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
         ) -> ProviderResponse:
             return ProviderResponse(
                 provider_name=self.name,
@@ -244,9 +238,9 @@ async def test_run_json_timing_present_after_live_run(tmp_path: Path, monkeypatc
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("anthropic", lambda: _Fast(name="anthropic", text="A"))
-        reg.register("openai", lambda: _Fast(name="openai", text="B"))
-        reg.register("synth", lambda: _Fast(name="synth", text="SYNTH"))
+        reg.register("anthropic", lambda **_: _Fast(name="anthropic", text="A"))
+        reg.register("openai", lambda **_: _Fast(name="openai", text="B"))
+        reg.register("gemini", lambda **_: _Fast(name="gemini", text="SYNTH"))
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -261,10 +255,5 @@ async def test_run_json_timing_present_after_live_run(tmp_path: Path, monkeypatc
     _, artifacts = await orch.run_async(dry_run=False, enable_web_search=False)
     run_meta = json.loads((artifacts.output_dir / "run.json").read_text(encoding="utf-8"))
     t = run_meta["timing"]
-    assert set(t.keys()) >= {
-        "parallel_provider_batch_wall_s",
-        "synthesis_wall_s",
-        "total_wall_s",
-        "per_provider",
-    }
+    assert set(t.keys()) >= {"parallel_provider_batch_wall_s", "synthesis_wall_s", "total_wall_s", "per_provider"}
     assert "anthropic" in t["per_provider"] and "openai" in t["per_provider"]

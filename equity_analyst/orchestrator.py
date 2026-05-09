@@ -14,6 +14,7 @@ from equity_analyst.config import ProviderConfig, RunConfig
 from equity_analyst.logging_setup import attach_run_file_logging
 from equity_analyst.prompting import render_prompt
 from equity_analyst.provider_runtime import (
+    effective_synthesizer_web_search,
     effective_web_search,
     failure_response,
     failure_response_from_completed,
@@ -86,7 +87,7 @@ class Orchestrator:
             "Run start symbol=%s providers=%s synthesizer=%s dry_run=%s output_dir=%s web_search=%s",
             self._config.symbol,
             names,
-            self._config.synthesizer,
+            self._config.synthesizer.name,
             dry_run,
             str(out_dir.resolve()),
             enable_web_search,
@@ -98,7 +99,7 @@ class Orchestrator:
                 "",
                 f"Symbol: {self._config.symbol}",
                 f"Providers: {', '.join(names)}",
-                f"Synthesizer: {self._config.synthesizer}",
+                f"Synthesizer: {self._config.synthesizer.name}",
                 f"Template: {rendered.template_path}",
                 f"Web search (run default): {enable_web_search}",
                 "",
@@ -149,7 +150,7 @@ class Orchestrator:
 
         async def _run_one(pc: ProviderConfig) -> ProviderResponse:
             t0 = time.perf_counter()
-            provider = self._registry.create(pc.name)
+            provider = self._registry.create(pc.name, model=pc.model)
             ws = effective_web_search(run_default=enable_web_search, pc=pc)
             timeout_s = provider_timeout_s(pc, self._config)
 
@@ -212,33 +213,36 @@ class Orchestrator:
         for name, resp in responses.items():
             provider_files[name].write_text(resp.text.rstrip() + "\n", encoding="utf-8")
 
-        synth_provider = self._registry.create(self._config.synthesizer)
+        syn_cfg = self._config.synthesizer
+        synth_provider = self._registry.create(syn_cfg.name, model=syn_cfg.model)
+        syn_ws = effective_synthesizer_web_search(run_default=enable_web_search, syn=syn_cfg)
+        syn_timeout = self._config.synthesizer_timeout_s()
         syn_t0 = time.perf_counter()
         try:
             synthesis = await asyncio.wait_for(
                 Synthesizer(synth_provider).synthesize(
                     original_prompt=rendered.text,
                     responses=responses,
-                    enable_web_search=enable_web_search,
+                    enable_web_search=syn_ws,
                     max_output_tokens=self._config.max_output_tokens,
                     synthesizer_max_input_tokens=self._config.synthesizer_max_input_tokens,
                     retry_max_attempts=self._config.retry_max_attempts,
                     retry_base_delay_s=self._config.retry_base_delay_s,
                 ),
-                timeout=float(self._config.request_timeout_s),
+                timeout=syn_timeout,
             )
         except asyncio.CancelledError:
             raise
         except TimeoutError as exc:
             logger.error(
                 "Synthesis failed: provider=%s error_type=%s detail=%r",
-                self._config.synthesizer,
+                syn_cfg.name,
                 type(exc).__name__,
                 exc,
             )
-            run_errors.append(run_error_record(stage="synthesis", provider=self._config.synthesizer, exc=exc))
+            run_errors.append(run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc))
             synthesis_resp = failure_response_from_completed(
-                self._config.synthesizer,
+                syn_cfg.name,
                 exc,
                 started_perf=syn_t0,
             )
@@ -246,13 +250,13 @@ class Orchestrator:
         except Exception as exc:
             logger.error(
                 "Synthesis failed: provider=%s error_type=%s detail=%r",
-                self._config.synthesizer,
+                syn_cfg.name,
                 type(exc).__name__,
                 exc,
             )
-            run_errors.append(run_error_record(stage="synthesis", provider=self._config.synthesizer, exc=exc))
+            run_errors.append(run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc))
             synthesis_resp = failure_response_from_completed(
-                self._config.synthesizer,
+                syn_cfg.name,
                 exc,
                 started_perf=syn_t0,
             )
@@ -267,7 +271,7 @@ class Orchestrator:
             run_errors.append(
                 {
                     "stage": "synthesis",
-                    "provider": self._config.synthesizer,
+                    "provider": syn_cfg.name,
                     "error_type": "AllProvidersFailed",
                     "detail": f"excluded_failed_providers={sorted(failed_only)}",
                 }

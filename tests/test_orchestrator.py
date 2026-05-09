@@ -62,17 +62,17 @@ async def test_orchestrator_parallel_and_writes_outputs(
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": ["anthropic", "openai", "gemini", "grok"],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
         }
     )
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("anthropic", lambda: _SleepyProvider(name="anthropic", delay_s=0.25, text="A"))
-        reg.register("openai", lambda: _SleepyProvider(name="openai", delay_s=0.25, text="B"))
-        reg.register("gemini", lambda: _SleepyProvider(name="gemini", delay_s=0.25, text="G"))
-        reg.register("grok", lambda: _SleepyProvider(name="grok", delay_s=0.25, text="K"))
-        reg.register("synth", lambda: _SleepyProvider(name="synth", delay_s=0.0, text="SYNTH"))
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.25, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.25, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.25, text="G"))
+        reg.register("grok", lambda **_: _SleepyProvider(name="grok", delay_s=0.25, text="K"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -107,7 +107,7 @@ async def test_orchestrator_parallel_and_writes_outputs(
 
 
 class _RecordingSynthProvider(LLMProvider):
-    name = "synth"
+    name = "gemini"
 
     def __init__(self) -> None:
         self.last_prompt: str | None = None
@@ -117,7 +117,7 @@ class _RecordingSynthProvider(LLMProvider):
     ) -> ProviderResponse:
         self.last_prompt = prompt
         return ProviderResponse(
-            provider_name="synth",
+            provider_name="gemini",
             model="fake",
             text="SYNTH",
             usage=ProviderUsage(input_tokens=1, output_tokens=1, total_tokens=2),
@@ -181,15 +181,15 @@ async def test_synthesizer_failure_does_not_crash_run(tmp_path: Path, monkeypatc
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": ["anthropic", "openai"],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
         }
     )
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("anthropic", lambda: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
-        reg.register("openai", lambda: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
-        reg.register("synth", lambda: _RecordingSynthProvider())
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="A"))
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _RecordingSynthProvider())
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -230,7 +230,7 @@ async def test_error_responses_excluded_from_synthesis(tmp_path: Path, monkeypat
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": ["anthropic", "openai"],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
         }
     )
 
@@ -252,9 +252,9 @@ async def test_error_responses_excluded_from_synthesis(tmp_path: Path, monkeypat
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("anthropic", lambda: _SleepyProvider(name="anthropic", delay_s=0.0, text="GOODBODY"))
-        reg.register("openai", lambda: _OpenAIErr())
-        reg.register("synth", lambda: rec)
+        reg.register("anthropic", lambda **_: _SleepyProvider(name="anthropic", delay_s=0.0, text="GOODBODY"))
+        reg.register("openai", lambda **_: _OpenAIErr())
+        reg.register("gemini", lambda **_: rec)
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -276,7 +276,7 @@ async def test_all_providers_failed_skips_synthesizer(tmp_path: Path, monkeypatc
     prompt_path = repo_root / "prompts" / "equity_analyst.j2"
 
     class _CountSynth(LLMProvider):
-        name = "synth"
+        name = "gemini"
         calls = 0
 
         async def generate(
@@ -284,7 +284,7 @@ async def test_all_providers_failed_skips_synthesizer(tmp_path: Path, monkeypatc
         ) -> ProviderResponse:
             self.calls += 1
             return ProviderResponse(
-                provider_name="synth",
+                provider_name="gemini",
                 model="m",
                 text="SYN",
                 usage=ProviderUsage(),
@@ -325,15 +325,15 @@ async def test_all_providers_failed_skips_synthesizer(tmp_path: Path, monkeypatc
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": ["anthropic", "openai"],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
         }
     )
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("anthropic", lambda: _AlwaysErr("anthropic"))
-        reg.register("openai", lambda: _AlwaysErr("openai"))
-        reg.register("synth", lambda: counter)
+        reg.register("anthropic", lambda **_: _AlwaysErr("anthropic"))
+        reg.register("openai", lambda **_: _AlwaysErr("openai"))
+        reg.register("gemini", lambda **_: counter)
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -370,7 +370,7 @@ async def test_retry_on_rate_limit_then_success(
             "historical_quarters": 11,
             "short_interest_lookbacks": ["last month"],
             "providers": ["anthropic", "openai"],
-            "synthesizer": "synth",
+            "synthesizer": "gemini",
             "retry_max_attempts": 3,
         }
     )
@@ -382,9 +382,9 @@ async def test_retry_on_rate_limit_then_success(
 
     def _fake_registry() -> ProviderRegistry:
         reg = ProviderRegistry()
-        reg.register("anthropic", lambda: _FlakyAnthropic())
-        reg.register("openai", lambda: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
-        reg.register("synth", lambda: _SleepyProvider(name="synth", delay_s=0.0, text="SYNTH"))
+        reg.register("anthropic", lambda **_: _FlakyAnthropic())
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
         return reg
 
     import equity_analyst.orchestrator as orch_mod
@@ -396,4 +396,55 @@ async def test_retry_on_rate_limit_then_success(
         text, _artifacts = await orch.run_async(dry_run=False, enable_web_search=False)
     assert "SYNTH" in text
     assert any("retrying provider=anthropic" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_yaml_model_override_passed_to_provider_registry(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(__file__).resolve().parents[1]
+    prompt_path = repo_root / "prompts" / "equity_analyst.j2"
+
+    captured: dict[str, Any] = {}
+
+    def _anth_factory(**kwargs: Any) -> LLMProvider:
+        captured.update(kwargs)
+        return _SleepyProvider(name="anthropic", delay_s=0.0, text="A")
+
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "MNDY",
+            "company_name": None,
+            "today_low": 68,
+            "today_high": 74,
+            "current_price": 73.24,
+            "today_date": "Fri May 8, 2026",
+            "today_session": "after the market trading window",
+            "earnings_date": "Mon May 11 2026",
+            "earnings_timing": "early morning et, before the market open",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tues May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 11,
+            "short_interest_lookbacks": ["last month"],
+            "providers": [{"name": "anthropic", "model": "custom-opus-from-yaml"}, {"name": "openai"}],
+            "synthesizer": "gemini",
+        }
+    )
+
+    def _fake_registry() -> ProviderRegistry:
+        reg = ProviderRegistry()
+        reg.register("anthropic", _anth_factory)
+        reg.register("openai", lambda **_: _SleepyProvider(name="openai", delay_s=0.0, text="B"))
+        reg.register("gemini", lambda **_: _SleepyProvider(name="gemini", delay_s=0.0, text="SYNTH"))
+        return reg
+
+    import equity_analyst.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    orch = Orchestrator(config=cfg, prompt_path=prompt_path)
+    await orch.run_async(dry_run=False, enable_web_search=False)
+    assert captured.get("model") == "custom-opus-from-yaml"
 

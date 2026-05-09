@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from equity_analyst.config import ProviderConfig, RunConfig
+from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 
@@ -38,6 +38,12 @@ def partition_provider_responses(
 def effective_web_search(*, run_default: bool, pc: ProviderConfig) -> bool:
     if pc.web_search is not None:
         return bool(pc.web_search)
+    return run_default
+
+
+def effective_synthesizer_web_search(*, run_default: bool, syn: SynthesizerConfig) -> bool:
+    if syn.web_search is not None:
+        return bool(syn.web_search)
     return run_default
 
 

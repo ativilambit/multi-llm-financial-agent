@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(LLMProvider):
     name = "anthropic"
 
-    def __init__(self, *, model: str = "claude-sonnet-4-6", client: Any | None = None) -> None:
+    # GA Opus (higher input-token rate limits than Sonnet on typical tiers). IDs:
+    # https://docs.anthropic.com/en/docs/about-claude/models/model-ids-and-versions
+    def __init__(self, *, model: str = "claude-opus-4-7", client: Any | None = None) -> None:
         self._model = model
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=os.environ.get("ANTHROPIC_API_KEY")
-        )
+        self._client = client or anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
     async def generate(
         self,
@@ -37,9 +37,7 @@ class AnthropicProvider(LLMProvider):
             "messages": [{"role": "user", "content": prompt}],
         }
         if enable_web_search:
-            create_kwargs["tools"] = cast(
-                Any, [{"type": "web_search_20260209", "name": "web_search"}]
-            )
+            create_kwargs["tools"] = cast(Any, [{"type": "web_search_20260209", "name": "web_search"}])
         logger.debug(
             "Anthropic request shape model=%s web_search=%s prompt_chars=%s max_tokens=%s",
             self._model,
@@ -76,3 +74,4 @@ class AnthropicProvider(LLMProvider):
             latency_s=latency_s,
             raw=msg,
         )
+

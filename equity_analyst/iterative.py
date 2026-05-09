@@ -17,8 +17,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from equity_analyst.config import ProviderConfig, RunConfig
+from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
 from equity_analyst.provider_runtime import (
+    effective_synthesizer_web_search,
     effective_web_search,
     failure_response,
     failure_response_from_completed,
@@ -170,7 +171,7 @@ class RefinementState(TypedDict, total=False):
     retry_max_attempts: int
     retry_base_delay_s: float
     synthesizer_max_input_tokens: int
-    synthesizer_name: str
+    synthesizer_cfg: dict[str, Any]
     verifier_name: str
     output_dir: str
     provider_responses: Annotated[list[dict[str, Any]], operator.add]
@@ -224,7 +225,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         async def _run_one(pc: ProviderConfig) -> ProviderResponse:
             t0 = time.perf_counter()
-            p = registry.create(pc.name)
+            p = registry.create(pc.name, model=pc.model)
             ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
             to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
 
@@ -289,22 +290,28 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
     async def synthesize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
         round_idx = len(state.get("synthesis_history", []))
+        syn_cfg = SynthesizerConfig.model_validate(state["synthesizer_cfg"])
         logger.info(
             "Node synthesize iteration=%s max_iterations=%s synthesizer=%s",
             round_idx + 1,
             state["max_iterations"],
-            state["synthesizer_name"],
+            syn_cfg.name,
         )
         last = state["provider_responses"][-1]
         raw = last["responses"]
         resp_map: dict[str, ProviderResponse] = {k: _dict_to_response(v) for k, v in raw.items()}
-        synth_backend = registry.create(state["synthesizer_name"])
+        synth_backend = registry.create(syn_cfg.name, model=syn_cfg.model)
         syn = Synthesizer(synth_backend)
         mot = int(state.get("max_output_tokens", 4096))
-        timeout_syn = float(state.get("request_timeout_s", 180.0))
+        timeout_syn = (
+            float(syn_cfg.request_timeout_s)
+            if syn_cfg.request_timeout_s is not None
+            else float(state.get("request_timeout_s", 180.0))
+        )
         syn_max_in = int(state.get("synthesizer_max_input_tokens", 20_000))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
+        syn_ws = effective_synthesizer_web_search(run_default=state["enable_web_search"], syn=syn_cfg)
         s0 = time.perf_counter()
         it_no = round_idx + 1
         err_ev: list[dict[str, Any]] = []
@@ -313,7 +320,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 syn.synthesize(
                     original_prompt=state["original_prompt"],
                     responses=resp_map,
-                    enable_web_search=state["enable_web_search"],
+                    enable_web_search=syn_ws,
                     max_output_tokens=mot,
                     synthesizer_max_input_tokens=syn_max_in,
                     retry_max_attempts=retry_max,
@@ -326,22 +333,22 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         except TimeoutError as exc:
             logger.error(
                 "Synthesis failed: provider=%s error_type=%s detail=%r",
-                state["synthesizer_name"],
+                syn_cfg.name,
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(run_error_record(stage="synthesis", provider=state["synthesizer_name"], exc=exc))
-            err_resp = failure_response_from_completed(state["synthesizer_name"], exc, started_perf=s0)
+            err_ev.append(run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc))
+            err_resp = failure_response_from_completed(syn_cfg.name, exc, started_perf=s0)
             result = SynthesisResult(response=err_resp, prompt="(synthesis stage timed out)")
         except Exception as exc:
             logger.error(
                 "Synthesis failed: provider=%s error_type=%s detail=%r",
-                state["synthesizer_name"],
+                syn_cfg.name,
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(run_error_record(stage="synthesis", provider=state["synthesizer_name"], exc=exc))
-            err_resp = failure_response_from_completed(state["synthesizer_name"], exc, started_perf=s0)
+            err_ev.append(run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc))
+            err_resp = failure_response_from_completed(syn_cfg.name, exc, started_perf=s0)
             result = SynthesisResult(
                 response=err_resp,
                 prompt=f"(synthesis exception: {type(exc).__name__})",
@@ -352,7 +359,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             err_ev.append(
                 {
                     "stage": "synthesis",
-                    "provider": state["synthesizer_name"],
+                    "provider": syn_cfg.name,
                     "error_type": "AllProvidersFailed",
                     "detail": f"excluded_failed_providers={sorted(failed_only)}",
                 }
@@ -568,7 +575,7 @@ def build_initial_refinement_state(
         "retry_max_attempts": cfg.retry_max_attempts,
         "retry_base_delay_s": float(cfg.retry_base_delay_s),
         "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
-        "synthesizer_name": cfg.synthesizer,
+        "synthesizer_cfg": cfg.synthesizer.model_dump(mode="json"),
         "verifier_name": "anthropic",
         "output_dir": str(output_dir.resolve()),
     }

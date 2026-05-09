@@ -8,13 +8,18 @@
 # - target_dates: List of dates referenced in the prompt
 # - next_trading_day: Next trading day after earnings
 # - followup_open_date: A later follow-up open date referenced in the prompt
-# - providers: Which provider backends to run in parallel (e.g. "anthropic", "openai", "gemini", "grok")
-# - synthesizer: Which provider to use for consensus synthesis
+# - providers: Which provider backends to run in parallel (see examples below)
+# - synthesizer: Which backend runs final synthesis (string or object; see below)
 #
 # Optional:
 # - company_name: Company name (informational; not required by the base prompt)
 # - historical_quarters: Number of quarters to include in the empirical move table
 # - short_interest_lookbacks: Phrases describing lookback windows to ask for
+#
+# Per-provider options (when using object form under `providers:`):
+# - model: API model id for that backend (default is each provider's built-in default, e.g. Opus for Anthropic)
+# - web_search: true|false — override CLI/run default for this provider only (default: inherit run default)
+# - request_timeout_s: Per-provider HTTP/generate timeout in seconds (default: global `request_timeout_s`)
 
 symbol: "TICKER"
 company_name: "Optional Company Name"
@@ -45,11 +50,30 @@ short_interest_lookbacks:
   - "yesterday"
   - "today"
 
-providers: ["anthropic", "openai", "gemini", "grok"]
-synthesizer: "anthropic"
+# String list (each entry is shorthand for {name: "..."}):
+# providers: ["anthropic", "openai", "gemini", "grok"]
+
+# Object list (recommended when overriding models or timeouts):
+providers:
+  - name: anthropic
+    model: claude-opus-4-7
+  - name: openai
+    model: gpt-5.5
+  - name: gemini
+    model: gemini-2.5-flash
+  - name: grok
+
+# Bare string = {name: "gemini"} (default synthesizer if you omit `synthesizer` entirely is gemini).
+# synthesizer: gemini
+
+# Object form (recommended for synthesis-only overrides):
+synthesizer:
+  name: gemini
+  model: gemini-2.5-pro
+  web_search: true
+  request_timeout_s: 240
 
 # Optional tuning (defaults shown):
 # retry_max_attempts: 3
 # retry_base_delay_s: 2.0
 # synthesizer_max_input_tokens: 20000
-

@@ -2,18 +2,50 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Self, TextIO
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
 
 
 class ProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    model: str | None = None
     web_search: bool | None = None
     request_timeout_s: float | None = Field(default=None, gt=0)
+
+    @field_validator("name")
+    @classmethod
+    def _known_provider(cls, v: str) -> str:
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown provider name {v!r}. Expected one of: {', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
+
+
+class SynthesizerConfig(BaseModel):
+    """Which backend performs final synthesis (may differ from fan-out providers)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    model: str | None = None
+    web_search: bool | None = None
+    request_timeout_s: float | None = Field(default=None, gt=0)
+
+    @field_validator("name")
+    @classmethod
+    def _known_synthesizer(cls, v: str) -> str:
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown synthesizer name {v!r}. Expected one of: {', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
 
 
 class RunConfig(BaseModel):
@@ -42,7 +74,9 @@ class RunConfig(BaseModel):
             ProviderConfig(name="openai"),
         ]
     )
-    synthesizer: str = "anthropic"
+    synthesizer: SynthesizerConfig = Field(
+        default_factory=lambda: SynthesizerConfig(name="gemini"),
+    )
 
     max_output_tokens: int = Field(default=4096, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
@@ -51,6 +85,19 @@ class RunConfig(BaseModel):
     retry_max_attempts: int = Field(default=3, ge=1, le=20)
     retry_base_delay_s: float = Field(default=2.0, gt=0, le=120.0)
     synthesizer_max_input_tokens: int = Field(default=20_000, ge=1024, le=500_000)
+
+    @field_validator("synthesizer", mode="before")
+    @classmethod
+    def _coerce_synthesizer(cls, v: Any) -> Any:
+        if v is None:
+            return {"name": "gemini"}
+        if isinstance(v, str):
+            return {"name": v}
+        if isinstance(v, SynthesizerConfig):
+            return v.model_dump()
+        if isinstance(v, dict):
+            return dict(v)
+        raise ValueError(f"Invalid synthesizer entry type: {type(v).__name__}")
 
     @field_validator("providers", mode="before")
     @classmethod
@@ -71,8 +118,19 @@ class RunConfig(BaseModel):
                 raise ValueError(f"Invalid provider entry type: {type(item).__name__}")
         return out
 
+    @model_validator(mode="after")
+    def _providers_non_empty(self) -> Self:
+        if not self.providers:
+            raise ValueError("providers must contain at least one entry")
+        return self
+
     def provider_names(self) -> list[str]:
         return [p.name for p in self.providers]
+
+    def synthesizer_timeout_s(self) -> float:
+        if self.synthesizer.request_timeout_s is not None:
+            return float(self.synthesizer.request_timeout_s)
+        return float(self.request_timeout_s)
 
 
 def _load_yaml_from_stream(stream: TextIO) -> dict[str, Any]:

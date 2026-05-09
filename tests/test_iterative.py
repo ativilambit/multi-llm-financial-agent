@@ -36,7 +36,7 @@ def _base_cfg(**kwargs: Any) -> RunConfig:
         "historical_quarters": 11,
         "short_interest_lookbacks": ["last month"],
         "providers": ["openai"],
-        "synthesizer": "synth",
+            "synthesizer": "gemini",
     }
     d.update(kwargs)
     return RunConfig.model_validate(d)
@@ -144,7 +144,11 @@ class _SynthCheckpoint(LLMProvider):
         self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
     ) -> ProviderResponse:
         self.calls += 1
-        body = "a\nOVERALL_CONFIDENCE: 0.1\n" if self.calls < 2 else "b\nOVERALL_CONFIDENCE: 0.99\n"
+        body = (
+            "a\nOVERALL_CONFIDENCE: 0.1\n"
+            if self.calls < 2
+            else "b\nOVERALL_CONFIDENCE: 0.99\n"
+        )
         return ProviderResponse(
             provider_name=self.name,
             model="m",
@@ -165,19 +169,14 @@ def _initial_state(cfg: RunConfig, out: Path) -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_loop_converges_when_synthesis_high_confidence(tmp_path: Path) -> None:
     reg = ProviderRegistry()
-    reg.register("openai", lambda: _Txt("openai", "fan"))
-    reg.register("synth", lambda: _Txt("synth", "ok\nOVERALL_CONFIDENCE: 0.95\n"))
-    reg.register(
-        "anthropic",
-        lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
-    )
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register("gemini", lambda **_: _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"))
+    reg.register("anthropic", lambda **_: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
-    final = await app.ainvoke(
-        _initial_state(cfg, out), config={"configurable": {"thread_id": "t1"}}
-    )
+    final = await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t1"}})
     assert len(final["provider_responses"]) == 1
     assert (out / "synthesis.md").is_file()
     run_json = out / "run.json"
@@ -190,30 +189,25 @@ async def test_loop_converges_when_synthesis_high_confidence(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_loop_continues_on_low_confidence(tmp_path: Path) -> None:
     reg = ProviderRegistry()
-    reg.register("openai", lambda: _Txt("openai", "fan"))
-    synth = _SynthCalls("synth")
-    reg.register("synth", lambda: synth)
-    reg.register(
-        "anthropic",
-        lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
-    )
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    synth = _SynthCalls("gemini")
+    reg.register("gemini", lambda **_: synth)
+    reg.register("anthropic", lambda **_: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
-    final = await app.ainvoke(
-        _initial_state(cfg, out), config={"configurable": {"thread_id": "t2"}}
-    )
+    final = await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t2"}})
     assert len(final["provider_responses"]) == 3
 
 
 @pytest.mark.asyncio
 async def test_loop_continues_on_contradictions(tmp_path: Path) -> None:
     reg = ProviderRegistry()
-    reg.register("openai", lambda: _Txt("openai", "fan"))
-    reg.register("synth", lambda: _Txt("synth", "syn\nOVERALL_CONFIDENCE: 0.95\n"))
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register("gemini", lambda **_: _Txt("gemini", "syn\nOVERALL_CONFIDENCE: 0.95\n"))
     ver = _VerCalls("anthropic")
-    reg.register("anthropic", lambda: ver)
+    reg.register("anthropic", lambda **_: ver)
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -227,9 +221,9 @@ async def test_loop_continues_on_contradictions(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_max_iterations_cutoff(tmp_path: Path) -> None:
     reg = ProviderRegistry()
-    reg.register("openai", lambda: _Txt("openai", "fan"))
-    reg.register("synth", lambda: _SynthLow("synth"))
-    reg.register("anthropic", lambda: _VerBad("anthropic"))
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register("gemini", lambda **_: _SynthLow("gemini"))
+    reg.register("anthropic", lambda **_: _VerBad("anthropic"))
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -244,13 +238,10 @@ async def test_max_iterations_cutoff(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_checkpoint_resume(tmp_path: Path) -> None:
     reg = ProviderRegistry()
-    reg.register("openai", lambda: _Txt("openai", "fan"))
-    synth_ck = _SynthCheckpoint("synth")
-    reg.register("synth", lambda: synth_ck)
-    reg.register(
-        "anthropic",
-        lambda: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
-    )
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    synth_ck = _SynthCheckpoint("gemini")
+    reg.register("gemini", lambda **_: synth_ck)
+    reg.register("anthropic", lambda **_: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
