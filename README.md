@@ -135,7 +135,7 @@ python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --iterative -
 
 ## Resume after a crash
 
-Iterative runs store checkpoints at `outputs/<run_id>/checkpoint.sqlite` and metadata in `run.json`. Resume with the output folder name (e.g. `MNDY_20260509T120000Z`):
+Iterative runs store checkpoints at `outputs/<run_id>/checkpoint.sqlite` and metadata in `run.json`. The CLI uses LangGraph's async SQLite checkpointer (`AsyncSqliteSaver` / `aiosqlite`): the DB connection is opened at the start of the run and closed when the run finishes (`async with`), which matches `app.ainvoke` and avoids leaking handles. Resume with the output folder name (e.g. `MNDY_20260509T120000Z`):
 
 ```bash
 python -m equity_analyst run --iterative --resume MNDY_20260509T120000Z

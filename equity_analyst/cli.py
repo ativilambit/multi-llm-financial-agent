@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from equity_analyst.config import RunConfig, load_config
 from equity_analyst.iterative import (
@@ -212,7 +212,7 @@ async def _run_iterative_cli(
         (out_dir / "run.json").write_text(
             json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-    with SqliteSaver.from_conn_string(str(ckpt)) as saver:
+    async with AsyncSqliteSaver.from_conn_string(str(ckpt)) as saver:
         app = compile_refinement_workflow(registry=reg, checkpointer=saver)
         config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
         if resume:
