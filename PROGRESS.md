@@ -17,3 +17,21 @@
 [2026-05-09 04:01:49 UTC] Gemini provider tested and passing (test_gemini_provider_assembles_request_and_parses_usage).
 
 [2026-05-09 04:01:49 UTC] Commit done: feat: add Gemini provider with Google Search grounding.
+
+[2026-05-09 04:07:08 UTC] Grok provider scaffolded (AsyncOpenAI x.ai base URL, web_search tool).
+
+[2026-05-09 04:07:08 UTC] Grok provider tested and passing; orchestrator test runs 4 providers in parallel.
+
+[2026-05-09 04:07:08 UTC] Commit done: feat: add Grok (xAI) provider with Live Search.
+
+[2026-05-09 04:10:17 UTC] LangGraph dependency installed; refinement graph compiles (fan_out, synthesize, verify, route, finalize).
+
+[2026-05-09 04:10:17 UTC] Checkpointing wired (MemorySaver in tests; SqliteSaver for CLI iterative runs).
+
+[2026-05-09 04:10:17 UTC] New CLI flags wired (--iterative, --max-iterations, --confidence-threshold, --resume).
+
+[2026-05-09 04:10:17 UTC] Iterative tests passing (tests/test_iterative.py).
+
+[2026-05-09 04:10:17 UTC] Final dry-run successful (MNDY iterative --dry-run).
+
+[2026-05-09 04:10:17 UTC] Commit done: feat: add LangGraph iterative refinement loop with verification and checkpointing.
