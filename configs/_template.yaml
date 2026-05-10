@@ -89,6 +89,8 @@ synthesizer:
 #   — registry key for the iterative-mode verification step (default gemini). Use anthropic, openai, etc. if desired.
 # verifier_model: gemini-3.1-pro-preview
 #   — optional API model id for the verifier only (default: each provider's built-in default, e.g. GeminiProvider default).
+# verifier_max_output_tokens: 8192
+#   — iterative verifier JSON completion budget (default 8192; max 32768).
 # request_timeout_s: 180
 #   — default asyncio wait_for ceiling for each provider/synthesis call (3 minutes).
 # retry_max_attempts: 3

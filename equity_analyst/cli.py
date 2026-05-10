@@ -96,7 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verifier-max-output-tokens",
         type=int,
         default=None,
-        help="Override RunConfig.verifier_max_output_tokens (iterative verifier only; default 1536)",
+        help="Override RunConfig.verifier_max_output_tokens (iterative verifier only; default 8192)",
     )
     run.add_argument(
         "--verifier-provider",

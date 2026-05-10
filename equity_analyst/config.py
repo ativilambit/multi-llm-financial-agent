@@ -105,7 +105,12 @@ class RunConfig(BaseModel):
 
     max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
-    verifier_max_output_tokens: int = Field(default=1536, ge=256, le=32_768)
+    verifier_max_output_tokens: int = Field(
+        default=8192,
+        ge=256,
+        le=32_768,
+        description="Completion budget for the iterative verifier JSON response (default 8192).",
+    )
     synthesizer_max_output_tokens: int = Field(default=24_000, ge=1024, le=128_000)
 
     retry_max_attempts: int = Field(default=3, ge=1, le=20)

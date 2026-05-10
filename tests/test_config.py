@@ -167,6 +167,7 @@ def test_default_synthesizer_max_output_tokens() -> None:
     )
     assert cfg.synthesizer_max_output_tokens == 24_000
     assert cfg.max_output_tokens == 16_000
+    assert cfg.verifier_max_output_tokens == 8192
     assert cfg.synthesizer_max_output_tokens != cfg.max_output_tokens
     assert cfg.request_timeout_s == 180.0
 

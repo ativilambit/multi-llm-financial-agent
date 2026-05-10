@@ -432,6 +432,44 @@ def test_parse_verifier_json_handles_alternate_key_names() -> None:
     assert out["unverifiable"] == ["maybe"]
 
 
+_ITERATION_1_TRUNCATED_VERIFIER_RAW = r"""{
+  "verified": [
+    "Piper Sandler downgraded from Overweight to Neutral, cutting the PT from $115/$100 to $85.",
+    "Loop Capital downgraded from Strong Buy to Hold, cutting the PT to $80.",
+    "KeyBanc / Canaccord cut targets significantly (to $140).",
+    "Average consensus targets are still technically higher than the $73 spot price (averaging ~$122).",
+    "Q4 2025 (Feb 2026): Beat EPS, T+1 move approx. -20.8% to -21.6%.",
+    "Q3 2025 (Nov 2025): Beat EPS, T+1 move approx. -12.3% to -17.4%.",
+    "Q2 2025 (Aug 2025): Beat EPS, T+1 move approx. -29.8%.",
+    "Put/Call ratio is approximately 0.625 (or 1.6 calls traded for every 1 put).",
+    "YTD Performance: Down ~48% to ~50% from recent highs.",
+    "Volatility: IV is in the 100th percentile (annualized IV >170% on the front month).",
+    "Gemini claims a precise 16.3% of float sold short.",
+    "Momentum: RSI is sitting between 38 and 42"
+  ],
+  "contradicted": [
+    "Q1 2025 (May 2025): Beat EPS, flat to slightly positive (+0.3% to +3%).",
+    "Moving Averages: Trading significantly below the 20-day, 50-day, and 200-day SMAs (20 SMA cited near $73.90)."
+  ],
+  "unverifiable":"""
+
+
+def test_parse_verifier_json_repairs_truncated_array() -> None:
+    out = parse_verifier_json(_ITERATION_1_TRUNCATED_VERIFIER_RAW)
+    assert out.get("_truncated") is True
+    assert len(out["verified"]) >= 8
+    assert len(out["contradicted"]) == 2
+    assert out["unverifiable"] == []
+
+
+def test_parse_verifier_json_repairs_minimal_truncation() -> None:
+    out = parse_verifier_json('{"verified": ["a", "b",')
+    assert out.get("_truncated") is True
+    assert out["verified"] == ["a", "b"]
+    assert out["contradicted"] == []
+    assert out["unverifiable"] == []
+
+
 class _VerRaw(LLMProvider):
     """Verifier stub returning a fixed body (used inside `_GeminiSplit`)."""
 

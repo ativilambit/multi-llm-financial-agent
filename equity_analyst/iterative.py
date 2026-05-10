@@ -48,10 +48,16 @@ VERIFIER_INSTRUCTION_PREFIX = """You are a financial fact-checker. You receive a
 numerical and factual claims about an equity/options thesis (and lines mentioning low confidence).
 
 Use web search only when needed to check those claims. Do not spend effort re-verifying narrative sections
-that are not represented in the excerpt."""
+that are not represented in the excerpt.
+
+Limit each list to at most 10 items; each item must be 25 words or fewer (short sentences).
+Prioritize the most material claims (numbers, ratings, P/C ratios) over narrative."""
 
 VERIFIER_JSON_TAIL = """If you cannot perform verification (refusal, missing tools, or no relevant claims in the excerpt), you must
 still respond with valid JSON only: use empty arrays for the three lists and set "notes" to a short reason.
+
+Keep each of "verified", "contradicted", and "unverifiable" to at most 10 items; each string ≤ 25 words.
+Prioritize material claims (figures, ratings, ratios) over narrative.
 
 Example (format only; replace with real claims from the excerpt):
 {"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": ""}
@@ -246,27 +252,68 @@ def _candidate_dicts_from_text(text: str) -> list[tuple[dict[str, Any], int]]:
     return out
 
 
-def parse_verifier_json(text: str) -> dict[str, Any]:
-    """Parse verifier model output into verified / contradicted / unverifiable lists (and optional notes)."""
-    raw = text
-    candidates = _candidate_dicts_from_text(text)
-    if not candidates:
-        logger.warning(
-            "verifier JSON parse failed (no object decoded); verifier_raw=%s",
-            raw[:1000] if raw else "",
-        )
-        return {"verified": [], "contradicted": [], "unverifiable": []}
+def _verification_dict_has_claims(data: dict[str, Any]) -> bool:
+    return any(bool(_values_for_canonical_key(data, k)) for k in _CLAIM_KEY_ALIASES)
 
-    best_data: dict[str, Any] | None = None
-    best_rank: tuple[int, int] = (-1, -1)
-    for data, raw_len in candidates:
-        score = _score_verification_dict(data)
-        rank = (score, raw_len)
-        if rank > best_rank:
-            best_rank = rank
-            best_data = data
 
-    assert best_data is not None
+def _rstrip_trailing_json_commas(s: str) -> str:
+    t = s.rstrip()
+    while t.endswith(","):
+        t = t[:-1].rstrip()
+    return t
+
+
+_REPAIR_SUFFIXES: tuple[str, ...] = (
+    ' [],"notes":""}',
+    " []}",
+    " null}",
+    "]}",  # e.g. cut mid-array: ... "a", "b",
+    '"]}',
+    "}",
+)
+
+
+def _attempt_truncated_json_repair(text: str) -> dict[str, Any] | None:
+    """Try to close truncated verifier JSON and return a dict with at least one non-empty claim list."""
+    t = _strip_markdown_fences(text.strip())
+    start = t.find("{")
+    if start < 0:
+        return None
+    base_full = t[start:].rstrip()
+    if not base_full:
+        return None
+
+    tried: set[str] = set()
+
+    def _try_candidate(candidate: str) -> dict[str, Any] | None:
+        if candidate in tried:
+            return None
+        tried.add(candidate)
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(obj, dict) and _verification_dict_has_claims(obj):
+            return obj
+        return None
+
+    max_trim = min(256, max(0, len(base_full) - 1))
+    for trim in range(0, max_trim + 1):
+        base = base_full[:-trim].rstrip() if trim else base_full
+        if not base:
+            continue
+        base_variants = {base, _rstrip_trailing_json_commas(base)}
+        for b in base_variants:
+            if not b:
+                continue
+            for suf in _REPAIR_SUFFIXES:
+                got = _try_candidate(b + suf)
+                if got is not None:
+                    return got
+    return None
+
+
+def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) -> dict[str, Any]:
     result: dict[str, Any] = {
         "verified": _values_for_canonical_key(best_data, "verified"),
         "contradicted": _values_for_canonical_key(best_data, "contradicted"),
@@ -275,6 +322,47 @@ def parse_verifier_json(text: str) -> dict[str, Any]:
     notes_val = best_data.get("notes")
     if isinstance(notes_val, str) and notes_val.strip():
         result["notes"] = notes_val.strip()
+    if truncated:
+        result["_truncated"] = True
+    return result
+
+
+def parse_verifier_json(text: str) -> dict[str, Any]:
+    """Parse verifier model output into verified / contradicted / unverifiable lists (and optional notes)."""
+    raw = text
+    candidates = _candidate_dicts_from_text(text)
+    truncated = False
+    best_data: dict[str, Any] | None = None
+
+    if not candidates:
+        repaired = _attempt_truncated_json_repair(text)
+        if repaired is not None:
+            best_data = repaired
+            truncated = True
+        else:
+            logger.warning(
+                "verifier JSON parse failed (no object decoded); verifier_raw=%s",
+                raw[:1000] if raw else "",
+            )
+            return {"verified": [], "contradicted": [], "unverifiable": []}
+    else:
+        best_rank: tuple[int, int] = (-1, -1)
+        for data, raw_len in candidates:
+            score = _score_verification_dict(data)
+            rank = (score, raw_len)
+            if rank > best_rank:
+                best_rank = rank
+                best_data = data
+
+    assert best_data is not None
+    result = _build_verification_result(best_data, truncated=truncated)
+    if truncated:
+        logger.warning(
+            "verifier: response was truncated; salvaged %s verified, %s contradicted, %s unverifiable items",
+            len(result["verified"]),
+            len(result["contradicted"]),
+            len(result["unverifiable"]),
+        )
     return result
 
 
@@ -609,7 +697,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             gemini_cache_index=None,
             gemini_cache_ttl_s=gemini_ttl,
         )
-        vmt = int(state.get("verifier_max_output_tokens", 1536))
+        vmt = int(state.get("verifier_max_output_tokens", 8192))
         timeout_v = float(state.get("request_timeout_s", 180.0))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
@@ -732,6 +820,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         for i, syn in enumerate(state["synthesis_history"], start=1):
             parts.append(f"### Round {i} synthesis (summary)\n\n{syn[:1500]}...\n\n")
         parts.append("## Verification summary\n\n")
+        trunc_notes = [
+            f"(round {i} verifier output was truncated; partial recovery)"
+            for i, ver in enumerate(state["verification_history"], start=1)
+            if ver.get("_truncated")
+        ]
+        if trunc_notes:
+            parts.append(" ".join(trunc_notes) + "\n\n")
         for i, ver in enumerate(state["verification_history"], start=1):
             parts.append(f"### Round {i}\n```json\n{json.dumps(ver, indent=2)}\n```\n\n")
         parts.append("## Final synthesis (last round)\n\n")
