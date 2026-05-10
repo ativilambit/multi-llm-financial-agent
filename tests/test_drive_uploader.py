@@ -11,6 +11,7 @@ from googleapiclient.errors import HttpError
 
 from equity_analyst.drive_uploader import (
     DriveUploader,
+    log_drive_upload_plan,
     maybe_upload_run_to_drive_raw,
 )
 
@@ -197,3 +198,68 @@ def test_discovery_build_called_once(monkeypatch: Any, sa_json: Path, tmp_path: 
         u.upload_directory(out, run_id="RUN1")
         u.upload_directory(out, run_id="RUN1")
     assert len(built) == 1
+
+
+def test_log_drive_upload_plan_disabled_by_config(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        log_drive_upload_plan(
+            drive_upload_enabled=False,
+            drive_credentials_path="/x/sa.json",
+            drive_root_folder_id="folder",
+        )
+    assert any(
+        "Drive upload: DISABLED (reason=config: drive_upload_enabled is false)" in r.message
+        for r in caplog.records
+    )
+
+
+def test_log_drive_upload_plan_disabled_no_creds(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="abc",
+        )
+    assert any("Drive upload: DISABLED (reason=no credentials path" in r.message for r in caplog.records)
+
+
+def test_log_drive_upload_plan_disabled_no_folder_id(
+    tmp_path: Path, sa_json: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=str(sa_json),
+            drive_root_folder_id="",
+        )
+    assert any("Drive upload: DISABLED (reason=no drive_root_folder_id" in r.message for r in caplog.records)
+
+
+def test_log_drive_upload_plan_enabled_ok(
+    tmp_path: Path, sa_json: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=str(sa_json),
+            drive_root_folder_id="root-folder-id",
+        )
+    enabled = [r for r in caplog.records if "Drive upload: ENABLED" in r.message]
+    assert len(enabled) == 1
+    assert "folder_id=root-folder-id" in enabled[0].message
+    assert str(sa_json.resolve()) in enabled[0].message
+
+
+def test_log_drive_upload_plan_enabled_warns_on_bad_key(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"type": "service_account", "project_id": "x"}', encoding="utf-8")
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=str(bad),
+            drive_root_folder_id="r1",
+        )
+    assert any("credentials file failed validation" in r.message for r in caplog.records)
+    assert any("Drive upload: ENABLED" in r.message and "folder_id=r1" in r.message for r in caplog.records)

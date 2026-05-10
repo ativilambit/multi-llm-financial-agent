@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from equity_analyst.config import ProviderConfig, RunConfig
-from equity_analyst.drive_uploader import maybe_upload_run_to_drive
+from equity_analyst.drive_uploader import (
+    log_drive_upload_plan_from_config,
+    maybe_upload_run_to_drive,
+)
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.logging_setup import attach_run_file_logging
 from equity_analyst.prompting import render_prompt, split_static_dynamic
@@ -75,6 +78,7 @@ class Orchestrator:
         rendered = render_prompt(self._config, self._prompt_path)
         out_dir = self._make_output_dir()
         attach_run_file_logging(out_dir / "agent.log")
+        log_drive_upload_plan_from_config(self._config)
 
         names = self._config.provider_names()
         provider_files: dict[str, Path] = {p: out_dir / _provider_output_filename(p) for p in names}

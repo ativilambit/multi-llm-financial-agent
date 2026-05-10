@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from equity_analyst.config import RunConfig, load_config
+from equity_analyst.drive_uploader import log_drive_upload_plan_from_config
 from equity_analyst.iterative import (
     build_initial_refinement_state,
     compile_refinement_workflow,
@@ -233,6 +234,7 @@ async def _run_iterative_cli(
         out_dir.mkdir(parents=True, exist_ok=False)
         thread_id = out_dir.name
     attach_run_file_logging(out_dir / "agent.log")
+    log_drive_upload_plan_from_config(cfg)
     ckpt = out_dir / "checkpoint.sqlite"
     logger.info(
         "Iterative CLI output_dir=%s resume=%s thread_id=%s checkpoint=%s",

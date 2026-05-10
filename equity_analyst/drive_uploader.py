@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from google.auth.exceptions import TransportError
+from google.auth.exceptions import MalformedError, TransportError
 from google.oauth2 import service_account
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 from googleapiclient.http import MediaFileUpload  # type: ignore[import-untyped]
@@ -26,6 +26,89 @@ def _expand_credentials_path(raw: str | None) -> Path | None:
     if raw is None or not str(raw).strip():
         return None
     return Path(os.path.expandvars(os.path.expanduser(str(raw).strip()))).resolve()
+
+
+def _service_account_key_file_issue(path: Path) -> str | None:
+    """Return a short message if ``path`` is not a usable Drive service-account JSON key, else None."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"cannot read file ({exc})"
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return f"invalid JSON ({exc})"
+    if not isinstance(info, dict):
+        return "JSON root must be an object"
+    try:
+        service_account.Credentials.from_service_account_info(  # type: ignore[no-untyped-call]
+            info,
+            scopes=_DRIVE_SCOPES,
+        )
+    except (MalformedError, ValueError) as exc:
+        return str(exc)
+    except Exception as exc:  # pragma: no cover - defensive
+        return str(exc)
+    return None
+
+
+def log_drive_upload_plan(
+    *,
+    drive_upload_enabled: bool,
+    drive_credentials_path: str | None,
+    drive_root_folder_id: str | None,
+) -> None:
+    """Log whether Drive upload will run and why; call once per run near startup."""
+    if not drive_upload_enabled:
+        logger.info(
+            "Drive upload: DISABLED (reason=config: drive_upload_enabled is false)",
+        )
+        return
+
+    cred_path = _expand_credentials_path(drive_credentials_path)
+    root_id = (drive_root_folder_id or "").strip()
+
+    if cred_path is None:
+        logger.warning(
+            "Drive upload: DISABLED (reason=no credentials path; set drive_credentials_path in YAML "
+            "or DRIVE_CREDENTIALS_PATH to a Google Cloud service account JSON key file)",
+        )
+        return
+    if not cred_path.is_file():
+        logger.warning(
+            "Drive upload: DISABLED (reason=credentials file not found at %s)",
+            cred_path,
+        )
+        return
+    if not root_id:
+        logger.warning(
+            "Drive upload: DISABLED (reason=no drive_root_folder_id; set drive_root_folder_id in YAML "
+            "or DRIVE_ROOT_FOLDER_ID to the shared Drive folder id)",
+        )
+        return
+
+    issue = _service_account_key_file_issue(cred_path)
+    if issue:
+        logger.warning(
+            "Drive upload: credentials file failed validation (%s). Replace %s with a key from "
+            "Google Cloud Console → IAM & Admin → Service Accounts → your SA → Keys → Add key → JSON. "
+            "Upload will still be attempted at end of run but will fail until this is fixed.",
+            issue,
+            cred_path,
+        )
+    logger.info(
+        "Drive upload: ENABLED (folder_id=%s, credentials=%s)",
+        root_id,
+        cred_path,
+    )
+
+
+def log_drive_upload_plan_from_config(cfg: RunConfig) -> None:
+    log_drive_upload_plan(
+        drive_upload_enabled=cfg.drive_upload_enabled,
+        drive_credentials_path=cfg.drive_credentials_path,
+        drive_root_folder_id=cfg.drive_root_folder_id,
+    )
 
 
 def _guess_mimetype(path: Path) -> str:
@@ -266,15 +349,16 @@ async def maybe_upload_run_to_drive_raw(
     root_id = (drive_root_folder_id or "").strip()
 
     if cred_path is None or not cred_path.is_file():
-        logger.error(
+        logger.warning(
             "Drive upload skipped: drive_upload_enabled=true but drive_credentials_path is missing "
-            "or not a readable file (resolved=%s)",
+            "or not a readable file (resolved=%s). Set DRIVE_CREDENTIALS_PATH or drive_credentials_path.",
             str(cred_path) if cred_path is not None else None,
         )
         return None
     if not root_id:
-        logger.error(
-            "Drive upload skipped: drive_upload_enabled=true but drive_root_folder_id is missing",
+        logger.warning(
+            "Drive upload skipped: drive_upload_enabled=true but drive_root_folder_id is missing. "
+            "Set DRIVE_ROOT_FOLDER_ID or drive_root_folder_id.",
         )
         return None
 
@@ -286,6 +370,13 @@ async def maybe_upload_run_to_drive_raw(
 
     try:
         folder_url = await asyncio.to_thread(_sync_upload)
+    except MalformedError as exc:
+        logger.warning(
+            "Drive upload failed: invalid service account JSON (%s). Use a key JSON from "
+            "Google Cloud Console → IAM → Service Accounts → Keys → Add key → JSON.",
+            exc,
+        )
+        return None
     except Exception as exc:
         logger.error("Drive upload failed: %s: %s", type(exc).__name__, exc, exc_info=True)
         return None
