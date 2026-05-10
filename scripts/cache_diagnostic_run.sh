@@ -45,7 +45,10 @@ run_index 2
 
 echo ""
 echo "---------- Prefix hashes (last two output dirs, OpenAI only) ----------"
-mapfile -t dirs < <(ls -td "$ROOT"/outputs/*/ 2>/dev/null | head -2)
+dirs=()
+while IFS= read -r line; do
+  dirs+=("$line")
+done < <(ls -td "$ROOT"/outputs/*/ 2>/dev/null | head -2)
 if [[ ${#dirs[@]} -lt 2 ]]; then
   echo "warning: expected at least two output dirs under outputs/" >&2
   exit 0
