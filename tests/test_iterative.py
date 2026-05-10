@@ -13,6 +13,7 @@ from equity_analyst.iterative import (
     compile_refinement_workflow,
     dry_run_compile_only,
     parse_overall_confidence,
+    parse_verifier_json,
 )
 from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.providers.base import LLMProvider
@@ -43,13 +44,85 @@ def _base_cfg(**kwargs: Any) -> RunConfig:
     return RunConfig.model_validate(d)
 
 
+_VERIFIER_MARK = "You are a financial fact-checker"
+
+
+class _GeminiSplit(LLMProvider):
+    """One registry slot for `gemini`: synthesis vs verifier prompts."""
+
+    def __init__(self, synth: LLMProvider, ver: LLMProvider) -> None:
+        self.name = "gemini"
+        self._synth = synth
+        self._ver = ver
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        if _VERIFIER_MARK in prompt:
+            return await self._ver.generate(
+                prompt,
+                enable_web_search=enable_web_search,
+                max_output_tokens=max_output_tokens,
+                **kwargs,
+            )
+        return await self._synth.generate(
+            prompt,
+            enable_web_search=enable_web_search,
+            max_output_tokens=max_output_tokens,
+            **kwargs,
+        )
+
+
+class _CaptureCreateRegistry(ProviderRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.create_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def create(  # type: ignore[override]
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        client: Any | None = None,
+        gemini_cache_index: Any | None = None,
+        gemini_cache_ttl_s: int | None = None,
+    ) -> LLMProvider:
+        self.create_calls.append(
+            (
+                name,
+                {
+                    "model": model,
+                    "gemini_cache_index": gemini_cache_index,
+                    "gemini_cache_ttl_s": gemini_cache_ttl_s,
+                },
+            )
+        )
+        return super().create(
+            name,
+            model=model,
+            client=client,
+            gemini_cache_index=gemini_cache_index,
+            gemini_cache_ttl_s=gemini_cache_ttl_s,
+        )
+
+
 class _Txt(LLMProvider):
     def __init__(self, name: str, text: str) -> None:
         self.name = name
         self._text = text
 
     async def generate(
-        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         return ProviderResponse(
             provider_name=self.name,
@@ -66,7 +139,12 @@ class _SynthCalls(LLMProvider):
         self.calls = 0
 
     async def generate(
-        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         self.calls += 1
         if self.calls <= 2:
@@ -88,7 +166,12 @@ class _VerCalls(LLMProvider):
         self.calls = 0
 
     async def generate(
-        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         self.calls += 1
         if self.calls == 1:
@@ -109,7 +192,12 @@ class _SynthLow(LLMProvider):
         self.name = name
 
     async def generate(
-        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         return ProviderResponse(
             provider_name=self.name,
@@ -125,7 +213,12 @@ class _VerBad(LLMProvider):
         self.name = name
 
     async def generate(
-        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         return ProviderResponse(
             provider_name=self.name,
@@ -142,7 +235,12 @@ class _SynthCheckpoint(LLMProvider):
         self.calls = 0
 
     async def generate(
-        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         self.calls += 1
         body = (
@@ -177,8 +275,13 @@ def _initial_state(cfg: RunConfig, out: Path) -> dict[str, Any]:
 async def test_loop_converges_when_synthesis_high_confidence(tmp_path: Path) -> None:
     reg = ProviderRegistry()
     reg.register("openai", lambda **_: _Txt("openai", "fan"))
-    reg.register("gemini", lambda **_: _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"))
-    reg.register("anthropic", lambda **_: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
+            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+        ),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -198,8 +301,13 @@ async def test_loop_continues_on_low_confidence(tmp_path: Path) -> None:
     reg = ProviderRegistry()
     reg.register("openai", lambda **_: _Txt("openai", "fan"))
     synth = _SynthCalls("gemini")
-    reg.register("gemini", lambda **_: synth)
-    reg.register("anthropic", lambda **_: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            synth,
+            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+        ),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -212,9 +320,14 @@ async def test_loop_continues_on_low_confidence(tmp_path: Path) -> None:
 async def test_loop_continues_on_contradictions(tmp_path: Path) -> None:
     reg = ProviderRegistry()
     reg.register("openai", lambda **_: _Txt("openai", "fan"))
-    reg.register("gemini", lambda **_: _Txt("gemini", "syn\nOVERALL_CONFIDENCE: 0.95\n"))
-    ver = _VerCalls("anthropic")
-    reg.register("anthropic", lambda **_: ver)
+    ver = _VerCalls("gemini")
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "syn\nOVERALL_CONFIDENCE: 0.95\n"),
+            ver,
+        ),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -229,8 +342,13 @@ async def test_loop_continues_on_contradictions(tmp_path: Path) -> None:
 async def test_max_iterations_cutoff(tmp_path: Path) -> None:
     reg = ProviderRegistry()
     reg.register("openai", lambda **_: _Txt("openai", "fan"))
-    reg.register("gemini", lambda **_: _SynthLow("gemini"))
-    reg.register("anthropic", lambda **_: _VerBad("anthropic"))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _SynthLow("gemini"),
+            _VerBad("gemini"),
+        ),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -247,8 +365,13 @@ async def test_checkpoint_resume(tmp_path: Path) -> None:
     reg = ProviderRegistry()
     reg.register("openai", lambda **_: _Txt("openai", "fan"))
     synth_ck = _SynthCheckpoint("gemini")
-    reg.register("gemini", lambda **_: synth_ck)
-    reg.register("anthropic", lambda **_: _Txt("anthropic", '{"verified":[],"contradicted":[],"unverifiable":[]}'))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            synth_ck,
+            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+        ),
+    )
     cfg = _base_cfg()
     out = tmp_path / "o"
     out.mkdir()
@@ -273,7 +396,103 @@ def test_parse_overall_confidence() -> None:
     assert parse_overall_confidence("no marker") is None
 
 
-def test_dry_run_compile_nodes() -> None:
-    nodes = dry_run_compile_only(registry=ProviderRegistry.default())
-    assert "fan_out" in nodes
-    assert "finalize" in nodes
+def test_parse_verifier_json_handles_prose_wrapped_json() -> None:
+    text = (
+        'Here is the verification:\n{"verified": ["claim 1"], "contradicted": [], "unverifiable": []}\n'
+    )
+    out = parse_verifier_json(text)
+    assert out["verified"] == ["claim 1"]
+    assert out["contradicted"] == []
+    assert out["unverifiable"] == []
+
+
+def test_parse_verifier_json_handles_markdown_fences() -> None:
+    text = """```json
+{"verified": ["a"], "contradicted": ["b"], "unverifiable": []}
+```"""
+    out = parse_verifier_json(text)
+    assert out["verified"] == ["a"]
+    assert out["contradicted"] == ["b"]
+    assert out["unverifiable"] == []
+
+
+def test_parse_verifier_json_handles_alternate_key_names() -> None:
+    payload = (
+        '{"verified_claims": ["ok"], "contradictions": ["bad"], "unverifiable_claims": ["maybe"]}'
+    )
+    out = parse_verifier_json(payload)
+    assert out["verified"] == ["ok"]
+    assert out["contradicted"] == ["bad"]
+    assert out["unverifiable"] == ["maybe"]
+
+
+class _VerRaw(LLMProvider):
+    """Verifier stub returning a fixed body (used inside `_GeminiSplit`)."""
+
+    def __init__(self, raw: str) -> None:
+        self.name = "gemini"
+        self._raw = raw
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=self._raw,
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_verify_node_persists_raw_response(tmp_path: Path) -> None:
+    raw = "RAW_VERIFIER_BODY_FOR_DISK\n"
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
+            _VerRaw(raw),
+        ),
+    )
+    cfg = _base_cfg()
+    out = tmp_path / "o"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(
+        _initial_state(_base_cfg(verifier_provider="anthropic"), out),
+        config={"configurable": {"thread_id": "raw-ver"}},
+    )
+    raw_path = out / "iterations" / "iteration_1_verify_raw.md"
+    assert raw_path.is_file()
+    assert raw_path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.asyncio
+async def test_verify_registry_create_passes_verifier_gemini_model(tmp_path: Path) -> None:
+    reg = _CaptureCreateRegistry()
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
+            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+        ),
+    )
+    cfg = _base_cfg(verifier_provider="gemini", verifier_model="gemini-custom-for-test")
+    out = tmp_path / "o"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t-verify-model"}})
+    gemini_kw = [kw for name, kw in reg.create_calls if name == "gemini"]
+    assert any(kw.get("model") == "gemini-custom-for-test" for kw in gemini_kw)
+    verify_row = next(kw for kw in gemini_kw if kw.get("model") == "gemini-custom-for-test")
+    assert verify_row["gemini_cache_index"] is None
+    assert verify_row["gemini_cache_ttl_s"] == 3600

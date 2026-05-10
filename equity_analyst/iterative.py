@@ -44,16 +44,23 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
 
-VERIFIER_INSTRUCTION = """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
+VERIFIER_INSTRUCTION_PREFIX = """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
 numerical and factual claims about an equity/options thesis (and lines mentioning low confidence).
 
 Use web search only when needed to check those claims. Do not spend effort re-verifying narrative sections
-that are not represented in the excerpt.
+that are not represented in the excerpt."""
 
-Reply with ONLY valid JSON (no markdown fences) in this exact shape:
-{"verified": ["string claims that check out"], "contradicted": ["string claims that conflict with sources"], "unverifiable": ["string claims that cannot be verified from available data"]}
+VERIFIER_JSON_TAIL = """If you cannot perform verification (refusal, missing tools, or no relevant claims in the excerpt), you must
+still respond with valid JSON only: use empty arrays for the three lists and set "notes" to a short reason.
 
-Use empty arrays when appropriate. Be concise; each array entry one short sentence."""
+Example (format only; replace with real claims from the excerpt):
+{"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": ""}
+
+CRITICAL — your entire reply must be parseable as a single JSON object. No markdown code fences, no prose
+before or after the object, no commentary outside the JSON. One line or pretty-printed is fine.
+
+Required keys (arrays of short strings): "verified", "contradicted", "unverifiable". Optional: "notes" (string).
+"""
 
 _OVERALL_CONFIDENCE_RE = re.compile(
     r"^OVERALL_CONFIDENCE:\s*([0-9]+(?:\.[0-9]+)?)\s*$",
@@ -116,25 +123,159 @@ def _dict_to_response(d: dict[str, Any]) -> ProviderResponse:
     )
 
 
-def _parse_verifier_json(text: str) -> dict[str, list[str]]:
-    t = text.strip()
-    if t.startswith("```"):
-        lines = t.split("\n")
-        if lines:
-            lines = lines[1:]
-        t = "\n".join(lines)
-        if "```" in t:
-            t = t.rsplit("```", 1)[0].strip()
-    try:
-        data = json.loads(t)
-    except json.JSONDecodeError:
-        return {"verified": [], "contradicted": [], "unverifiable": []}
-    out: dict[str, list[str]] = {"verified": [], "contradicted": [], "unverifiable": []}
-    for k in out:
-        v = data.get(k)
-        if isinstance(v, list):
-            out[k] = [str(x) for x in v]
+_CLAIM_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+    "verified": ("verified", "verified_claims", "verified_items"),
+    "contradicted": ("contradicted", "contradictions", "contradicted_claims"),
+    "unverifiable": ("unverifiable", "unverifiable_claims"),
+}
+
+
+def _strip_markdown_fences(t: str) -> str:
+    t = t.strip()
+    if not t.startswith("```"):
+        return t
+    lines = t.split("\n")
+    body = "\n".join(lines[1:]) if lines else ""
+    if "```" in body:
+        body = body.rsplit("```", 1)[0]
+    return body.strip()
+
+
+def _balanced_brace_objects(s: str) -> list[str]:
+    n = len(s)
+    out: list[str] = []
+    i = 0
+    while i < n:
+        if s[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        start = i
+        j = i
+        found = False
+        while j < n:
+            c = s[j]
+            if esc:
+                esc = False
+                j += 1
+                continue
+            if in_str:
+                if c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                j += 1
+                continue
+            if c == '"':
+                in_str = True
+                j += 1
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    out.append(s[start : j + 1])
+                    found = True
+                    break
+            j += 1
+        i = j + 1 if found else i + 1
     return out
+
+
+def _coerce_claim_list(val: Any) -> list[str]:
+    if val is None:
+        return []
+    if isinstance(val, str):
+        s = val.strip()
+        return [s] if s else []
+    if isinstance(val, (int, float, bool)):
+        return [str(val)]
+    if isinstance(val, list):
+        acc: list[str] = []
+        for x in val:
+            acc.extend(_coerce_claim_list(x))
+        return acc
+    if isinstance(val, dict):
+        acc2: list[str] = []
+        for v in val.values():
+            acc2.extend(_coerce_claim_list(v))
+        return acc2
+    return [str(val)]
+
+
+def _values_for_canonical_key(data: dict[str, Any], canonical: str) -> list[str]:
+    for alias in _CLAIM_KEY_ALIASES[canonical]:
+        if alias not in data:
+            continue
+        return _coerce_claim_list(data[alias])
+    return []
+
+
+def _score_verification_dict(data: dict[str, Any]) -> int:
+    return sum(len(_values_for_canonical_key(data, k)) for k in _CLAIM_KEY_ALIASES)
+
+
+def _candidate_dicts_from_text(text: str) -> list[tuple[dict[str, Any], int]]:
+    seen: set[str] = set()
+    out: list[tuple[dict[str, Any], int]] = []
+
+    def _push(raw_slice: str, d: dict[str, Any]) -> None:
+        key = json.dumps(d, sort_keys=True)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((d, len(raw_slice)))
+
+    stripped = _strip_markdown_fences(text.strip())
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict):
+            _push(stripped, obj)
+    except json.JSONDecodeError:
+        pass
+    for sub in _balanced_brace_objects(text):
+        try:
+            obj = json.loads(sub)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            _push(sub, obj)
+    return out
+
+
+def parse_verifier_json(text: str) -> dict[str, Any]:
+    """Parse verifier model output into verified / contradicted / unverifiable lists (and optional notes)."""
+    raw = text
+    candidates = _candidate_dicts_from_text(text)
+    if not candidates:
+        logger.warning(
+            "verifier JSON parse failed (no object decoded); verifier_raw=%s",
+            raw[:1000] if raw else "",
+        )
+        return {"verified": [], "contradicted": [], "unverifiable": []}
+
+    best_data: dict[str, Any] | None = None
+    best_rank: tuple[int, int] = (-1, -1)
+    for data, raw_len in candidates:
+        score = _score_verification_dict(data)
+        rank = (score, raw_len)
+        if rank > best_rank:
+            best_rank = rank
+            best_data = data
+
+    assert best_data is not None
+    result: dict[str, Any] = {
+        "verified": _values_for_canonical_key(best_data, "verified"),
+        "contradicted": _values_for_canonical_key(best_data, "contradicted"),
+        "unverifiable": _values_for_canonical_key(best_data, "unverifiable"),
+    }
+    notes_val = best_data.get("notes")
+    if isinstance(notes_val, str) and notes_val.strip():
+        result["notes"] = notes_val.strip()
+    return result
 
 
 def merge_timing_events(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -184,10 +325,11 @@ class RefinementState(TypedDict, total=False):
     gemini_cache_ttl_s: int
     synthesizer_cfg: dict[str, Any]
     verifier_name: str
+    verifier_model: str | None
     output_dir: str
     provider_responses: Annotated[list[dict[str, Any]], operator.add]
     synthesis_history: Annotated[list[str], operator.add]
-    verification_history: Annotated[list[dict[str, list[str]]], operator.add]
+    verification_history: Annotated[list[dict[str, Any]], operator.add]
     followup_questions: Annotated[list[str], operator.add]
     timing_events: Annotated[list[dict[str, Any]], operator.add]
     error_events: Annotated[list[dict[str, Any]], operator.add]
@@ -435,8 +577,19 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         )
         syn = state["synthesis_history"][-1]
         focus = _excerpt_for_verifier(syn)
-        prompt = f"{VERIFIER_INSTRUCTION}\n\n### Synthesis excerpt\n{focus}\n"
-        verifier = registry.create(state["verifier_name"])
+        prompt = (
+            f"{VERIFIER_INSTRUCTION_PREFIX}\n\n"
+            f"### Synthesis excerpt\n{focus}\n\n"
+            f"{VERIFIER_JSON_TAIL}\n"
+        )
+        v_model = state.get("verifier_model")
+        gemini_ttl = int(state.get("gemini_cache_ttl_s", 3600))
+        verifier = registry.create(
+            state["verifier_name"],
+            model=v_model,
+            gemini_cache_index=None,
+            gemini_cache_ttl_s=gemini_ttl,
+        )
         vmt = int(state.get("verifier_max_output_tokens", 1536))
         timeout_v = float(state.get("request_timeout_s", 180.0))
         retry_max = int(state.get("retry_max_attempts", 3))
@@ -453,6 +606,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     max_output_tokens=vmt,
                     prompt_cache_enabled=False,
                     force_tool_use=False,
+                )
+            if isinstance(verifier, GeminiProvider):
+                return await verifier.generate(
+                    prompt,
+                    enable_web_search=state["enable_web_search"],
+                    max_output_tokens=vmt,
+                    cacheable_prefix=None,
                 )
             return await verifier.generate(
                 prompt,
@@ -491,8 +651,16 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         ver_wall = time.perf_counter() - v0
-        data = _parse_verifier_json(resp.text)
+        if resp.model.startswith("error:"):
+            logger.error(
+                "Verifier call failed (provider=%s, error=%s); verification arrays will be empty for this round.",
+                state["verifier_name"],
+                resp.model.removeprefix("error:"),
+            )
         iter_dir = out / "iterations"
+        iter_dir.mkdir(parents=True, exist_ok=True)
+        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(resp.text, encoding="utf-8")
+        data = parse_verifier_json(resp.text)
         (iter_dir / f"iteration_{round_idx + 1}_verify.md").write_text(
             json.dumps(data, indent=2) + "\n", encoding="utf-8"
         )
@@ -649,7 +817,8 @@ def build_initial_refinement_state(
         "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
         "gemini_cache_ttl_s": cfg.gemini_cache_ttl_s,
         "synthesizer_cfg": cfg.synthesizer.model_dump(mode="json"),
-        "verifier_name": "anthropic",
+        "verifier_name": cfg.verifier_provider,
+        "verifier_model": cfg.verifier_model,
         "output_dir": str(output_dir.resolve()),
         "drive_upload_enabled": cfg.drive_upload_enabled,
         "drive_credentials_path": cfg.drive_credentials_path,
