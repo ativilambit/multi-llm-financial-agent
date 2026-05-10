@@ -72,12 +72,14 @@ python -m equity_analyst run --config ... --no-upload-to-drive
 
 ## Configs
 
-Stock-specific YAML lives under `configs/`. Copy either file as a starting point for a new symbol and edit session labels, dates, and lookbacks. **Price fields** (`today_low` / `today_high` / `current_price`, or the aliases `reference_session_*` / `reference_last_price`) are **optional, unverified hints** for orientation only—the rendered prompt tells models to **fetch and cite** the **last regular-session official closing price** (and session high/low) via **web_search** and not to treat YAML numbers as ground truth.
+Stock-specific YAML lives under `configs/`. **Workflow:** pick the **MNDY** or **CRCL** pair below as a **template**, copy both YAMLs to new filenames (`<symbol>_YYYY_MM_DD.yaml` and `_fast.yaml`), then edit symbol, company name, session labels, dates, optional price hints, and any symbol-specific lookbacks. **Price fields** (`today_low` / `today_high` / `current_price`, or the aliases `reference_session_*` / `reference_last_price`) are **optional, unverified hints** for orientation only—the rendered prompt tells models to **fetch and cite** the **last regular-session official closing price** (and session high/low) via **web_search** and not to treat YAML numbers as ground truth.
 
 | File | Use case |
 |------|----------|
-| `configs/mndy_2026_05_08.yaml` | Default MNDY run: all four fan-out providers (**Anthropic**, **OpenAI**, **Grok**, **Gemini Flash**) use long timeouts; web search follows each provider’s default (typically on). **Synthesis** runs on **Gemini 3.1 Pro Preview**. Best for highest-quality grounded research. |
-| `configs/mndy_2026_05_08_fast.yaml` | Hybrid speed: **OpenAI** alone runs deep `web_search`; **Anthropic**, **Grok**, and **Gemini Flash** reason without search; **Gemini 3.1 Pro Preview** synthesizer has no extra search. Shorter wall-clock for iteration. |
+| `configs/mndy_2026_05_08.yaml` | Default **MNDY** run: all four fan-out providers (**Anthropic**, **OpenAI**, **Grok**, **Gemini Flash**) use long timeouts; web search follows each provider’s default (typically on). **Synthesis** runs on **Gemini 3.1 Pro Preview**. Best for highest-quality grounded research. |
+| `configs/mndy_2026_05_08_fast.yaml` | **MNDY** hybrid speed: **OpenAI** alone runs deep `web_search`; **Anthropic**, **Grok**, and **Gemini Flash** reason without search; **Gemini 3.1 Pro Preview** synthesizer has no extra search. Shorter wall-clock for iteration. |
+| `configs/crcl_2026_05_08.yaml` | Same layout as the MNDY standard config for **CRCL** (Circle Internet Group, NYSE: **CRCL**), aligned to the **May 11, 2026** earnings cycle. |
+| `configs/crcl_2026_05_08_fast.yaml` | **CRCL** hybrid fast config (mirrors MNDY `_fast`: one grounded **OpenAI** search, fast fan-out otherwise). |
 
 ## Standard mode
 

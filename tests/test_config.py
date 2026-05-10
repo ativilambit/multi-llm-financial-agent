@@ -333,9 +333,58 @@ def test_mndy_fast_config_hybrid_web_search_and_shared_fields_match_standard() -
     assert fast_cfg.synthesizer.web_search is False
 
 
+def test_crcl_fast_config_hybrid_web_search_and_shared_fields_match_standard() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    standard_path = repo / "configs" / "crcl_2026_05_08.yaml"
+    fast_path = repo / "configs" / "crcl_2026_05_08_fast.yaml"
+
+    standard_raw = yaml.safe_load(standard_path.read_text(encoding="utf-8"))
+    fast_raw = yaml.safe_load(fast_path.read_text(encoding="utf-8"))
+
+    def _without_providers_synth(d: dict[str, Any]) -> dict[str, Any]:
+        out = dict(d)
+        out.pop("providers", None)
+        out.pop("synthesizer", None)
+        return out
+
+    assert _without_providers_synth(standard_raw) == _without_providers_synth(fast_raw)
+
+    def _strip_timing_fields(obj: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in obj.items() if k not in ("web_search", "request_timeout_s")}
+
+    std_providers = standard_raw.get("providers") or []
+    fast_providers = fast_raw.get("providers") or []
+    assert len(std_providers) == len(fast_providers)
+    for s, f in zip(std_providers, fast_providers, strict=True):
+        assert _strip_timing_fields(s) == _strip_timing_fields(f)
+
+    std_synth = standard_raw.get("synthesizer") or {}
+    fast_synth = fast_raw.get("synthesizer") or {}
+    assert isinstance(std_synth, dict) and isinstance(fast_synth, dict)
+    assert _strip_timing_fields(std_synth) == _strip_timing_fields(fast_synth)
+
+    fast_cfg = load_config(str(fast_path))
+    by_name = {p.name: p for p in fast_cfg.providers}
+    assert by_name["anthropic"].web_search is False
+    assert by_name["grok"].web_search is False
+    assert by_name["openai"].web_search is True
+    assert by_name["gemini"].web_search is False
+    assert fast_cfg.synthesizer.web_search is False
+
+
 def test_mndy_configs_use_latest_gemini_pro_synthesizer() -> None:
     repo = Path(__file__).resolve().parents[1]
     for filename in ("mndy_2026_05_08.yaml", "mndy_2026_05_08_fast.yaml"):
+        cfg = load_config(str(repo / "configs" / filename))
+        assert cfg.synthesizer.name == "gemini"
+        assert cfg.synthesizer.model == DEFAULT_GEMINI_MODEL
+        assert cfg.verifier_provider == "gemini"
+        assert cfg.verifier_model == DEFAULT_GEMINI_MODEL
+
+
+def test_crcl_configs_use_latest_gemini_pro_synthesizer() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    for filename in ("crcl_2026_05_08.yaml", "crcl_2026_05_08_fast.yaml"):
         cfg = load_config(str(repo / "configs" / filename))
         assert cfg.synthesizer.name == "gemini"
         assert cfg.synthesizer.model == DEFAULT_GEMINI_MODEL
