@@ -16,8 +16,7 @@ from equity_analyst.config import (
     resolve_drive_oauth_token_path,
     resolve_drive_oauth_token_path_from_optional,
 )
-
-_OAUTH_DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+from equity_analyst.drive_uploader import _OAUTH_DRIVE_SCOPES
 
 
 def _print_missing_client_secrets_help(*, expected_path: Path) -> None:
@@ -65,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
     flow = InstalledAppFlow.from_client_secrets_file(
         str(client_path),
-        scopes=[_OAUTH_DRIVE_FILE_SCOPE],
+        scopes=list(_OAUTH_DRIVE_SCOPES),
     )
     creds = flow.run_local_server(port=0)
     token_path.parent.mkdir(parents=True, exist_ok=True)

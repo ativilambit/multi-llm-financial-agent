@@ -17,6 +17,7 @@ from equity_analyst.drive_uploader import (
     DriveUploader,
     _is_malformed_service_account_key_error,
     _is_sa_my_drive_storage_quota_error,
+    _load_oauth_user_credentials,
     log_drive_upload_plan,
     maybe_upload_run_to_drive_raw,
 )
@@ -636,6 +637,98 @@ def test_log_drive_upload_plan_oauth_invalid_token(
         )
     assert ok is False
     assert any("oauth token invalid or unreadable" in r.message for r in caplog.records)
+
+
+def _oauth_token_json_file_only_drive_file(tmp_path: Path) -> Path:
+    p = tmp_path / "narrow_scope.json"
+    p.write_text(
+        json.dumps(
+            {
+                "token": "ya29.fake",
+                "refresh_token": "1//refresh",
+                "client_id": "cid",
+                "client_secret": "sec",
+                "scopes": ["https://www.googleapis.com/auth/drive.file"],
+                "expiry": "2099-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_load_oauth_user_credentials_accepts_full_drive_scope(tmp_path: Path) -> None:
+    p = tmp_path / "ok.json"
+    p.write_text(
+        json.dumps(
+            {
+                "token": "ya29.fake",
+                "refresh_token": "1//refresh",
+                "client_id": "cid",
+                "client_secret": "sec",
+                "scopes": ["https://www.googleapis.com/auth/drive"],
+                "expiry": "2099-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    creds, err = _load_oauth_user_credentials(p)
+    assert err is None
+    assert creds is not None
+
+
+def test_load_oauth_user_credentials_scope_mismatch_warns(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    p = _oauth_token_json_file_only_drive_file(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        creds, err = _load_oauth_user_credentials(p)
+    assert creds is None
+    assert err == "scope_mismatch"
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1
+    assert "OAuth token at" in warns[0].message
+    assert "re-consent" in warns[0].message
+    assert "Disabling Drive upload for this run" in warns[0].message
+
+
+def test_log_drive_upload_plan_oauth_scope_mismatch_disables_gracefully(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    p = _oauth_token_json_file_only_drive_file(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="fid",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(p),
+        )
+    assert ok is False
+    scope_msgs = [r for r in caplog.records if "OAuth token at" in r.message]
+    assert len(scope_msgs) == 1
+    assert not any("oauth token invalid or unreadable" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_maybe_upload_run_to_drive_oauth_scope_mismatch_no_exception(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    p = _oauth_token_json_file_only_drive_file(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        url = await maybe_upload_run_to_drive_raw(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="ROOT",
+            out_dir=out,
+            run_id="R1",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(p),
+        )
+    assert url is None
+    assert any("OAuth token at" in r.message for r in caplog.records)
 
 
 def test_log_drive_upload_plan_oauth_expired_revoked(

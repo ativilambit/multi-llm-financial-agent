@@ -867,6 +867,7 @@ async def test_per_provider_request_timeout_override_honored(
 @pytest.mark.asyncio
 async def test_drive_upload_invoked_and_run_json_has_url(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DRIVE_AUTH_MODE", raising=False)
     repo_root = Path(__file__).resolve().parents[1]
     prompt_path = repo_root / "prompts" / "equity_analyst.j2"
 
@@ -889,6 +890,7 @@ async def test_drive_upload_invoked_and_run_json_has_url(tmp_path: Path, monkeyp
             "providers": ["anthropic", "openai"],
             "synthesizer": "gemini",
             "drive_upload_enabled": True,
+            "drive_auth_mode": "service_account",
             "drive_credentials_path": str(tmp_path / "sa.json"),
             "drive_root_folder_id": "ROOT",
         }
@@ -993,6 +995,7 @@ async def test_drive_upload_disabled_skips_hook(tmp_path: Path, monkeypatch: Any
 @pytest.mark.asyncio
 async def test_drive_upload_failure_still_completes_run(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DRIVE_AUTH_MODE", raising=False)
     repo_root = Path(__file__).resolve().parents[1]
     prompt_path = repo_root / "prompts" / "equity_analyst.j2"
 
@@ -1015,6 +1018,7 @@ async def test_drive_upload_failure_still_completes_run(tmp_path: Path, monkeypa
             "providers": ["anthropic", "openai"],
             "synthesizer": "gemini",
             "drive_upload_enabled": True,
+            "drive_auth_mode": "service_account",
             "drive_credentials_path": str(tmp_path / "sa.json"),
             "drive_root_folder_id": "ROOT",
         }

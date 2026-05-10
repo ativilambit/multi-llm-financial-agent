@@ -58,7 +58,7 @@ If you cannot use Shared Drives, use **OAuth user mode** below so uploads run as
 Use this when you are **not** on Google Workspace / Shared Drives. The CLI uploads with **your** Google account after a one-time browser consent.
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), pick a project → **APIs & Services → Library** → enable **Google Drive API**.
-2. **APIs & Services → OAuth consent screen**: configure a consent screen (External user type is fine for personal use). Add scope **`https://www.googleapis.com/auth/drive.file`** (recommended; see scope note below).
+2. **APIs & Services → OAuth consent screen**: configure a consent screen (External user type is fine for personal use). Add scope **`https://www.googleapis.com/auth/drive`** (see scope note below).
 3. **APIs & Services → Credentials → Create credentials → OAuth client ID** → Application type: **Desktop app** → create → **Download JSON** and save it to your configured path (default below).
 4. Install the CLI deps, set `drive_auth_mode: oauth_user` (or `DRIVE_AUTH_MODE=oauth_user`), and run once:
 
@@ -66,13 +66,13 @@ Use this when you are **not** on Google Workspace / Shared Drives. The CLI uploa
    python -m equity_analyst.drive_oauth_setup
    ```
 
-   (Optionally pass `--config path/to.yaml` so paths come from YAML.) A browser opens; sign in with the Gmail account that should own the uploads and grant the Drive scope. The refresh token is saved to your token path (default `~/.config/multi-llm-equity-analyst/oauth_token.json`, overridable with `drive_oauth_token_path` / `DRIVE_OAUTH_TOKEN_PATH`).
+   (Optionally pass `--config path/to.yaml` so paths come from YAML.) A browser opens; sign in with the Gmail account that should own the uploads and grant the Drive scope. The refresh token is saved to your token path (default `~/.config/multi-llm-equity-analyst/oauth_token.json`, overridable with `drive_oauth_token_path` / `DRIVE_OAUTH_TOKEN_PATH`). After upgrading from a prior version, delete your existing `oauth_token.json` and re-run the setup command — old tokens have the narrower scope.
 
 5. Set **`drive_root_folder_id`** / **`DRIVE_ROOT_FOLDER_ID`** to a folder id from your normal Drive URL (`https://drive.google.com/drive/folders/<id>`). No Shared Drive is required; the signed-in user must own or have write access to that folder.
 
 6. On later runs the tool **silently refreshes** the access token. If you revoke the app in Google Account settings or the refresh fails, run `python -m equity_analyst.drive_oauth_setup` again.
 
-**Default OAuth scope (`drive.file` vs full `drive`):** uploads use **`https://www.googleapis.com/auth/drive.file`**. That is the least-privilege scope Google recommends for apps that only create and manage their own files: you can create files and folders under the destination you configure, without broad read access to the entire Drive. The broader **`https://www.googleapis.com/auth/drive`** scope allows full Drive read/write; use it only if you intentionally need unrestricted access (not required for this project’s upload-only flow).
+**OAuth scope (`drive` vs `drive.file`):** OAuth user uploads use **`https://www.googleapis.com/auth/drive`**, so the app can resolve and write into **folders you created manually** in Drive (not only folders or files the app created, which is all **`drive.file`** can see). That is appropriate for a **single-user personal tool** on your own Gmail. Full `drive` means the app can read and write **any** file in that account’s Drive the API allows; it is **not** ideal for multi-tenant or broadly distributed apps, where you would prefer a narrower scope and Shared-Drive–style isolation.
 
 ### Configuration
 

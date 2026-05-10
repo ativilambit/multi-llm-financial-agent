@@ -20,7 +20,7 @@ from equity_analyst.config import RunConfig, resolve_drive_oauth_token_path_from
 logger = logging.getLogger(__name__)
 
 _DRIVE_SCOPES: tuple[str, ...] = ("https://www.googleapis.com/auth/drive",)
-_OAUTH_DRIVE_SCOPES: tuple[str, ...] = ("https://www.googleapis.com/auth/drive.file",)
+_OAUTH_DRIVE_SCOPES: tuple[str, ...] = ("https://www.googleapis.com/auth/drive",)
 
 DriveAuthMode = Literal["service_account", "oauth_user"]
 
@@ -92,16 +92,42 @@ def _build_drive_service_from_oauth_creds(creds: Credentials) -> Any:
     return discovery.build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+def _oauth_granted_scope_set(*, token_path: Path, creds: Credentials) -> frozenset[str]:
+    """Scopes granted when the user consented (from the token file / loaded credentials)."""
+    raw = creds.scopes
+    if raw:
+        return frozenset(str(s) for s in raw)
+    try:
+        data = json.loads(token_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return frozenset()
+    sc = data.get("scopes")
+    if isinstance(sc, str):
+        return frozenset(s for s in sc.split() if s)
+    if isinstance(sc, list):
+        return frozenset(str(s) for s in sc if str(s).strip())
+    return frozenset()
+
+
+def _oauth_scopes_satisfy_app_requirement(granted: frozenset[str]) -> bool:
+    required = frozenset(_OAUTH_DRIVE_SCOPES)
+    if not required:
+        return True
+    if not granted:
+        return True
+    return required <= granted
+
+
 def _load_oauth_user_credentials(token_path: Path) -> tuple[Credentials | None, str | None]:
     """Return ``(credentials, None)`` or ``(None, error_tag)``.
 
-    ``error_tag`` is ``load_failed``, ``no_refresh``, or ``refresh_failed``.
+    ``error_tag`` is ``load_failed``, ``no_refresh``, ``refresh_failed``, or ``scope_mismatch``.
+
+    Loads without overriding on-disk ``scopes`` so we can detect tokens authorized under a
+    narrower scope than :data:`_OAUTH_DRIVE_SCOPES` (e.g. after widening the app's requirement).
     """
     try:
-        creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call]
-            str(token_path),
-            scopes=list(_OAUTH_DRIVE_SCOPES),
-        )
+        creds = Credentials.from_authorized_user_file(str(token_path))  # type: ignore[no-untyped-call]
     except (ValueError, OSError, json.JSONDecodeError, TypeError, KeyError) as exc:
         logger.debug("OAuth token load failed: %s: %s", type(exc).__name__, exc)
         return None, "load_failed"
@@ -117,6 +143,19 @@ def _load_oauth_user_credentials(token_path: Path) -> tuple[Credentials | None, 
             return None, "refresh_failed"
     if not creds.valid:
         return None, "no_refresh"
+    granted = _oauth_granted_scope_set(token_path=token_path, creds=creds)
+    if granted and not _oauth_scopes_satisfy_app_requirement(granted):
+        req = sorted(_OAUTH_DRIVE_SCOPES)
+        got = sorted(granted)
+        logger.warning(
+            "OAuth token at %s was authorized with scopes %s but app now requires %s. "
+            "Re-run `python -m equity_analyst.drive_oauth_setup` to re-consent. "
+            "Disabling Drive upload for this run.",
+            token_path,
+            got,
+            req,
+        )
+        return None, "scope_mismatch"
     return creds, None
 
 
@@ -345,7 +384,9 @@ def log_drive_upload_plan(
             return False
         loaded, err = _load_oauth_user_credentials(token_path)
         if loaded is None:
-            if err in ("refresh_failed", "no_refresh"):
+            if err == "scope_mismatch":
+                pass  # already logged in _load_oauth_user_credentials
+            elif err in ("refresh_failed", "no_refresh"):
                 logger.warning(
                     "Drive upload: DISABLED (reason=oauth token expired/revoked; re-run python -m "
                     "equity_analyst.drive_oauth_setup)",
@@ -906,7 +947,9 @@ async def maybe_upload_run_to_drive_raw(
             return None
         loaded, err = _load_oauth_user_credentials(token_path)
         if loaded is None:
-            if err in ("refresh_failed", "no_refresh"):
+            if err == "scope_mismatch":
+                pass  # already logged in _load_oauth_user_credentials
+            elif err in ("refresh_failed", "no_refresh"):
                 logger.warning(
                     "Drive upload skipped: OAuth token expired or revoked; re-run python -m "
                     "equity_analyst.drive_oauth_setup.",

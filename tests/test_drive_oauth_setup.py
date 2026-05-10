@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from equity_analyst import drive_oauth_setup
+from equity_analyst.drive_uploader import _OAUTH_DRIVE_SCOPES
 
 
 def test_main_missing_client_secrets_exits_2_with_instructions(
@@ -65,7 +66,8 @@ def test_main_success_writes_token(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     class FakeFlow:
         @classmethod
-        def from_client_secrets_file(cls, *_a: Any, **_k: Any) -> FakeFlow:
+        def from_client_secrets_file(cls, *_a: Any, scopes: Any = None, **_k: Any) -> FakeFlow:
+            assert scopes == list(_OAUTH_DRIVE_SCOPES)
             return cls()
 
         def run_local_server(self, *, port: int) -> MagicMock:
@@ -119,7 +121,8 @@ def test_main_with_config_yaml_paths(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     class FakeFlow:
         @classmethod
-        def from_client_secrets_file(cls, *_a: Any, **_k: Any) -> FakeFlow:
+        def from_client_secrets_file(cls, *_a: Any, scopes: Any = None, **_k: Any) -> FakeFlow:
+            assert scopes == list(_OAUTH_DRIVE_SCOPES)
             return cls()
 
         def run_local_server(self, *, port: int) -> MagicMock:
