@@ -19,6 +19,29 @@ logger = logging.getLogger(__name__)
 
 _DRIVE_SCOPES: tuple[str, ...] = ("https://www.googleapis.com/auth/drive",)
 
+
+def _is_malformed_service_account_key_error(exc: BaseException) -> bool:
+    """Detect malformed service-account JSON errors.
+
+    ``google.auth.exceptions.MalformedError`` subclasses ``ValueError``. In rare setups the
+    exception can come from a second loaded copy of ``google.auth``, so ``isinstance`` against
+    the module's imported ``MalformedError`` may fail; fall back to duck-typing by class location.
+    """
+    if isinstance(exc, MalformedError):
+        return True
+    t = type(exc)
+    return t.__module__ == "google.auth.exceptions" and t.__name__ == "MalformedError"
+
+
+def _log_invalid_drive_service_account_key(*, cred_path: Path, detail: str) -> None:
+    logger.warning(
+        "Drive upload skipped: credentials file at %s is not a valid service account key (%s). "
+        "Replace it with a key from Google Cloud Console → IAM & Admin → Service accounts → "
+        "(your SA) → Keys → Add key → JSON. Run continues.",
+        cred_path,
+        detail,
+    )
+
 _RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024
 
 
@@ -29,22 +52,18 @@ def _expand_credentials_path(raw: str | None) -> Path | None:
 
 
 def _service_account_key_file_issue(path: Path) -> str | None:
-    """Return a short message if ``path`` is not a usable Drive service-account JSON key, else None."""
+    """Return a short message if ``path`` is not a usable Drive service-account JSON key, else None.
+
+    Uses ``from_service_account_file`` so validation matches the upload path in
+    :meth:`DriveUploader._ensure_service`.
+    """
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return f"cannot read file ({exc})"
-    try:
-        info = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return f"invalid JSON ({exc})"
-    if not isinstance(info, dict):
-        return "JSON root must be an object"
-    try:
-        service_account.Credentials.from_service_account_info(  # type: ignore[no-untyped-call]
-            info,
+        service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
+            str(path),
             scopes=_DRIVE_SCOPES,
         )
+    except OSError as exc:
+        return f"cannot read file ({exc})"
     except (MalformedError, ValueError) as exc:
         return str(exc)
     except Exception as exc:  # pragma: no cover - defensive
@@ -89,13 +108,9 @@ def log_drive_upload_plan(
 
     issue = _service_account_key_file_issue(cred_path)
     if issue:
-        logger.warning(
-            "Drive upload: credentials file failed validation (%s). Replace %s with a key from "
-            "Google Cloud Console → IAM & Admin → Service Accounts → your SA → Keys → Add key → JSON. "
-            "Upload will still be attempted at end of run but will fail until this is fixed.",
-            issue,
-            cred_path,
-        )
+        _log_invalid_drive_service_account_key(cred_path=cred_path, detail=issue)
+        return
+
     logger.info(
         "Drive upload: ENABLED (folder_id=%s, credentials=%s)",
         root_id,
@@ -362,6 +377,11 @@ async def maybe_upload_run_to_drive_raw(
         )
         return None
 
+    issue = _service_account_key_file_issue(cred_path)
+    if issue is not None:
+        _log_invalid_drive_service_account_key(cred_path=cred_path, detail=issue)
+        return None
+
     rid = run_id if run_id is not None else out_dir.name
 
     def _sync_upload() -> str:
@@ -370,14 +390,10 @@ async def maybe_upload_run_to_drive_raw(
 
     try:
         folder_url = await asyncio.to_thread(_sync_upload)
-    except MalformedError as exc:
-        logger.warning(
-            "Drive upload failed: invalid service account JSON (%s). Use a key JSON from "
-            "Google Cloud Console → IAM → Service Accounts → Keys → Add key → JSON.",
-            exc,
-        )
-        return None
     except Exception as exc:
+        if _is_malformed_service_account_key_error(exc):
+            _log_invalid_drive_service_account_key(cred_path=cred_path, detail=str(exc))
+            return None
         logger.error("Drive upload failed: %s: %s", type(exc).__name__, exc, exc_info=True)
         return None
 
