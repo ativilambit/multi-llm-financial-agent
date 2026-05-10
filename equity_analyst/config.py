@@ -3,12 +3,44 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any, Self, TextIO
+from typing import Any, Literal, Self, TextIO
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
+
+DriveAuthMode = Literal["service_account", "oauth_user"]
+
+_DEFAULT_OAUTH_CONFIG_DIR = Path.home() / ".config" / "multi-llm-equity-analyst"
+
+
+def default_oauth_config_dir() -> Path:
+    return _DEFAULT_OAUTH_CONFIG_DIR
+
+
+def resolve_drive_oauth_token_path_from_optional(raw: str | None) -> Path:
+    """Resolve OAuth token storage path (YAML/env override or default under ``~/.config/...``)."""
+    if raw is not None and str(raw).strip():
+        return Path(os.path.expandvars(os.path.expanduser(str(raw).strip()))).resolve()
+    return (_DEFAULT_OAUTH_CONFIG_DIR / "oauth_token.json").expanduser().resolve()
+
+
+def resolve_drive_oauth_token_path(cfg: RunConfig) -> Path:
+    """Resolved token path for a loaded :class:`RunConfig`."""
+    return resolve_drive_oauth_token_path_from_optional(cfg.drive_oauth_token_path)
+
+
+def resolve_drive_oauth_client_secrets_path_from_optional(raw: str | None) -> Path:
+    """Resolve OAuth Desktop client secrets JSON path."""
+    if raw is not None and str(raw).strip():
+        return Path(os.path.expandvars(os.path.expanduser(str(raw).strip()))).resolve()
+    return (_DEFAULT_OAUTH_CONFIG_DIR / "oauth_client.json").expanduser().resolve()
+
+
+def resolve_drive_oauth_client_secrets_path(cfg: RunConfig) -> Path:
+    """Resolved client secrets path for a loaded :class:`RunConfig`."""
+    return resolve_drive_oauth_client_secrets_path_from_optional(cfg.drive_oauth_client_secrets_path)
 
 
 class ProviderConfig(BaseModel):
@@ -162,6 +194,11 @@ class RunConfig(BaseModel):
         "use at least one tool (avoids empty refusals when tools are available).",
     )
 
+    pdf_output_enabled: bool = Field(
+        default=True,
+        description="When True, emit a .pdf next to each primary analysis .md (requires WeasyPrint).",
+    )
+
     drive_upload_enabled: bool = Field(
         default=False,
         description="When True, upload the run output directory to Google Drive after the run completes.",
@@ -174,6 +211,29 @@ class RunConfig(BaseModel):
         default=None,
         description="Google Drive folder ID (under which a per-run subfolder is created).",
     )
+    drive_auth_mode: DriveAuthMode = Field(
+        default="service_account",
+        description="Google Drive credentials: service account JSON key, or end-user OAuth token file.",
+    )
+    drive_oauth_client_secrets_path: str | None = Field(
+        default=None,
+        description="Path to Google OAuth 'Desktop app' client secrets JSON (used by drive_oauth_setup only).",
+    )
+    drive_oauth_token_path: str | None = Field(
+        default=None,
+        description="Path to store/load OAuth user refresh token JSON; default under ~/.config/multi-llm-equity-analyst/.",
+    )
+
+    @field_validator("drive_auth_mode", mode="before")
+    @classmethod
+    def _normalize_drive_auth_mode(cls, v: Any) -> str:
+        if v is None:
+            return "service_account"
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("service_account", "oauth_user"):
+                return s
+        raise ValueError("drive_auth_mode must be 'service_account' or 'oauth_user'")
 
     @field_validator("verifier_provider")
     @classmethod
@@ -236,7 +296,28 @@ class RunConfig(BaseModel):
             f = os.environ.get("DRIVE_ROOT_FOLDER_ID")
             if f and str(f).strip():
                 updates["drive_root_folder_id"] = str(f).strip()
+        env_auth = os.environ.get("DRIVE_AUTH_MODE")
+        if env_auth is not None and str(env_auth).strip():
+            s = str(env_auth).strip().lower()
+            if s in ("service_account", "oauth_user"):
+                updates["drive_auth_mode"] = s
+        if self.drive_oauth_token_path is None:
+            tp = os.environ.get("DRIVE_OAUTH_TOKEN_PATH")
+            if tp and str(tp).strip():
+                updates["drive_oauth_token_path"] = str(tp).strip()
+        if self.drive_oauth_client_secrets_path is None:
+            cp = os.environ.get("DRIVE_OAUTH_CLIENT_SECRETS_PATH")
+            if cp and str(cp).strip():
+                updates["drive_oauth_client_secrets_path"] = str(cp).strip()
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _pdf_output_env_fallback(self) -> Self:
+        env_flag = os.environ.get("PDF_OUTPUT_ENABLED")
+        if env_flag is None:
+            return self
+        enabled = env_flag.strip().lower() in ("1", "true", "yes", "on")
+        return self.model_copy(update={"pdf_output_enabled": enabled})
 
     def provider_names(self) -> list[str]:
         return [p.name for p in self.providers]

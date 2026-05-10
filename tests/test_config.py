@@ -287,7 +287,9 @@ def test_default_verifier_provider_is_gemini() -> None:
         (["openai"], "not-a-provider", "Unknown synthesizer"),
     ],
 )
-def test_unknown_provider_or_synthesizer_rejected(providers: Any, synth: Any, msg: str) -> None:
+def test_unknown_provider_or_synthesizer_rejected(
+    providers: Any, synth: Any, msg: str
+) -> None:
     base: dict[str, Any] = {
         "symbol": "X",
         "today_low": 1,
@@ -419,6 +421,9 @@ def test_drive_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DRIVE_UPLOAD_ENABLED", "true")
     monkeypatch.setenv("DRIVE_CREDENTIALS_PATH", "/tmp/sa.json")
     monkeypatch.setenv("DRIVE_ROOT_FOLDER_ID", "folder123")
+    monkeypatch.setenv("DRIVE_AUTH_MODE", "oauth_user")
+    monkeypatch.setenv("DRIVE_OAUTH_TOKEN_PATH", "/tmp/oauth-token.json")
+    monkeypatch.setenv("DRIVE_OAUTH_CLIENT_SECRETS_PATH", "/tmp/oauth-client.json")
     cfg = RunConfig.model_validate(
         {
             "symbol": "X",
@@ -436,14 +441,46 @@ def test_drive_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
             "drive_upload_enabled": False,
             "drive_credentials_path": None,
             "drive_root_folder_id": None,
+            "drive_auth_mode": "service_account",
+            "drive_oauth_token_path": None,
+            "drive_oauth_client_secrets_path": None,
         }
     )
     assert cfg.drive_upload_enabled is True
     assert cfg.drive_credentials_path == "/tmp/sa.json"
     assert cfg.drive_root_folder_id == "folder123"
+    assert cfg.drive_auth_mode == "oauth_user"
+    assert cfg.drive_oauth_token_path == "/tmp/oauth-token.json"
+    assert cfg.drive_oauth_client_secrets_path == "/tmp/oauth-client.json"
     monkeypatch.delenv("DRIVE_UPLOAD_ENABLED", raising=False)
     monkeypatch.delenv("DRIVE_CREDENTIALS_PATH", raising=False)
     monkeypatch.delenv("DRIVE_ROOT_FOLDER_ID", raising=False)
+    monkeypatch.delenv("DRIVE_AUTH_MODE", raising=False)
+    monkeypatch.delenv("DRIVE_OAUTH_TOKEN_PATH", raising=False)
+    monkeypatch.delenv("DRIVE_OAUTH_CLIENT_SECRETS_PATH", raising=False)
+
+
+def test_pdf_output_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PDF_OUTPUT_ENABLED", "0")
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+            "pdf_output_enabled": True,
+        }
+    )
+    assert cfg.pdf_output_enabled is False
+    monkeypatch.delenv("PDF_OUTPUT_ENABLED", raising=False)
 
 
 def test_drive_settings_loaded_from_dotenv_file(

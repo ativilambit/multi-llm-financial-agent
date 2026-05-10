@@ -11,15 +11,16 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
-from equity_analyst.drive_uploader import maybe_upload_run_to_drive_raw
+from equity_analyst.drive_uploader import DriveAuthMode, maybe_upload_run_to_drive_raw
 from equity_analyst.gemini_cache import GeminiCacheIndex
+from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.provider_runtime import (
@@ -431,6 +432,9 @@ class RefinementState(TypedDict, total=False):
     drive_upload_enabled: bool
     drive_credentials_path: str | None
     drive_root_folder_id: str | None
+    drive_auth_mode: NotRequired[str]
+    drive_oauth_token_path: NotRequired[str | None]
+    pdf_output_enabled: NotRequired[bool]
 
 
 def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
@@ -676,7 +680,14 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             )
         text = format_synthesis_artifact_markdown(synthesis=result, responses=resp_map)
         iter_dir = out / "iterations"
-        (iter_dir / f"iteration_{round_idx + 1}_synthesis.md").write_text(text + "\n", encoding="utf-8")
+        syn_path = iter_dir / f"iteration_{round_idx + 1}_synthesis.md"
+        syn_body = text + "\n"
+        syn_path.write_text(syn_body, encoding="utf-8")
+        maybe_write_pdf_sibling(
+            pdf_output_enabled=bool(state.get("pdf_output_enabled", True)),
+            md_path=syn_path,
+            markdown_text=syn_body,
+        )
         out_update: dict[str, Any] = {
             "synthesis_history": [result.response.text],
             "timing_events": [{"iteration": it_no, "synthesis_wall_s": syn_wall}],
@@ -780,8 +791,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         iter_dir.mkdir(parents=True, exist_ok=True)
         (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(resp.text, encoding="utf-8")
         data = parse_verifier_json(resp.text)
-        (iter_dir / f"iteration_{round_idx + 1}_verify.md").write_text(
-            json.dumps(data, indent=2) + "\n", encoding="utf-8"
+        verify_body = json.dumps(data, indent=2) + "\n"
+        verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
+        verify_path.write_text(verify_body, encoding="utf-8")
+        maybe_write_pdf_sibling(
+            pdf_output_enabled=bool(state.get("pdf_output_enabled", True)),
+            md_path=verify_path,
+            markdown_text=verify_body,
         )
         out_v: dict[str, Any] = {
             "verification_history": [data],
@@ -845,12 +861,26 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         parts.append(state["synthesis_history"][-1])
         report = "\n".join(parts)
         out.mkdir(parents=True, exist_ok=True)
-        (out / "synthesis.md").write_text(report + "\n", encoding="utf-8")
+        pdf_on = bool(state.get("pdf_output_enabled", True))
+        final_syn_path = out / "synthesis.md"
+        final_syn_body = report + "\n"
+        final_syn_path.write_text(final_syn_body, encoding="utf-8")
+        maybe_write_pdf_sibling(
+            pdf_output_enabled=pdf_on,
+            md_path=final_syn_path,
+            markdown_text=final_syn_body,
+        )
         iter_dir = out / "iterations"
         for i, syn in enumerate(state["synthesis_history"], start=1):
             ver = state["verification_history"][i - 1] if i <= len(state["verification_history"]) else {}
             block = f"# Iteration {i}\n\n## Synthesis\n\n{syn}\n\n## Verification\n\n{json.dumps(ver, indent=2)}\n"
-            (iter_dir / f"iteration_{i}.md").write_text(block, encoding="utf-8")
+            iter_md = iter_dir / f"iteration_{i}.md"
+            iter_md.write_text(block, encoding="utf-8")
+            maybe_write_pdf_sibling(
+                pdf_output_enabled=pdf_on,
+                md_path=iter_md,
+                markdown_text=block,
+            )
 
         run_json = out / "run.json"
         timing_summary = merge_timing_events(state.get("timing_events", []))
@@ -871,6 +901,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         if bool(state.get("drive_upload_enabled", False)):
             cred_raw = state.get("drive_credentials_path")
             root_raw = state.get("drive_root_folder_id")
+            auth_raw = state.get("drive_auth_mode")
+            oauth_tok_raw = state.get("drive_oauth_token_path")
+            resolved_mode: DriveAuthMode = (
+                cast(DriveAuthMode, auth_raw)
+                if auth_raw in ("service_account", "oauth_user")
+                else "service_account"
+            )
             await maybe_upload_run_to_drive_raw(
                 drive_upload_enabled=True,
                 drive_credentials_path=cred_raw if isinstance(cred_raw, str) else None,
@@ -878,6 +915,8 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 out_dir=out,
                 run_id=out.name,
                 append_synthesis_footer=True,
+                drive_auth_mode=resolved_mode,
+                drive_oauth_token_path=oauth_tok_raw if isinstance(oauth_tok_raw, str) else None,
             )
 
         return {"final_report": report}
@@ -954,6 +993,9 @@ def build_initial_refinement_state(
         "drive_upload_enabled": cfg.drive_upload_enabled,
         "drive_credentials_path": cfg.drive_credentials_path,
         "drive_root_folder_id": cfg.drive_root_folder_id,
+        "drive_auth_mode": cfg.drive_auth_mode,
+        "drive_oauth_token_path": cfg.drive_oauth_token_path,
+        "pdf_output_enabled": cfg.pdf_output_enabled,
     }
 
 

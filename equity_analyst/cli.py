@@ -153,6 +153,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Google Drive folder ID for this run's upload root (overrides drive_root_folder_id / env).",
     )
+    run.add_argument(
+        "--drive-auth-mode",
+        choices=["service_account", "oauth_user"],
+        default=None,
+        help="Google Drive auth mode (overrides drive_auth_mode / DRIVE_AUTH_MODE).",
+    )
+    run.add_argument(
+        "--pdf",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="pdf_output_enabled",
+        help="Emit PDF alongside primary analysis markdown (default on). Use --no-pdf to disable.",
+    )
 
     return parser
 
@@ -187,6 +200,10 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["drive_upload_enabled"] = bool(args.upload_to_drive)
     if getattr(args, "drive_folder_id", None):
         patch["drive_root_folder_id"] = str(args.drive_folder_id)
+    if getattr(args, "drive_auth_mode", None) is not None:
+        patch["drive_auth_mode"] = str(args.drive_auth_mode)
+    if getattr(args, "pdf_output_enabled", None) is not None:
+        patch["pdf_output_enabled"] = bool(args.pdf_output_enabled)
     return cfg if not patch else cfg.model_copy(update=patch)
 
 

@@ -17,6 +17,7 @@ from equity_analyst.drive_uploader import (
 )
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.logging_setup import attach_run_file_logging
+from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prompting import render_prompt, split_static_dynamic
 from equity_analyst.provider_runtime import (
     effective_synthesizer_web_search,
@@ -138,7 +139,13 @@ class Orchestrator:
                 + "\n",
                 encoding="utf-8",
             )
-            synthesis_file.write_text("\n".join(preview_lines), encoding="utf-8")
+            preview_md = "\n".join(preview_lines)
+            synthesis_file.write_text(preview_md, encoding="utf-8")
+            maybe_write_pdf_sibling(
+                pdf_output_enabled=self._config.pdf_output_enabled,
+                md_path=synthesis_file,
+                markdown_text=preview_md,
+            )
             if self._config.drive_upload_enabled:
                 await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
             logger.info("Run end (dry-run) output_dir=%s", str(out_dir.resolve()))
@@ -332,9 +339,12 @@ class Orchestrator:
                 }
             )
 
-        synthesis_file.write_text(
-            format_synthesis_artifact_markdown(synthesis=synthesis, responses=responses),
-            encoding="utf-8",
+        synthesis_md = format_synthesis_artifact_markdown(synthesis=synthesis, responses=responses)
+        synthesis_file.write_text(synthesis_md, encoding="utf-8")
+        maybe_write_pdf_sibling(
+            pdf_output_enabled=self._config.pdf_output_enabled,
+            md_path=synthesis_file,
+            markdown_text=synthesis_md,
         )
 
         total_wall_s = time.perf_counter() - live_t0

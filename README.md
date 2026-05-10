@@ -10,6 +10,23 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### PDF output (optional)
+
+Standard and iterative runs still write **Markdown** (`.md`) for every primary artifact. When **`pdf_output_enabled`** is true (the default), the tool also writes a sibling **`.pdf`** next to the same path—for example `outputs/<run>/synthesis.pdf` beside `synthesis.md`, and under `iterations/` for per-round `iteration_<n>_synthesis.pdf`, `iteration_<n>_verify.pdf`, and the consolidated `iteration_<n>.pdf` next to `iteration_<n>.md`.
+
+Rendering uses **WeasyPrint** (HTML via the Python **markdown** library) so results look like formatted documents without bundling Chromium. WeasyPrint relies on native **Pango/Cairo** stacks:
+
+```bash
+brew install pango cairo gdk-pixbuf libffi
+```
+
+If WeasyPrint fails to import or render (missing system libraries, broken install), the run **logs a warning** and **continues** without PDFs; Markdown outputs are unchanged.
+
+- **Disable for one run:** `python -m equity_analyst run ... --no-pdf` (or `--pdf` to force on).
+- **Disable via environment:** `PDF_OUTPUT_ENABLED=false` (same truthy/falsy rules as other env flags: `1` / `true` / `yes` / `on` enable; anything else disables when the variable is set).
+
+**Google Drive:** the uploader walks the run output directory with `os.walk` and uploads every non-dotfile, preserving subpaths—**`.pdf` files in `iterations/` are included** automatically with the Markdown sources.
+
 ## API keys
 
 Copy `.env.example` to `.env` and set keys for the providers you enable in config:
@@ -34,17 +51,45 @@ At startup the CLI **preflights** the configured root folder via the Drive API: 
 5. **Share** that Shared Drive folder (or grant membership on the drive) with the service account’s `client_email` as **Content Manager** (or a role that includes **create/upload** and **add files**). Editor on a personal folder is **not** enough if the folder is not on a Shared Drive.
 6. Set `drive_root_folder_id` / `DRIVE_ROOT_FOLDER_ID` to the folder id from the URL: `https://drive.google.com/drive/folders/<this-part>`.
 
-If you cannot use Shared Drives, the alternative is **OAuth / domain-wide delegation** so the app acts as a human user who has quota (see [Google’s documentation](http://support.google.com/a/answer/7281227)); that path is not implemented in this repo’s uploader today.
+If you cannot use Shared Drives, use **OAuth user mode** below so uploads run as your personal Gmail account (files count against your own Drive quota).
+
+### Google Drive setup (OAuth user flow — for personal Gmail)
+
+Use this when you are **not** on Google Workspace / Shared Drives. The CLI uploads with **your** Google account after a one-time browser consent.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), pick a project → **APIs & Services → Library** → enable **Google Drive API**.
+2. **APIs & Services → OAuth consent screen**: configure a consent screen (External user type is fine for personal use). Add scope **`https://www.googleapis.com/auth/drive.file`** (recommended; see scope note below).
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID** → Application type: **Desktop app** → create → **Download JSON** and save it to your configured path (default below).
+4. Install the CLI deps, set `drive_auth_mode: oauth_user` (or `DRIVE_AUTH_MODE=oauth_user`), and run once:
+
+   ```bash
+   python -m equity_analyst.drive_oauth_setup
+   ```
+
+   (Optionally pass `--config path/to.yaml` so paths come from YAML.) A browser opens; sign in with the Gmail account that should own the uploads and grant the Drive scope. The refresh token is saved to your token path (default `~/.config/multi-llm-equity-analyst/oauth_token.json`, overridable with `drive_oauth_token_path` / `DRIVE_OAUTH_TOKEN_PATH`).
+
+5. Set **`drive_root_folder_id`** / **`DRIVE_ROOT_FOLDER_ID`** to a folder id from your normal Drive URL (`https://drive.google.com/drive/folders/<id>`). No Shared Drive is required; the signed-in user must own or have write access to that folder.
+
+6. On later runs the tool **silently refreshes** the access token. If you revoke the app in Google Account settings or the refresh fails, run `python -m equity_analyst.drive_oauth_setup` again.
+
+**Default OAuth scope (`drive.file` vs full `drive`):** uploads use **`https://www.googleapis.com/auth/drive.file`**. That is the least-privilege scope Google recommends for apps that only create and manage their own files: you can create files and folders under the destination you configure, without broad read access to the entire Drive. The broader **`https://www.googleapis.com/auth/drive`** scope allows full Drive read/write; use it only if you intentionally need unrestricted access (not required for this project’s upload-only flow).
 
 ### Configuration
 
 The usual way to enable Drive upload without editing every YAML file is to add the variables to **`.env`** next to your API keys (copy from [`.env.example`](.env.example)). The CLI calls `python-dotenv` at startup with `override=False`, so anything you already exported in the shell still wins over `.env`.
 
 ```bash
-# .env (optional)
+# .env (optional) — service account (Shared Drive)
 DRIVE_UPLOAD_ENABLED=true
 DRIVE_CREDENTIALS_PATH=/Users/you/secrets/equity-analyst-drive-sa.json
 DRIVE_ROOT_FOLDER_ID=1AbCdEf...
+
+# .env (optional) — OAuth user (personal Gmail)
+# DRIVE_UPLOAD_ENABLED=true
+# DRIVE_AUTH_MODE=oauth_user
+# DRIVE_OAUTH_CLIENT_SECRETS_PATH=/Users/you/secrets/google-oauth-desktop.json
+# DRIVE_OAUTH_TOKEN_PATH=/Users/you/.config/multi-llm-equity-analyst/oauth_token.json
+# DRIVE_ROOT_FOLDER_ID=1AbCdEf...
 ```
 
 **Precedence:** CLI flags (`--upload-to-drive` / `--no-upload-to-drive`, `--drive-folder-id`) override the resolved config. After that: if `DRIVE_UPLOAD_ENABLED` is set in the environment (shell **or** values loaded from `.env`), it overrides the YAML boolean for `drive_upload_enabled`. For `drive_credentials_path` and `drive_root_folder_id`, non-empty YAML entries win; otherwise the environment supplies them. Between shell and `.env`, **`load_dotenv(override=False)`** keeps existing shell variables and only fills names that are not already set—so **shell > `.env`** for the same variable name.
@@ -57,17 +102,31 @@ drive_credentials_path: "${HOME}/secrets/equity-analyst-drive-sa.json"
 drive_root_folder_id: "1AbCdEf...your-folder-id..."
 ```
 
+OAuth user mode (YAML example):
+
+```yaml
+drive_upload_enabled: true
+drive_auth_mode: oauth_user
+drive_oauth_client_secrets_path: "${HOME}/secrets/google-oauth-desktop.json"
+drive_oauth_token_path: "${HOME}/.config/multi-llm-equity-analyst/oauth_token.json"
+drive_root_folder_id: "1AbCdEf...your-personal-folder-id..."
+```
+
 Environment keys (optional; typically set in `.env` or the shell):
 
 - `DRIVE_UPLOAD_ENABLED=true|false`
 - `DRIVE_CREDENTIALS_PATH`
 - `DRIVE_ROOT_FOLDER_ID`
+- `DRIVE_AUTH_MODE=service_account|oauth_user`
+- `DRIVE_OAUTH_CLIENT_SECRETS_PATH` (path to Desktop OAuth client JSON; used by `drive_oauth_setup`)
+- `DRIVE_OAUTH_TOKEN_PATH` (saved refresh token JSON)
 
 Per-run CLI overrides:
 
 ```bash
 python -m equity_analyst run --config ... --upload-to-drive --drive-folder-id <folder-id>
 python -m equity_analyst run --config ... --no-upload-to-drive
+python -m equity_analyst run --config ... --drive-auth-mode oauth_user
 ```
 
 ### Caveats

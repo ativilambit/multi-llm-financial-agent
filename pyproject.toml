@@ -16,6 +16,10 @@ strict = true
 warn_unused_configs = true
 pretty = true
 
+[[tool.mypy.overrides]]
+module = "equity_analyst.drive_uploader"
+disable_error_code = ["unused-ignore"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

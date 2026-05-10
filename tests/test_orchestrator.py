@@ -105,6 +105,13 @@ async def test_orchestrator_parallel_and_writes_outputs(
         classmethod(lambda cls: _fake_registry()),
     )
 
+    pdf_md_paths: list[Path] = []
+
+    def _capture_pdf(**kwargs: Any) -> None:
+        pdf_md_paths.append(kwargs["md_path"])
+
+    monkeypatch.setattr(orch_mod, "maybe_write_pdf_sibling", _capture_pdf)
+
     orch = Orchestrator(config=cfg, prompt_path=prompt_path)
 
     started = asyncio.get_event_loop().time()
@@ -122,6 +129,7 @@ async def test_orchestrator_parallel_and_writes_outputs(
     assert (out_dir / "gemini.md").exists()
     assert (out_dir / "grok.md").exists()
     assert (out_dir / "synthesis.md").exists()
+    assert artifacts.synthesis_file in pdf_md_paths
     assert (out_dir / "run.json").exists()
     assert (out_dir / "agent.log").exists()
     assert any("Run start" in r.message for r in caplog.records)

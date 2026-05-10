@@ -407,7 +407,10 @@ def test_log_drive_preflight_get_shared_drive_ok(
             drive_root_folder_id="x",
         )
     assert ok is True
-    assert any("Drive upload: ENABLED (folder=foo, shared_drive=D1)" in r.message for r in caplog.records)
+    assert any(
+        "Drive upload: ENABLED (auth=service_account, folder=foo, shared_drive=D1)" in r.message
+        for r in caplog.records
+    )
 
 
 def test_log_drive_preflight_get_warns_when_can_add_children_missing(
@@ -598,3 +601,141 @@ async def test_maybe_upload_shadow_malformed_from_thread_one_warning_no_tracebac
         r.name == "equity_analyst.drive_uploader" and r.levelno == logging.ERROR
         for r in caplog.records
     )
+
+
+def test_log_drive_upload_plan_oauth_missing_token_file(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    missing = tmp_path / "oauth.json"
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="folder123",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(missing),
+        )
+    assert ok is False
+    assert any(
+        "oauth token file missing at" in r.message and "drive_oauth_setup" in r.message for r in caplog.records
+    )
+
+
+def test_log_drive_upload_plan_oauth_invalid_token(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    p = tmp_path / "bad.json"
+    p.write_text("not-json {{{", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="fid",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(p),
+        )
+    assert ok is False
+    assert any("oauth token invalid or unreadable" in r.message for r in caplog.records)
+
+
+def test_log_drive_upload_plan_oauth_expired_revoked(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, monkeypatch: Any
+) -> None:
+    p = tmp_path / "t.json"
+    p.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._load_oauth_user_credentials",
+        lambda _tp: (None, "no_refresh"),
+    )
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="fid",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(p),
+        )
+    assert ok is False
+    assert any("oauth token expired/revoked" in r.message for r in caplog.records)
+
+
+def test_log_drive_oauth_personal_folder_no_shared_drive_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: Any
+) -> None:
+    token = tmp_path / "tok.json"
+    token.write_text("{}", encoding="utf-8")
+    fake_creds = MagicMock()
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._load_oauth_user_credentials",
+        lambda _tp: (fake_creds, None),
+    )
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._drive_root_preflight_probe_oauth",
+        lambda *_a, **_k: {
+            "id": "f1",
+            "name": "Personal",
+            "mimeType": "application/vnd.google-apps.folder",
+        },
+    )
+    svc = MagicMock()
+    svc.about.return_value.get.return_value.execute.return_value = {"user": {"emailAddress": "you@gmail.com"}}
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._build_drive_service_from_oauth_creds",
+        lambda _c: svc,
+    )
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="f1",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(token),
+        )
+    assert ok is True
+    assert not any("Shared Drive" in r.message for r in caplog.records)
+    assert any(
+        "Drive upload: ENABLED (auth=oauth_user, folder=f1, account=you@gmail.com)" in r.message
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_maybe_upload_oauth_uses_discovery_build_once(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    token = tmp_path / "tok.json"
+    token.write_text("{}", encoding="utf-8")
+    out = tmp_path / "o"
+    out.mkdir()
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._load_oauth_user_credentials",
+        lambda _tp: (MagicMock(), None),
+    )
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._drive_root_preflight_probe_oauth",
+        lambda *_a, **_k: {"id": "ROOT", "mimeType": "application/vnd.google-apps.folder"},
+    )
+    built: list[int] = []
+
+    def fake_build(*_a: Any, **_k: Any) -> MagicMock:
+        built.append(1)
+        files_api = MagicMock()
+        files_api.list.return_value.execute.side_effect = [{"files": []}]
+        files_api.create.return_value.execute.side_effect = [{"id": "RUNF"}]
+        svc = MagicMock()
+        svc.files.return_value = files_api
+        return svc
+
+    with patch("googleapiclient.discovery.build", side_effect=fake_build):
+        url = await maybe_upload_run_to_drive_raw(
+            drive_upload_enabled=True,
+            drive_credentials_path=None,
+            drive_root_folder_id="ROOT",
+            out_dir=out,
+            run_id="R1",
+            drive_auth_mode="oauth_user",
+            drive_oauth_token_path=str(token),
+        )
+    assert url is not None
+    assert "RUNF" in url
+    assert len(built) == 1

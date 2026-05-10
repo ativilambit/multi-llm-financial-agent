@@ -272,6 +272,38 @@ def _initial_state(cfg: RunConfig, out: Path) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+async def test_iterative_maybe_write_pdf_sibling_targets_expected_md_paths(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    pdf_md_paths: list[Path] = []
+
+    def _capture_pdf(**kwargs: Any) -> None:
+        pdf_md_paths.append(kwargs["md_path"])
+
+    monkeypatch.setattr("equity_analyst.iterative.maybe_write_pdf_sibling", _capture_pdf)
+
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
+            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+        ),
+    )
+    cfg = _base_cfg()
+    out = tmp_path / "o"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t-pdf"}})
+    names = {p.name for p in pdf_md_paths}
+    assert "iteration_1_synthesis.md" in names
+    assert "iteration_1_verify.md" in names
+    assert "synthesis.md" in names
+    assert "iteration_1.md" in names
+
+
+@pytest.mark.asyncio
 async def test_loop_converges_when_synthesis_high_confidence(tmp_path: Path) -> None:
     reg = ProviderRegistry()
     reg.register("openai", lambda **_: _Txt("openai", "fan"))
