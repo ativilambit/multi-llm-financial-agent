@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from dotenv import load_dotenv
 
 from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
 from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL
@@ -307,3 +309,50 @@ def test_drive_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DRIVE_UPLOAD_ENABLED", raising=False)
     monkeypatch.delenv("DRIVE_CREDENTIALS_PATH", raising=False)
     monkeypatch.delenv("DRIVE_ROOT_FOLDER_ID", raising=False)
+
+
+def test_drive_settings_loaded_from_dotenv_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DRIVE_UPLOAD_ENABLED", raising=False)
+    monkeypatch.delenv("DRIVE_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("DRIVE_ROOT_FOLDER_ID", raising=False)
+
+    (tmp_path / ".env").write_text(
+        "DRIVE_UPLOAD_ENABLED=true\n"
+        "DRIVE_CREDENTIALS_PATH=/tmp/from-dotenv-sa.json\n"
+        "DRIVE_ROOT_FOLDER_ID=folder-from-dotenv\n",
+        encoding="utf-8",
+    )
+    cfg_yaml = tmp_path / "minimal.yaml"
+    cfg_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "drive_upload_enabled": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    load_dotenv(dotenv_path=tmp_path / ".env", override=False)
+    try:
+        cfg = load_config(str(cfg_yaml))
+        assert cfg.drive_upload_enabled is True
+        assert cfg.drive_credentials_path == "/tmp/from-dotenv-sa.json"
+        assert cfg.drive_root_folder_id == "folder-from-dotenv"
+    finally:
+        for k in ("DRIVE_UPLOAD_ENABLED", "DRIVE_CREDENTIALS_PATH", "DRIVE_ROOT_FOLDER_ID"):
+            os.environ.pop(k, None)

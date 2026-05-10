@@ -243,7 +243,7 @@ async def _run_iterative_cli(
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_dotenv()
+    load_dotenv(override=False)
     args = _build_parser().parse_args(argv)
 
     if args.command == "run":

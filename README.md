@@ -33,7 +33,18 @@ After each standard or iterative run finishes writing `outputs/<run-id>/` (inclu
 
 ### Configuration
 
-In YAML (paths can use shell-style expansion such as `"${HOME}/secrets/..."` when your shell expands them before load, or use absolute paths):
+The usual way to enable Drive upload without editing every YAML file is to add the variables to **`.env`** next to your API keys (copy from [`.env.example`](.env.example)). The CLI calls `python-dotenv` at startup with `override=False`, so anything you already exported in the shell still wins over `.env`.
+
+```bash
+# .env (optional)
+DRIVE_UPLOAD_ENABLED=true
+DRIVE_CREDENTIALS_PATH=/Users/you/secrets/equity-analyst-drive-sa.json
+DRIVE_ROOT_FOLDER_ID=1AbCdEf...
+```
+
+**Precedence:** CLI flags (`--upload-to-drive` / `--no-upload-to-drive`, `--drive-folder-id`) override the resolved config. After that: if `DRIVE_UPLOAD_ENABLED` is set in the environment (shell **or** values loaded from `.env`), it overrides the YAML boolean for `drive_upload_enabled`. For `drive_credentials_path` and `drive_root_folder_id`, non-empty YAML entries win; otherwise the environment supplies them. Between shell and `.env`, **`load_dotenv(override=False)`** keeps existing shell variables and only fills names that are not already set—so **shell > `.env`** for the same variable name.
+
+You can still set the same fields in YAML (paths can use shell-style expansion such as `"${HOME}/secrets/..."` when your shell expands them before load, or use absolute paths):
 
 ```yaml
 drive_upload_enabled: true
@@ -41,7 +52,7 @@ drive_credentials_path: "${HOME}/secrets/equity-analyst-drive-sa.json"
 drive_root_folder_id: "1AbCdEf...your-folder-id..."
 ```
 
-Environment fallbacks (optional; if `DRIVE_UPLOAD_ENABLED` is set, it overrides the YAML boolean; missing credential or folder id values can be filled from env):
+Environment keys (optional; typically set in `.env` or the shell):
 
 - `DRIVE_UPLOAD_ENABLED=true|false`
 - `DRIVE_CREDENTIALS_PATH`
