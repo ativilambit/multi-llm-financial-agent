@@ -33,6 +33,7 @@ from equity_analyst.provider_runtime import (
 )
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.gemini_provider import GeminiProvider
+from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
@@ -503,6 +504,17 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
                     )
                 if isinstance(p, GeminiProvider) and pce and gemini_cache_index is not None:
+                    static = EQUITY_ANALYST_SYSTEM_PROMPT
+                    sep = f"{static}\n\n"
+                    if body.startswith(sep):
+                        return await p.generate(
+                            body,
+                            enable_web_search=ws,
+                            max_output_tokens=mot,
+                            cacheable_prefix=static,
+                            user_message_for_cache=body[len(sep) :],
+                        )
+                if isinstance(p, OpenAIProvider):
                     static = EQUITY_ANALYST_SYSTEM_PROMPT
                     sep = f"{static}\n\n"
                     if body.startswith(sep):

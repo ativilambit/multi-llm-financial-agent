@@ -13,7 +13,10 @@ from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, ephemeral_
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL, GeminiProvider
 from equity_analyst.providers.grok_provider import XAI_BASE_URL, GrokProvider
-from equity_analyst.providers.openai_provider import OpenAIProvider
+from equity_analyst.providers.openai_provider import (
+    EQUITY_FANOUT_PROMPT_CACHE_KEY,
+    OpenAIProvider,
+)
 
 
 @dataclass
@@ -316,7 +319,34 @@ async def test_openai_provider_assembles_request_and_parses_usage() -> None:
     assert fake.responses.last_kwargs["model"] == "gpt-5.5"
     assert fake.responses.last_kwargs["input"] == "hello"
     assert fake.responses.last_kwargs.get("stream") is True
+    assert "prompt_cache_key" not in fake.responses.last_kwargs
     assert {"type": "web_search"} in (fake.responses.last_kwargs["tools"] or [])
+
+
+@pytest.mark.asyncio
+async def test_openai_fanout_structured_input_system_first_for_caching() -> None:
+    fake = _FakeOpenAIClient()
+    p = OpenAIProvider(model="gpt-5.5", client=fake)  # type: ignore[arg-type]
+    static = "STATIC\n" * 50
+    user = "USER body"
+    full = f"{static}\n\n{user}"
+    await p.generate(
+        full,
+        enable_web_search=True,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.responses.last_kwargs is not None
+    kw = fake.responses.last_kwargs
+    inp = kw["input"]
+    assert isinstance(inp, list)
+    assert inp[0]["type"] == "message"
+    assert inp[0]["role"] == "system"
+    assert inp[0]["content"] == static
+    assert inp[1]["type"] == "message"
+    assert inp[1]["role"] == "user"
+    assert inp[1]["content"] == user
+    assert kw.get("prompt_cache_key") == EQUITY_FANOUT_PROMPT_CACHE_KEY
 
 
 @pytest.mark.asyncio

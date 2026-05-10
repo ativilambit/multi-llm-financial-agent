@@ -30,6 +30,7 @@ from equity_analyst.provider_runtime import (
 )
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.gemini_provider import GeminiProvider
+from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
@@ -187,6 +188,14 @@ class Orchestrator:
                         force_tool_use=self._config.anthropic_force_tool_use,
                     )
                 if isinstance(provider, GeminiProvider) and self._config.prompt_cache_enabled:
+                    return await provider.generate(
+                        rendered.text,
+                        enable_web_search=ws,
+                        max_output_tokens=mot,
+                        cacheable_prefix=static_block,
+                        user_message_for_cache=user_block,
+                    )
+                if isinstance(provider, OpenAIProvider):
                     return await provider.generate(
                         rendered.text,
                         enable_web_search=ws,

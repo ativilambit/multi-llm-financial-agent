@@ -134,6 +134,20 @@ Default fan-out budget is **16,000** tokens per provider. For an 11-section deep
 
 **OpenAI** uses the **streaming** Responses API (`stream=True`) for all fan-out calls so long web-search tool loops stay connected instead of timing out on a single blocking HTTP response.
 
+### OpenAI automatic prompt caching (fan-out)
+
+OpenAI [**automatic prompt caching**](https://platform.openai.com/docs/guides/prompt-caching) applies when the combined prefix (messages + tools) is at least **1024 tokens** and the **leading** bytes match a recent request on the routed worker. Fan-out calls send structured **`input`**: a **`system`** message with the static equity persona first, then a **`user`** message with the rendered template body, plus a stable **`prompt_cache_key`** so similar jobs route consistently. Usage reports cache hits on **`usage.input_tokens_details.cached_tokens`** (logged as **`OpenAI cache stats cache_read=...`**).
+
+**Important:** `cache_read` is **usually zero on the first** request after a cold start (nothing to reuse yet). Run the same symbol/config twice within the model’s retention window ( **`gpt-5.5`** defaults to **24h** extended retention per OpenAI’s docs), or use two back-to-back calls, to see non-zero **`cached_tokens`** on the second completion.
+
+**Diagnostic:** with **`OPENAI_API_KEY`** set (and optional **`PROBE_OPENAI_MODEL`** override, default **`gpt-5.5`**), run:
+
+```bash
+.venv/bin/python scripts/probe_openai_cache.py
+```
+
+It issues two minimal completions with the same static/user split and prints **`cached_tokens`** for each call.
+
 **Synthesizer** defaults to **Gemini** (`gemini-3.1-pro-preview` per `GeminiProvider.DEFAULT_GEMINI_MODEL`) so synthesis runs on a different model than typical Anthropic fan-out, which avoids stacking the same provider’s rate limits on both parallel answers and the long synthesis prompt. Configure it as a string (`synthesizer: gemini`) or as an object with `name`, optional `model`, optional `web_search`, and optional `request_timeout_s`.
 
 ```yaml

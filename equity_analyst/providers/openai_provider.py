@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import time
@@ -13,10 +14,19 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
 
+# Combined with the static prefix hash for cache routing (see OpenAI prompt caching guide).
+EQUITY_FANOUT_PROMPT_CACHE_KEY = "equity_analyst_fanout_v1"
 
-def _serialize_responses_request_body_for_debug(*, input_text: str, tools: list[Any] | None) -> str:
+
+def _serialize_responses_request_body_for_debug(
+    *, input_payload: str | list[dict[str, Any]], tools: list[Any] | None
+) -> str:
     """Stable string of user-visible Responses API body fields (for prefix / cache debugging)."""
-    lines: list[str] = [f"input: {input_text}"]
+    if isinstance(input_payload, str):
+        body_input_repr = f"input: {input_payload}"
+    else:
+        body_input_repr = "input_json:" + json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
+    lines: list[str] = [body_input_repr]
     if tools:
         names: list[str] = []
         for t in tools:
@@ -47,6 +57,18 @@ def _prompt_cache_read_tokens(usage_obj: Any) -> int | None:
         if v is not None:
             return int(v)
     return None
+
+
+def _responses_input_messages(
+    *,
+    cacheable_prefix: str,
+    user_message_for_cache: str,
+) -> list[dict[str, Any]]:
+    """Structured input: system (static) first, then user — matches Responses API caching docs."""
+    return [
+        {"type": "message", "role": "system", "content": cacheable_prefix},
+        {"type": "message", "role": "user", "content": user_message_for_cache},
+    ]
 
 
 def _text_from_response_output(resp: Any) -> str:
@@ -90,23 +112,54 @@ class OpenAIProvider(LLMProvider):
         *,
         enable_web_search: bool = True,
         max_output_tokens: int | None = None,
+        cacheable_prefix: str | None = None,
+        user_message_for_cache: str | None = None,
     ) -> ProviderResponse:
         start = time.perf_counter()
-        create_kwargs: dict[str, Any] = {"model": self._model, "input": prompt, "stream": True}
+        use_structured_cache_split = (
+            cacheable_prefix is not None
+            and user_message_for_cache is not None
+            and cacheable_prefix != ""
+        )
+        if use_structured_cache_split:
+            assert cacheable_prefix is not None and user_message_for_cache is not None
+            expected = f"{cacheable_prefix}\n\n{user_message_for_cache}"
+            if prompt != expected:
+                logger.warning(
+                    "OpenAI prompt/cache split mismatch (using structured input from cache fields); "
+                    "prompt_len=%s expected_len=%s",
+                    len(prompt),
+                    len(expected),
+                )
+            input_payload: str | list[dict[str, Any]] = _responses_input_messages(
+                cacheable_prefix=cacheable_prefix,
+                user_message_for_cache=user_message_for_cache,
+            )
+        else:
+            input_payload = prompt
+
+        create_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "input": input_payload,
+            "stream": True,
+        }
+        if use_structured_cache_split:
+            create_kwargs["prompt_cache_key"] = EQUITY_FANOUT_PROMPT_CACHE_KEY
         if max_output_tokens is not None:
             create_kwargs["max_output_tokens"] = max_output_tokens
         if enable_web_search:
             create_kwargs["tools"] = cast(Any, [{"type": "web_search"}])
         logger.debug(
-            "OpenAI request shape model=%s web_search=%s prompt_chars=%s tool_count=%s",
+            "OpenAI request shape model=%s web_search=%s structured_cache=%s prompt_chars=%s tool_count=%s",
             self._model,
             enable_web_search,
+            use_structured_cache_split,
             len(prompt),
             len(create_kwargs.get("tools", []) or []),
         )
         if logger.isEnabledFor(logging.DEBUG):
             body_str = _serialize_responses_request_body_for_debug(
-                input_text=prompt,
+                input_payload=input_payload,
                 tools=create_kwargs.get("tools"),
             )
             body_hash = hashlib.sha256(body_str.encode("utf-8")).hexdigest()[:16]
