@@ -121,6 +121,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override RunConfig.synthesizer_max_output_tokens (default from YAML or 24000)",
     )
     run.add_argument(
+        "--no-summarize-oversized",
+        action="store_true",
+        help="Disable Gemini Flash pre-summarization of oversized provider bodies before synthesis.",
+    )
+    run.add_argument(
+        "--summarize-threshold-tokens",
+        type=int,
+        default=None,
+        help="Override RunConfig.summarize_threshold_input_tokens (default 8000 estimated tokens per body)",
+    )
+    run.add_argument(
         "--no-prompt-cache",
         action="store_true",
         help="Disable prompt caching for Anthropic (system/tools) and Gemini explicit context caches.",
@@ -163,6 +174,10 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["synthesizer_max_input_tokens"] = args.synthesizer_max_input_tokens
     if args.synthesizer_max_output_tokens is not None:
         patch["synthesizer_max_output_tokens"] = args.synthesizer_max_output_tokens
+    if getattr(args, "no_summarize_oversized", False):
+        patch["summarize_oversized_providers"] = False
+    if getattr(args, "summarize_threshold_tokens", None) is not None:
+        patch["summarize_threshold_input_tokens"] = int(args.summarize_threshold_tokens)
     if getattr(args, "no_prompt_cache", False):
         patch["prompt_cache_enabled"] = False
     if getattr(args, "no_force_tool_use", False):

@@ -322,6 +322,11 @@ class RefinementState(TypedDict, total=False):
     retry_max_attempts: int
     retry_base_delay_s: float
     synthesizer_max_input_tokens: int
+    summarize_oversized_providers: bool
+    summarize_threshold_input_tokens: int
+    oversized_summarize_model: str
+    oversized_summarize_max_output_tokens: int
+    oversized_summarize_max_input_tokens: int
     gemini_cache_ttl_s: int
     synthesizer_cfg: dict[str, Any]
     verifier_name: str
@@ -516,6 +521,20 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     retry_max_attempts=retry_max,
                     retry_base_delay_s=retry_base,
                     anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
+                    symbol=state.get("symbol"),
+                    summarize_oversized_providers=bool(state.get("summarize_oversized_providers", True)),
+                    summarize_threshold_input_tokens=int(
+                        state.get("summarize_threshold_input_tokens", 8000),
+                    ),
+                    oversized_summarize_model=str(
+                        state.get("oversized_summarize_model", "gemini-3-flash-preview"),
+                    ),
+                    oversized_summarize_max_output_tokens=int(
+                        state.get("oversized_summarize_max_output_tokens", 8192),
+                    ),
+                    oversized_summarize_max_input_tokens=int(
+                        state.get("oversized_summarize_max_input_tokens", 100_000),
+                    ),
                 ),
                 timeout=timeout_syn,
             )
@@ -815,6 +834,11 @@ def build_initial_refinement_state(
         "retry_max_attempts": cfg.retry_max_attempts,
         "retry_base_delay_s": float(cfg.retry_base_delay_s),
         "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
+        "summarize_oversized_providers": cfg.summarize_oversized_providers,
+        "summarize_threshold_input_tokens": cfg.summarize_threshold_input_tokens,
+        "oversized_summarize_model": cfg.oversized_summarize_model,
+        "oversized_summarize_max_output_tokens": cfg.oversized_summarize_max_output_tokens,
+        "oversized_summarize_max_input_tokens": cfg.oversized_summarize_max_input_tokens,
         "gemini_cache_ttl_s": cfg.gemini_cache_ttl_s,
         "synthesizer_cfg": cfg.synthesizer.model_dump(mode="json"),
         "verifier_name": cfg.verifier_provider,

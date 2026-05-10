@@ -112,6 +112,32 @@ class RunConfig(BaseModel):
     retry_base_delay_s: float = Field(default=2.0, gt=0, le=120.0)
     synthesizer_max_input_tokens: int = Field(default=20_000, ge=1024, le=500_000)
 
+    summarize_oversized_providers: bool = Field(
+        default=True,
+        description="When True, oversized healthy provider bodies are summarized with Gemini Flash before synthesis.",
+    )
+    summarize_threshold_input_tokens: int = Field(
+        default=8000,
+        ge=512,
+        description="Per-provider body estimate (len(text)//4) above which pre-synthesis summarization runs.",
+    )
+    oversized_summarize_model: str = Field(
+        default="gemini-3-flash-preview",
+        description="Gemini model id for compressing oversized provider outputs (no web search).",
+    )
+    oversized_summarize_max_output_tokens: int = Field(
+        default=8192,
+        ge=1024,
+        le=128_000,
+        description="Max output tokens for the oversized-body summarization call.",
+    )
+    oversized_summarize_max_input_tokens: int = Field(
+        default=100_000,
+        ge=4096,
+        le=500_000,
+        description="Estimated input token budget (len//4) sent to the summarizer; larger bodies are shrunk first.",
+    )
+
     prompt_cache_enabled: bool = Field(
         default=True,
         description="When True, Anthropic fan-out uses API prompt caching on system + tools; "

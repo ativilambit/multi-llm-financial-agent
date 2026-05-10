@@ -97,6 +97,46 @@ def test_cli_synthesizer_max_output_tokens_override(tmp_path: Path) -> None:
     assert cfg.synthesizer_max_output_tokens == 50_000
 
 
+def test_cli_summarize_oversized_overrides(tmp_path: Path) -> None:
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--config",
+            str(yml),
+            "--no-summarize-oversized",
+            "--summarize-threshold-tokens",
+            "12000",
+        ]
+    )
+    base = _load_cfg(args)
+    assert base.summarize_oversized_providers is True
+    assert base.summarize_threshold_input_tokens == 8000
+    cfg = _apply_cli_config_overrides(base, args)
+    assert cfg.summarize_oversized_providers is False
+    assert cfg.summarize_threshold_input_tokens == 12_000
+
+
 def test_cli_drive_upload_and_folder_overrides(tmp_path: Path) -> None:
     yml = tmp_path / "c.yaml"
     yml.write_text(

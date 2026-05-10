@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.provider_runtime import partition_provider_responses
+from equity_analyst.provider_summarize import maybe_summarize_healthy_for_synthesis
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.retry import async_retry_call
@@ -136,6 +137,12 @@ class Synthesizer:
         retry_max_attempts: int = 3,
         retry_base_delay_s: float = 2.0,
         anthropic_force_tool_use: bool = True,
+        symbol: str | None = None,
+        summarize_oversized_providers: bool = True,
+        summarize_threshold_input_tokens: int = 8000,
+        oversized_summarize_model: str = "gemini-3-flash-preview",
+        oversized_summarize_max_output_tokens: int = 8192,
+        oversized_summarize_max_input_tokens: int = 100_000,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -165,6 +172,15 @@ class Synthesizer:
             )
 
         failure_note = _failure_note_line(failed) if failed else ""
+        healthy = await maybe_summarize_healthy_for_synthesis(
+            healthy=healthy,
+            summarize_oversized_providers=summarize_oversized_providers,
+            summarize_threshold_input_tokens=summarize_threshold_input_tokens,
+            oversized_summarize_model=oversized_summarize_model,
+            oversized_summarize_max_output_tokens=oversized_summarize_max_output_tokens,
+            oversized_summarize_max_input_tokens=oversized_summarize_max_input_tokens,
+            symbol=symbol,
+        )
         fixed_intro = (
             f"{_load_prompt_file('synthesizer_system.md')}\n\n"
             f"### Original user prompt\n{original_prompt}\n\n"
