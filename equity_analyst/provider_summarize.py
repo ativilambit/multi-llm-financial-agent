@@ -23,6 +23,10 @@ def _estimate_tokens(s: str) -> int:
     return max(1, len(s) // 4)
 
 
+def _total_body_tokens(healthy: dict[str, ProviderResponse]) -> int:
+    return sum(_estimate_tokens(r.text) for r in healthy.values())
+
+
 def _shrink_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
@@ -114,16 +118,23 @@ async def maybe_summarize_healthy_for_synthesis(
     healthy: dict[str, ProviderResponse],
     summarize_oversized_providers: bool,
     summarize_threshold_input_tokens: int,
+    target_total_tokens: int | None,
     oversized_summarize_model: str,
     oversized_summarize_max_output_tokens: int,
     oversized_summarize_max_input_tokens: int,
     symbol: str | None,
     client: genai.Client | None = None,
-) -> dict[str, ProviderResponse]:
+) -> tuple[dict[str, ProviderResponse], bool]:
     if not summarize_oversized_providers:
-        return healthy
-    if not any(_estimate_tokens(r.text) >= summarize_threshold_input_tokens for r in healthy.values()):
-        return healthy
+        return healthy, False
+
+    total = _total_body_tokens(healthy)
+    any_per_provider_large = any(
+        _estimate_tokens(r.text) >= summarize_threshold_input_tokens for r in healthy.values()
+    )
+    aggregate_over = target_total_tokens is not None and total > target_total_tokens
+    if not any_per_provider_large and not aggregate_over:
+        return healthy, False
 
     shared_client: genai.Client | None = client
     owned_client = False
@@ -131,23 +142,49 @@ async def maybe_summarize_healthy_for_synthesis(
         shared_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         owned_client = True
 
-    out: dict[str, ProviderResponse] = {}
+    out: dict[str, ProviderResponse] = dict(healthy)
+    summarized_any = False
     try:
-        for name, resp in healthy.items():
+        max_passes = max(8, len(out) * 4)
+        for _ in range(max_passes):
+            total = _total_body_tokens(out)
+            overs = [
+                n
+                for n, r in out.items()
+                if _estimate_tokens(r.text) >= summarize_threshold_input_tokens
+            ]
+            under_target = target_total_tokens is None or total <= target_total_tokens
+            if under_target and not overs:
+                break
+
+            if target_total_tokens is not None and total > target_total_tokens:
+                name = max(out.items(), key=lambda kv: _estimate_tokens(kv[1].text))[0]
+            elif overs:
+                name = max(overs, key=lambda n: _estimate_tokens(out[n].text))
+            else:
+                break
+
+            resp = out[name]
             before = _estimate_tokens(resp.text)
-            if before < summarize_threshold_input_tokens:
-                out[name] = resp
-                continue
+            need_aggregate = target_total_tokens is not None and total > target_total_tokens
+            effective_threshold = (
+                0
+                if (need_aggregate and before < summarize_threshold_input_tokens)
+                else summarize_threshold_input_tokens
+            )
+            before_text = resp.text
             new_text = await summarize_provider_body_if_needed(
                 text=resp.text,
                 provider_name=name,
                 symbol=symbol,
-                threshold=summarize_threshold_input_tokens,
+                threshold=effective_threshold,
                 model=oversized_summarize_model,
                 max_output_tokens=oversized_summarize_max_output_tokens,
                 max_input_tokens=oversized_summarize_max_input_tokens,
                 client=shared_client,
             )
+            if new_text == before_text:
+                break
             after = _estimate_tokens(new_text)
             logger.info(
                 "synthesizer: summarized provider=%s est_tokens=%s → %s",
@@ -156,8 +193,9 @@ async def maybe_summarize_healthy_for_synthesis(
                 after,
             )
             out[name] = replace(resp, text=new_text)
+            summarized_any = True
     finally:
         if owned_client and shared_client is not None:
             await shared_client.aio.aclose()
 
-    return out
+    return out, summarized_any

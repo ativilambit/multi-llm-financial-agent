@@ -591,7 +591,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             if syn_cfg.request_timeout_s is not None
             else float(state.get("request_timeout_s", 180.0))
         )
-        syn_max_in = int(state.get("synthesizer_max_input_tokens", 20_000))
+        syn_max_in = int(state.get("synthesizer_max_input_tokens", 100_000))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
         syn_ws = effective_synthesizer_web_search(run_default=state["enable_web_search"], syn=syn_cfg)

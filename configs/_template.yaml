@@ -95,4 +95,4 @@ synthesizer:
 #   — default asyncio wait_for ceiling for each provider/synthesis call (3 minutes).
 # retry_max_attempts: 3
 # retry_base_delay_s: 2.0
-# synthesizer_max_input_tokens: 20000
+# synthesizer_max_input_tokens: 100000

@@ -112,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--synthesizer-max-input-tokens",
         type=int,
         default=None,
-        help="Override RunConfig.synthesizer_max_input_tokens (default from YAML or 20000)",
+        help="Override RunConfig.synthesizer_max_input_tokens (default from YAML or 100000)",
     )
     run.add_argument(
         "--synthesizer-max-output-tokens",

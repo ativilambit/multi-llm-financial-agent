@@ -45,16 +45,18 @@ async def test_oversized_body_calls_summarizer_once(monkeypatch: pytest.MonkeyPa
 
     big = "word " * 9000  # len//4 >> 8000
     healthy = {"openai": _resp(name="openai", text=big)}
-    out = await maybe_summarize_healthy_for_synthesis(
+    out, did = await maybe_summarize_healthy_for_synthesis(
         healthy=healthy,
         summarize_oversized_providers=True,
         summarize_threshold_input_tokens=8000,
+        target_total_tokens=None,
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,
         symbol="MNDY",
         client=_DummyGeminiClient(),
     )
+    assert did is True
     assert len(calls) == 1
     assert out["openai"].text == "[compressed]\n\nshort"
     assert out["openai"].model == "m"
@@ -68,16 +70,18 @@ async def test_under_threshold_skips_api(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(ps, "_generate_summary", mock)
 
     healthy = {"openai": _resp(name="openai", text="small")}
-    out = await maybe_summarize_healthy_for_synthesis(
+    out, did = await maybe_summarize_healthy_for_synthesis(
         healthy=healthy,
         summarize_oversized_providers=True,
         summarize_threshold_input_tokens=8000,
+        target_total_tokens=None,
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,
         symbol="MNDY",
         client=None,
     )
+    assert did is False
     mock.assert_not_called()
     assert out["openai"].text == "small"
 
@@ -91,16 +95,18 @@ async def test_summarize_disabled_skips_api(monkeypatch: pytest.MonkeyPatch) -> 
 
     big = "word " * 9000
     healthy = {"openai": _resp(name="openai", text=big)}
-    out = await maybe_summarize_healthy_for_synthesis(
+    out, did = await maybe_summarize_healthy_for_synthesis(
         healthy=healthy,
         summarize_oversized_providers=False,
         summarize_threshold_input_tokens=8000,
+        target_total_tokens=None,
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,
         symbol="MNDY",
         client=None,
     )
+    assert did is False
     mock.assert_not_called()
     assert out is healthy
 
@@ -116,10 +122,11 @@ async def test_summarize_exception_preserves_original(monkeypatch: pytest.Monkey
 
     big = "RETAIN_ME " * 9000
     healthy = {"openai": _resp(name="openai", text=big)}
-    out = await maybe_summarize_healthy_for_synthesis(
+    out, _did = await maybe_summarize_healthy_for_synthesis(
         healthy=healthy,
         summarize_oversized_providers=True,
         summarize_threshold_input_tokens=8000,
+        target_total_tokens=None,
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,

@@ -115,7 +115,7 @@ class RunConfig(BaseModel):
 
     retry_max_attempts: int = Field(default=3, ge=1, le=20)
     retry_base_delay_s: float = Field(default=2.0, gt=0, le=120.0)
-    synthesizer_max_input_tokens: int = Field(default=20_000, ge=1024, le=500_000)
+    synthesizer_max_input_tokens: int = Field(default=100_000, ge=4_000, le=900_000)
 
     summarize_oversized_providers: bool = Field(
         default=True,
@@ -124,7 +124,9 @@ class RunConfig(BaseModel):
     summarize_threshold_input_tokens: int = Field(
         default=8000,
         ge=512,
-        description="Per-provider body estimate (len(text)//4) above which pre-synthesis summarization runs.",
+        description="Per-provider body estimate (len(text)//4) above which pre-synthesis summarization runs; "
+        "summarization also runs when the sum of healthy bodies exceeds "
+        "max(8000, synthesizer_max_input_tokens - 3000).",
     )
     oversized_summarize_model: str = Field(
         default="gemini-3-flash-preview",

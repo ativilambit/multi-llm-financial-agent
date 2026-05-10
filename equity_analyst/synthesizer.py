@@ -42,11 +42,7 @@ def _failure_note_line(failed: dict[str, ProviderResponse]) -> str:
     for name, resp in failed.items():
         reason = resp.model if resp.model.startswith("error:") else "empty_response"
         parts.append(f"{name} ({reason})")
-    return (
-        "Note: provider(s) "
-        + ", ".join(parts)
-        + " failed and are excluded from synthesis."
-    )
+    return "Note: provider(s) " + ", ".join(parts) + " failed and are excluded from synthesis."
 
 
 def _trim_healthy_bodies_to_token_budget(
@@ -74,9 +70,7 @@ def _trim_healthy_bodies_to_token_budget(
     trimmed = dict(bodies)
     after = before
     for _ in range(48):
-        trimmed = {
-            k: _shrink_text(bodies[k], max(80, int(len(bodies[k]) * scale))) for k in bodies
-        }
+        trimmed = {k: _shrink_text(bodies[k], max(80, int(len(bodies[k]) * scale))) for k in bodies}
         after = _estimate_tokens(assemble(trimmed))
         if after <= max_input_tokens:
             logger.info("synthesizer: trimmed inputs from %s to %s tokens", before, after)
@@ -133,7 +127,7 @@ class Synthesizer:
         responses: dict[str, ProviderResponse],
         enable_web_search: bool = True,
         max_output_tokens: int | None = None,
-        synthesizer_max_input_tokens: int = 20_000,
+        synthesizer_max_input_tokens: int = 100_000,
         retry_max_attempts: int = 3,
         retry_base_delay_s: float = 2.0,
         anthropic_force_tool_use: bool = True,
@@ -172,15 +166,24 @@ class Synthesizer:
             )
 
         failure_note = _failure_note_line(failed) if failed else ""
-        healthy = await maybe_summarize_healthy_for_synthesis(
+        target_body_tokens = max(8_000, synthesizer_max_input_tokens - 3_000)
+        healthy, summarized_any = await maybe_summarize_healthy_for_synthesis(
             healthy=healthy,
             summarize_oversized_providers=summarize_oversized_providers,
             summarize_threshold_input_tokens=summarize_threshold_input_tokens,
+            target_total_tokens=target_body_tokens,
             oversized_summarize_model=oversized_summarize_model,
             oversized_summarize_max_output_tokens=oversized_summarize_max_output_tokens,
             oversized_summarize_max_input_tokens=oversized_summarize_max_input_tokens,
             symbol=symbol,
         )
+        if summarized_any:
+            total_after = sum(_estimate_tokens(r.text) for r in healthy.values())
+            logger.info(
+                "synthesizer: total tokens after summarization=%s target=%s",
+                total_after,
+                target_body_tokens,
+            )
         fixed_intro = (
             f"{_load_prompt_file('synthesizer_system.md')}\n\n"
             f"### Original user prompt\n{original_prompt}\n\n"

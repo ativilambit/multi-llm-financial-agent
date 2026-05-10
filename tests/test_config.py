@@ -235,6 +235,7 @@ def test_oversized_summarize_defaults() -> None:
     )
     assert cfg.summarize_oversized_providers is True
     assert cfg.summarize_threshold_input_tokens == 8000
+    assert cfg.synthesizer_max_input_tokens == 100_000
     assert cfg.oversized_summarize_model == "gemini-3-flash-preview"
     assert cfg.oversized_summarize_max_output_tokens == 8192
     assert cfg.oversized_summarize_max_input_tokens == 100_000
@@ -286,9 +287,7 @@ def test_default_verifier_provider_is_gemini() -> None:
         (["openai"], "not-a-provider", "Unknown synthesizer"),
     ],
 )
-def test_unknown_provider_or_synthesizer_rejected(
-    providers: Any, synth: Any, msg: str
-) -> None:
+def test_unknown_provider_or_synthesizer_rejected(providers: Any, synth: Any, msg: str) -> None:
     base: dict[str, Any] = {
         "symbol": "X",
         "today_low": 1,
