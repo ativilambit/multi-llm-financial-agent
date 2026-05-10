@@ -7,6 +7,41 @@ import markdown  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
+
+def _native_pdf_lib_hint_in_exception(exc: BaseException) -> bool:
+    """True if the exception likely indicates missing cairo/pango/gdk-pixbuf (system) libraries."""
+    msg = str(exc).lower()
+    needles = ("cairo", "pango", "gdk-pixbuf", "gdk_pixbuf", "libgobject", "libffi", "cannot load library")
+    return any(n in msg for n in needles)
+
+
+def _log_weasyprint_render_failure(dest_path: Path, exc: BaseException) -> None:
+    """Emit a targeted WARNING after ``HTML().write_pdf()`` failed."""
+    exc_name = type(exc).__name__
+    if isinstance(exc, (ImportError, OSError)) and _native_pdf_lib_hint_in_exception(exc):
+        logger.warning(
+            "PDF generation failed for %s (%s: %s). On macOS try: "
+            "``brew install pango cairo gdk-pixbuf libffi``. Run continues.",
+            dest_path,
+            exc_name,
+            exc,
+        )
+    elif isinstance(exc, (AttributeError, TypeError)):
+        logger.warning(
+            "PDF generation failed for %s (%s: %s). WeasyPrint Python deps appear mismatched; "
+            "try ``.venv/bin/pip install -U weasyprint pydyf fonttools``. Run continues.",
+            dest_path,
+            exc_name,
+            exc,
+        )
+    else:
+        logger.warning(
+            "WeasyPrint rendering failed for %s: %s: %s. PDF skipped. Run continues.",
+            dest_path,
+            exc_name,
+            exc,
+        )
+
 _PDF_CSS = """
 @page { margin: 1in; }
 html {
@@ -59,7 +94,7 @@ a { color: #0b57d0; }
 def write_markdown_as_pdf(markdown_text: str, dest_path: Path) -> bool:
     """Render markdown to PDF at ``dest_path``. Returns True on success, False on graceful failure."""
     try:
-        from weasyprint import HTML  # type: ignore[import-not-found]
+        from weasyprint import HTML  # type: ignore[import-untyped]
     except Exception as exc:
         logger.warning(
             "PDF generation skipped: WeasyPrint could not be loaded (%s: %s). "
@@ -92,13 +127,7 @@ def write_markdown_as_pdf(markdown_text: str, dest_path: Path) -> bool:
     try:
         HTML(string=doc, base_url=base_url).write_pdf(str(dest_path))
     except Exception as exc:
-        logger.warning(
-            "PDF generation failed for %s (%s: %s). On macOS try: "
-            "``brew install pango cairo gdk-pixbuf libffi``. Run continues.",
-            dest_path,
-            type(exc).__name__,
-            exc,
-        )
+        _log_weasyprint_render_failure(dest_path, exc)
         return False
 
     try:

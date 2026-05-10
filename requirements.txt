@@ -73,6 +73,14 @@ uritemplate==4.2.0
 urllib3==2.7.0
 uuid_utils==0.14.1
 websockets==16.0
-weasyprint==62.3
+# WeasyPrint 62.x is incompatible with pydyf>=0.11 (removed Stream.transform); use 63+.
+weasyprint==68.1
+pydyf>=0.11.0
+fonttools[woff]>=4.59.2
+tinycss2>=1.5.0
+cssselect2>=0.8.0
+tinyhtml5>=2.0.0b1
+Pillow>=9.1.0
+Pyphen>=0.9.1
 xxhash==3.7.0
 zstandard==0.25.0
