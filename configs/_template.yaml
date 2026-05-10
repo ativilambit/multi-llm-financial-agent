@@ -2,8 +2,9 @@
 #
 # Required:
 # - symbol: Stock ticker symbol (e.g. "MNDY")
-# - today_low / today_high / current_price: Today's trading range and current price
-# - today_date / today_session: Human-readable timestamp context (e.g. "Fri May 8, 2026")
+# - today_date / today_session: Human-readable session labels (not verified prices)
+# Optional price hints (unverified; models must fetch last close via web_search):
+# - today_low / today_high / current_price OR reference_session_low / reference_session_high / reference_last_price
 # - earnings_date / earnings_timing: Human-readable earnings timing text
 # - target_dates: List of dates referenced in the prompt
 # - next_trading_day: Next trading day after earnings
@@ -26,9 +27,11 @@
 symbol: "TICKER"
 company_name: "Optional Company Name"
 
+# Reference-only hints (optional). Prefer fetching last regular-session close in the prompt.
 today_low: 0
 today_high: 0
 current_price: 0
+# Aliases (same meaning as above): reference_session_low, reference_session_high, reference_last_price
 today_date: "Fri May 8, 2026"
 today_session: "after the market trading window"
 

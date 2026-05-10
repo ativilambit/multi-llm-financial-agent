@@ -12,6 +12,47 @@ from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
 from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL
 
 
+def test_reference_price_yaml_aliases() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "reference_session_low": 10.0,
+            "reference_session_high": 12.0,
+            "reference_last_price": 11.0,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.today_low == 10.0
+    assert cfg.today_high == 12.0
+    assert cfg.current_price == 11.0
+
+
+def test_optional_price_hints_may_be_omitted() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.today_low is None
+    assert cfg.today_high is None
+    assert cfg.current_price is None
+
+
 def test_providers_object_form_and_defaults() -> None:
     cfg = RunConfig.model_validate(
         {

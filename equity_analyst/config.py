@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Self, TextIO
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
 
@@ -54,9 +54,24 @@ class RunConfig(BaseModel):
     symbol: str
     company_name: str | None = None
 
-    today_low: float
-    today_high: float
-    current_price: float
+    today_low: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("today_low", "reference_session_low"),
+        description="Optional unverified session low hint; models must verify via web_search. "
+        "YAML alias: reference_session_low.",
+    )
+    today_high: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("today_high", "reference_session_high"),
+        description="Optional unverified session high hint; models must verify via web_search. "
+        "YAML alias: reference_session_high.",
+    )
+    current_price: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("current_price", "reference_last_price"),
+        description="Optional unverified last/reference price hint; models must verify via web_search. "
+        "YAML alias: reference_last_price.",
+    )
     today_date: str
     today_session: str
 

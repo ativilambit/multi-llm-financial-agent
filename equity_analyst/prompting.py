@@ -59,6 +59,9 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
     context: dict[str, Any] = {
         "symbol": cfg.symbol,
         "company_name": cfg.company_name,
+        "reference_session_low": cfg.today_low,
+        "reference_session_high": cfg.today_high,
+        "reference_last_price": cfg.current_price,
         "today_low": cfg.today_low,
         "today_high": cfg.today_high,
         "current_price": cfg.current_price,

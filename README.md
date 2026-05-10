@@ -72,7 +72,7 @@ python -m equity_analyst run --config ... --no-upload-to-drive
 
 ## Configs
 
-Stock-specific YAML lives under `configs/`. Copy either file as a starting point for a new symbol and edit prices, dates, and lookbacks.
+Stock-specific YAML lives under `configs/`. Copy either file as a starting point for a new symbol and edit session labels, dates, and lookbacks. **Price fields** (`today_low` / `today_high` / `current_price`, or the aliases `reference_session_*` / `reference_last_price`) are **optional, unverified hints** for orientation only—the rendered prompt tells models to **fetch and cite** the **last regular-session official closing price** (and session high/low) via **web_search** and not to treat YAML numbers as ground truth.
 
 | File | Use case |
 |------|----------|
@@ -233,10 +233,12 @@ OpenAI and Grok cache hits are logged automatically when present (`cache_read=<N
 
 ## Customizing prompts
 
+**Reference prices in YAML are hints, not facts.** The equity template requires providers to pull **live or recently sourced** quotes—especially the **last regular-session close** and last session range—and to **cite** source and timestamp. Optional config numbers are only for rough rescaling; models are instructed to cross-check them against fetched data.
+
 These plain-text and template files control model instructions without editing Python:
 
 - `prompts/equity_analyst_system.md` — persona / instructions (cached as the Anthropic system prompt and prepended for other providers).
-- `prompts/equity_analyst.j2` — the 11 numbered sections, a Jinja template with `{{ symbol }}`, `{{ today_low }}`, and the other template variables.
+- `prompts/equity_analyst.j2` — the 11 numbered sections, a Jinja template with `{{ symbol }}`, optional `reference_*` / legacy price context, dates, and the other template variables.
 - `prompts/synthesizer_system.md` — how the synthesizer compares provider answers and formats the consensus.
 
 Edits take effect on the next CLI run; you do not need to change code or restart a long-lived process.

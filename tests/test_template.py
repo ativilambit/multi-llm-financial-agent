@@ -46,11 +46,36 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
 
     assert "{{" not in text
     assert "MNDY" in text
-    assert "$68" in text
-    assert "$74" in text
-    assert "$73.24" in text
+    assert "web_search" in text
+    assert "last regular-session" in text or "last verified close" in text
+    assert "unverified" in text
+    assert "reference" in text.lower()
     assert "Fri May 8, 2026" in text
     assert "Mon May 11 2026" in text
+
+
+def test_template_renders_when_reference_prices_omitted() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "ABCD",
+            "today_date": "Tue Jan 1, 2026",
+            "today_session": "regular hours",
+            "earnings_date": "Wed Jan 15 2026",
+            "earnings_timing": "after close",
+            "target_dates": ["Wed Jan 15"],
+            "next_trading_day": "Thu Jan 16",
+            "followup_open_date": "Mon Jan 20",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    prompt_path = _repo_root() / "prompts" / "equity_analyst.j2"
+    text = render_prompt(cfg, prompt_path).text
+    assert "{{" not in text
+    assert "User session labels (not prices):" in text
+    assert "ABCD" in text
 
 
 def test_template_generalizes_to_other_symbol() -> None:
@@ -58,9 +83,9 @@ def test_template_generalizes_to_other_symbol() -> None:
         {
             "symbol": "NVDA",
             "company_name": "NVIDIA",
-            "today_low": 100,
-            "today_high": 110,
-            "current_price": 105.5,
+            "reference_session_low": 100,
+            "reference_session_high": 110,
+            "reference_last_price": 105.5,
             "today_date": "Mon Jan 5, 2026",
             "today_session": "during regular trading hours",
             "earnings_date": "Wed Feb 18 2026",
@@ -81,8 +106,7 @@ def test_template_generalizes_to_other_symbol() -> None:
 
     assert "{{" not in text
     assert "NVDA" in text
-    assert "$100" in text
-    assert "$110" in text
-    assert "$105.5" in text
+    assert "$100.0\u2013$110.0" in text
+    assert "~$105.5" in text
+    assert "web_search" in text
     assert "Wed Feb 18 2026" in text
-

@@ -1,6 +1,7 @@
 symbol: MNDY
 company_name:
 
+# Price fields are optional reference hints only (unverified); models must source last close via web_search.
 today_low: 68
 today_high: 74
 current_price: 73.24
