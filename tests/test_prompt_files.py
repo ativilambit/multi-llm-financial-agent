@@ -16,6 +16,8 @@ def test_equity_analyst_system_prompt_file_exists_nonempty_and_matches_export() 
     raw = path.read_text(encoding="utf-8")
     assert raw.strip() != ""
     assert raw.rstrip() == EQUITY_ANALYST_SYSTEM_PROMPT
+    # Heuristic token estimate (len/4): keep persona long enough for provider prompt-caching minima.
+    assert len(EQUITY_ANALYST_SYSTEM_PROMPT) // 4 >= 1400
 
 
 def test_synthesizer_system_prompt_file_exists_nonempty_and_matches_export() -> None:
