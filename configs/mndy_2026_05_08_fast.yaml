@@ -54,3 +54,6 @@ synthesizer:
   model: gemini-3.1-pro-preview
   web_search: false         # synthesis from the four answers, no extra search
   request_timeout_s: 180
+
+verifier_provider: gemini
+verifier_model: gemini-3.1-pro-preview

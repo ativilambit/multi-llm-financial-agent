@@ -194,6 +194,26 @@ def test_default_synthesizer_is_gemini() -> None:
     assert cfg.synthesizer.name == "gemini"
 
 
+def test_default_verifier_provider_is_gemini() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+        }
+    )
+    assert cfg.verifier_provider == "gemini"
+    assert cfg.verifier_model is None
+
+
 @pytest.mark.parametrize(
     ("providers", "synth", "msg"),
     [
@@ -254,6 +274,8 @@ def test_mndy_configs_use_latest_gemini_pro_synthesizer() -> None:
         cfg = load_config(str(repo / "configs" / filename))
         assert cfg.synthesizer.name == "gemini"
         assert cfg.synthesizer.model == DEFAULT_GEMINI_MODEL
+        assert cfg.verifier_provider == "gemini"
+        assert cfg.verifier_model == DEFAULT_GEMINI_MODEL
 
 
 GEMINI_FAN_OUT_FLASH_MODEL = "gemini-3-flash-preview"

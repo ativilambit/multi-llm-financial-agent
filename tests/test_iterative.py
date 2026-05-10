@@ -38,7 +38,7 @@ def _base_cfg(**kwargs: Any) -> RunConfig:
         "historical_quarters": 11,
         "short_interest_lookbacks": ["last month"],
         "providers": ["openai"],
-            "synthesizer": "gemini",
+        "synthesizer": "gemini",
     }
     d.update(kwargs)
     return RunConfig.model_validate(d)
@@ -396,6 +396,12 @@ def test_parse_overall_confidence() -> None:
     assert parse_overall_confidence("no marker") is None
 
 
+def test_dry_run_compile_nodes() -> None:
+    nodes = dry_run_compile_only(registry=ProviderRegistry.default())
+    assert "fan_out" in nodes
+    assert "finalize" in nodes
+
+
 def test_parse_verifier_json_handles_prose_wrapped_json() -> None:
     text = (
         'Here is the verification:\n{"verified": ["claim 1"], "contradicted": [], "unverifiable": []}\n'
@@ -466,10 +472,7 @@ async def test_verify_node_persists_raw_response(tmp_path: Path) -> None:
     out = tmp_path / "o"
     out.mkdir()
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
-    await app.ainvoke(
-        _initial_state(_base_cfg(verifier_provider="anthropic"), out),
-        config={"configurable": {"thread_id": "raw-ver"}},
-    )
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "raw-ver"}})
     raw_path = out / "iterations" / "iteration_1_verify_raw.md"
     assert raw_path.is_file()
     assert raw_path.read_text(encoding="utf-8") == raw

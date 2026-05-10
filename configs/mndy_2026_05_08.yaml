@@ -42,3 +42,5 @@ synthesizer:
   name: gemini
   model: gemini-3.1-pro-preview
 
+verifier_provider: gemini
+verifier_model: gemini-3.1-pro-preview

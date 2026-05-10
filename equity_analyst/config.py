@@ -79,6 +79,14 @@ class RunConfig(BaseModel):
     synthesizer: SynthesizerConfig = Field(
         default_factory=lambda: SynthesizerConfig(name="gemini"),
     )
+    verifier_provider: str = Field(
+        default="gemini",
+        description="Registry key for the iterative-mode verification LLM (e.g. gemini, anthropic).",
+    )
+    verifier_model: str | None = Field(
+        default=None,
+        description="Optional API model id for the verifier; default is each provider's built-in default.",
+    )
 
     max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
@@ -118,6 +126,15 @@ class RunConfig(BaseModel):
         default=None,
         description="Google Drive folder ID (under which a per-run subfolder is created).",
     )
+
+    @field_validator("verifier_provider")
+    @classmethod
+    def _known_verifier_provider(cls, v: str) -> str:
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown verifier_provider {v!r}. Expected one of: {', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
 
     @field_validator("synthesizer", mode="before")
     @classmethod

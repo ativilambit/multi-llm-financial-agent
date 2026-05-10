@@ -99,6 +99,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override RunConfig.verifier_max_output_tokens (iterative verifier only; default 1536)",
     )
     run.add_argument(
+        "--verifier-provider",
+        default=None,
+        help="Override RunConfig.verifier_provider (iterative verify step; default gemini)",
+    )
+    run.add_argument(
+        "--verifier-model",
+        default=None,
+        help="Override RunConfig.verifier_model (optional API model id for the verifier)",
+    )
+    run.add_argument(
         "--synthesizer-max-input-tokens",
         type=int,
         default=None,
@@ -145,6 +155,10 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["max_output_tokens"] = args.max_output_tokens
     if args.verifier_max_output_tokens is not None:
         patch["verifier_max_output_tokens"] = args.verifier_max_output_tokens
+    if getattr(args, "verifier_provider", None) is not None:
+        patch["verifier_provider"] = str(args.verifier_provider)
+    if getattr(args, "verifier_model", None) is not None:
+        patch["verifier_model"] = str(args.verifier_model)
     if args.synthesizer_max_input_tokens is not None:
         patch["synthesizer_max_input_tokens"] = args.synthesizer_max_input_tokens
     if args.synthesizer_max_output_tokens is not None:

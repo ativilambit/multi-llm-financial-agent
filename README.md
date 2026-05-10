@@ -155,6 +155,8 @@ synthesizer:
   model: gemini-3.1-pro-preview
   web_search: true
   request_timeout_s: 240
+verifier_provider: gemini
+verifier_model: gemini-3.1-pro-preview
 ```
 
 The simple list form remains valid: `providers: ["anthropic", "openai"]`. A bare `synthesizer: openai` string is still accepted.
@@ -169,13 +171,20 @@ Iterative runs use a LangGraph `StateGraph` with nodes `fan_out` → `synthesize
 
 1. **fan_out** – all configured providers answer the prompt plus any accumulated follow-up questions.
 2. **synthesize** – the synthesizer must emit section confidences and a line `OVERALL_CONFIDENCE: <0.0-1.0>` for routing.
-3. **verify** – default Anthropic-backed verifier returns JSON `verified` / `contradicted` / `unverifiable` using web search when enabled.
+3. **verify** – default **Gemini** verifier returns JSON `verified` / `contradicted` / `unverifiable` using web search when enabled (same registry keys as fan-out: `verifier_provider` defaults to **`gemini`**; override `verifier_model` in YAML or `--verifier-model` on the CLI). The verify step does **not** use Gemini explicit context caching (`cacheable_prefix=None`) so it stays separate from equity fan-out persona caching. **Anthropic** remains supported: set `verifier_provider: anthropic` (and optional `verifier_model`) or pass `--verifier-provider anthropic`. Anthropic verification still uses `prompt_cache_enabled=False` and `force_tool_use=False` so tool-choice forcing from fan-out does not apply to the short verifier prompt.
 4. **route** – finalize if `len(rounds) >= max_iterations`, or if overall confidence meets `--confidence-threshold` and there are no contradictions; otherwise append follow-ups and loop.
 5. **finalize** – writes `synthesis.md`, per-round files under `iterations/`, and `checkpoint.sqlite`.
 
 ```bash
 python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --iterative \
   --max-iterations 3 --confidence-threshold 0.85
+```
+
+Verifier overrides (optional):
+
+```bash
+python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --iterative \
+  --verifier-provider anthropic --verifier-model claude-opus-4-7
 ```
 
 Iterative dry-run (compiles the graph and prints an excerpt of the rendered prompt):
