@@ -234,7 +234,7 @@ async def _run_iterative_cli(
         out_dir.mkdir(parents=True, exist_ok=False)
         thread_id = out_dir.name
     attach_run_file_logging(out_dir / "agent.log")
-    log_drive_upload_plan_from_config(cfg)
+    cfg = log_drive_upload_plan_from_config(cfg)
     ckpt = out_dir / "checkpoint.sqlite"
     logger.info(
         "Iterative CLI output_dir=%s resume=%s thread_id=%s checkpoint=%s",

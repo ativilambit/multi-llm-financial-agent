@@ -19,6 +19,26 @@ from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 
+def _write_minimal_sa_key_json(path: Path) -> None:
+    from test_drive_uploader import _minimal_valid_rsa_pem
+
+    path.write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "test",
+                "private_key_id": "x",
+                "private_key": _minimal_valid_rsa_pem(),
+                "client_email": "sa@test.iam.gserviceaccount.com",
+                "client_id": "1",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class _SleepyProvider(LLMProvider):
     def __init__(self, *, name: str, delay_s: float, text: str):
         self.name = name
@@ -877,6 +897,18 @@ async def test_drive_upload_invoked_and_run_json_has_url(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
 
+    _write_minimal_sa_key_json(tmp_path / "sa.json")
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._drive_root_preflight_probe",
+        lambda *_a, **_k: {
+            "id": "ROOT",
+            "name": "root",
+            "mimeType": "application/vnd.google-apps.folder",
+            "driveId": "D1",
+            "capabilities": {"canAddChildren": True},
+        },
+    )
+
     uploads: list[Path] = []
 
     async def fake_drive(c: RunConfig, out: Path, **kwargs: Any) -> str | None:
@@ -990,6 +1022,18 @@ async def test_drive_upload_failure_still_completes_run(tmp_path: Path, monkeypa
     import equity_analyst.orchestrator as orch_mod
 
     monkeypatch.setattr(orch_mod.ProviderRegistry, "default", classmethod(lambda cls: _fake_registry()))
+
+    _write_minimal_sa_key_json(tmp_path / "sa.json")
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._drive_root_preflight_probe",
+        lambda *_a, **_k: {
+            "id": "ROOT",
+            "name": "root",
+            "mimeType": "application/vnd.google-apps.folder",
+            "driveId": "D1",
+            "capabilities": {"canAddChildren": True},
+        },
+    )
 
     async def boom(*_a: Any, **_k: Any) -> None:
         raise RuntimeError("upload exploded")

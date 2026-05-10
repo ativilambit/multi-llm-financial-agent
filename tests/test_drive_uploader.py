@@ -16,15 +16,53 @@ from googleapiclient.errors import HttpError
 from equity_analyst.drive_uploader import (
     DriveUploader,
     _is_malformed_service_account_key_error,
+    _is_sa_my_drive_storage_quota_error,
     log_drive_upload_plan,
     maybe_upload_run_to_drive_raw,
 )
 
 
-def _http_error(status: int) -> HttpError:
+def _http_error(
+    status: int,
+    content: bytes | None = None,
+    *,
+    message: str = "error",
+    reason: str | None = None,
+) -> HttpError:
+    """Build an :class:`HttpError` whose ``str()`` / ``content`` match production shapes."""
     resp = MagicMock()
     resp.status = status
-    return HttpError(resp, b"")
+    resp.reason = b""
+    if content is not None:
+        body = content if isinstance(content, bytes) else str(content).encode("utf-8")
+        return HttpError(resp, body)
+    err: dict[str, Any] = {"message": message}
+    if reason is not None:
+        err["errors"] = [{"reason": reason}]
+    return HttpError(resp, json.dumps({"error": err}).encode("utf-8"))
+
+
+def _shared_drive_root_metadata() -> dict[str, str]:
+    return {
+        "id": "ROOT",
+        "name": "root",
+        "mimeType": "application/vnd.google-apps.folder",
+        "driveId": "TEAM_DRIVE_1",
+    }
+
+
+def _attach_drive_api_mocks(files_api: MagicMock, executes: list[Any]) -> None:
+    """Preflight ``files().get`` then shared ``execute`` queue for list/create."""
+
+    def pop_execute() -> Any:
+        item = executes.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
+    files_api.list.return_value.execute.side_effect = pop_execute
+    files_api.create.return_value.execute.side_effect = pop_execute
 
 
 @lru_cache(maxsize=1)
@@ -81,12 +119,8 @@ def test_upload_directory_walks_and_creates_nested_folders(
         {"id": "f_inner"},
     ]
 
-    def pop_execute() -> Any:
-        return executes.pop(0)
-
     files_api = MagicMock()
-    files_api.list.return_value.execute.side_effect = pop_execute
-    files_api.create.return_value.execute.side_effect = pop_execute
+    _attach_drive_api_mocks(files_api, executes)
 
     svc = MagicMock()
     svc.files.return_value = files_api
@@ -116,10 +150,11 @@ async def test_retry_http_503_then_success(
     (out / "one.md").write_text("x", encoding="utf-8")
 
     files_api = MagicMock()
+    files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
     files_api.list.return_value.execute.side_effect = [{"files": []}]
     files_api.create.return_value.execute.side_effect = [
         {"id": "RUN_FOLDER"},
-        _http_error(503),
+        _http_error(503, message="unavailable"),
         {"id": "file_ok"},
     ]
 
@@ -171,12 +206,8 @@ def test_skips_dotfiles(tmp_path: Path, sa_json: Path, monkeypatch: Any) -> None
         {"id": "only_one_file"},
     ]
 
-    def pop_execute() -> Any:
-        return executes.pop(0)
-
     files_api = MagicMock()
-    files_api.list.return_value.execute.side_effect = pop_execute
-    files_api.create.return_value.execute.side_effect = pop_execute
+    _attach_drive_api_mocks(files_api, executes)
     svc = MagicMock()
     svc.files.return_value = files_api
 
@@ -200,6 +231,7 @@ def test_discovery_build_called_once(monkeypatch: Any, sa_json: Path, tmp_path: 
     def fake_build(*_a: Any, **_k: Any) -> MagicMock:
         built.append(1)
         files_api = MagicMock()
+        files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
         files_api.list.return_value.execute.return_value = {"files": [{"id": "existing"}]}
         files_api.create.return_value.execute.side_effect = [{"id": "f1"}, {"id": "f2"}]
         svc = MagicMock()
@@ -252,18 +284,28 @@ def test_log_drive_upload_plan_disabled_no_folder_id(
 
 
 def test_log_drive_upload_plan_enabled_ok(
-    tmp_path: Path, sa_json: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, sa_json: Path, caplog: pytest.LogCaptureFixture, monkeypatch: Any
 ) -> None:
+    def fake_probe(
+        cred_path: Path,
+        root_id: str,
+        *,
+        emit_capability_warning: bool,
+    ) -> dict[str, Any]:
+        return {"id": root_id, "name": "MySharedFolder", "driveId": "TEAM1"}
+
+    monkeypatch.setattr("equity_analyst.drive_uploader._drive_root_preflight_probe", fake_probe)
     with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
-        log_drive_upload_plan(
+        ok = log_drive_upload_plan(
             drive_upload_enabled=True,
             drive_credentials_path=str(sa_json),
             drive_root_folder_id="root-folder-id",
         )
+    assert ok is True
     enabled = [r for r in caplog.records if "Drive upload: ENABLED" in r.message]
     assert len(enabled) == 1
-    assert "folder_id=root-folder-id" in enabled[0].message
-    assert str(sa_json.resolve()) in enabled[0].message
+    assert "folder=MySharedFolder" in enabled[0].message
+    assert "shared_drive=TEAM1" in enabled[0].message
 
 
 def test_log_drive_upload_plan_invalid_sa_key_warns_no_enabled(
@@ -312,6 +354,187 @@ async def test_maybe_upload_malformed_sa_key_one_warning_no_exc_info(
     assert "Google Cloud Console" in warns[0].message
 
 
+def test_log_drive_preflight_get_no_drive_id_warns_and_disables(
+    sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    import equity_analyst.drive_uploader as du
+
+    monkeypatch.setattr(du, "_PERSONAL_DRIVE_WARNED_KEYS", set())
+    files_api = MagicMock()
+    files_api.get.return_value.execute.return_value = {
+        "id": "folder-x",
+        "name": "Personal",
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    svc = MagicMock()
+    svc.files.return_value = files_api
+    monkeypatch.setattr(du, "_build_drive_service", lambda _cred: svc)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=str(sa_json),
+            drive_root_folder_id="folder-x",
+        )
+    assert ok is False
+    warns = [
+        r
+        for r in caplog.records
+        if "Drive folder folder-x is not inside a Shared Drive" in r.message
+    ]
+    assert len(warns) == 1
+
+
+def test_log_drive_preflight_get_shared_drive_ok(
+    sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    import equity_analyst.drive_uploader as du
+
+    files_api = MagicMock()
+    files_api.get.return_value.execute.return_value = {
+        "id": "x",
+        "name": "foo",
+        "mimeType": "application/vnd.google-apps.folder",
+        "driveId": "D1",
+        "capabilities": {"canAddChildren": True},
+    }
+    svc = MagicMock()
+    svc.files.return_value = files_api
+    monkeypatch.setattr(du, "_build_drive_service", lambda _cred: svc)
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=str(sa_json),
+            drive_root_folder_id="x",
+        )
+    assert ok is True
+    assert any("Drive upload: ENABLED (folder=foo, shared_drive=D1)" in r.message for r in caplog.records)
+
+
+def test_log_drive_preflight_get_warns_when_can_add_children_missing(
+    sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    import equity_analyst.drive_uploader as du
+
+    files_api = MagicMock()
+    files_api.get.return_value.execute.return_value = {
+        "id": "x",
+        "name": "foo",
+        "mimeType": "application/vnd.google-apps.folder",
+        "driveId": "D1",
+        "capabilities": {},
+    }
+    svc = MagicMock()
+    svc.files.return_value = files_api
+    monkeypatch.setattr(du, "_build_drive_service", lambda _cred: svc)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        ok = log_drive_upload_plan(
+            drive_upload_enabled=True,
+            drive_credentials_path=str(sa_json),
+            drive_root_folder_id="x",
+        )
+    assert ok is True
+    warns = [r for r in caplog.records if "capabilities.canAddChildren is not true" in r.message]
+    assert len(warns) == 1
+
+
+def test_folder_create_storage_quota_exceeded_one_warning_graceful(
+    tmp_path: Path, sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "RUN1"
+    out.mkdir()
+    (out / "x.md").write_text("z", encoding="utf-8")
+
+    files_api = MagicMock()
+    files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
+    files_api.list.return_value.execute.side_effect = [{"files": []}]
+    files_api.create.return_value.execute.side_effect = [
+        _http_error(403, reason="storageQuotaExceeded", message="quota"),
+    ]
+    svc = MagicMock()
+    svc.files.return_value = files_api
+    uploader = DriveUploader(sa_json, "ROOT")
+    monkeypatch.setattr(uploader, "_ensure_service", lambda: svc)
+
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        url = uploader.upload_directory(out, run_id="RUN1")
+    assert url is None
+    quota = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "service account has no storage quota" in r.message
+    ]
+    assert len(quota) == 1
+    assert quota[0].exc_info is None
+
+
+def test_partial_upload_one_file_fails_other_succeeds(
+    tmp_path: Path, sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "RUN1"
+    out.mkdir()
+    (out / "a.md").write_text("a", encoding="utf-8")
+    (out / "b.md").write_text("b", encoding="utf-8")
+
+    executes: list[Any] = [
+        {"files": []},
+        {"id": "RUN_FOLDER"},
+        {"id": "fa"},
+        _http_error(404, message="not found"),
+    ]
+    files_api = MagicMock()
+    _attach_drive_api_mocks(files_api, executes)
+    svc = MagicMock()
+    svc.files.return_value = files_api
+    uploader = DriveUploader(sa_json, "ROOT")
+    monkeypatch.setattr(uploader, "_ensure_service", lambda: svc)
+
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        url = uploader.upload_directory(out, run_id="RUN1")
+    assert "RUN_FOLDER" in url
+    assert any("Drive upload incomplete" in r.message for r in caplog.records if r.levelno == logging.WARNING)
+    assert any("files_failed=1" in r.message for r in caplog.records if "Drive upload complete" in r.message)
+
+
+def test_sa_storage_quota_error_detected() -> None:
+    body = b'{"error":{"errors":[{"reason":"storageQuotaExceeded"}]}}'
+    assert _is_sa_my_drive_storage_quota_error(_http_error(403, body))
+    assert _is_sa_my_drive_storage_quota_error(
+        _http_error(403, b"Service Accounts do not have storage quota")
+    )
+    assert not _is_sa_my_drive_storage_quota_error(_http_error(404, message="nf"))
+
+
+def test_file_upload_storage_quota_exceeded_one_warning_graceful(
+    tmp_path: Path, sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "RUN1"
+    out.mkdir()
+    (out / "one.md").write_text("x", encoding="utf-8")
+
+    executes: list[Any] = [
+        {"files": []},
+        {"id": "RUN_FOLDER"},
+        _http_error(403, b"Service Accounts do not have storage quota"),
+    ]
+    files_api = MagicMock()
+    _attach_drive_api_mocks(files_api, executes)
+    svc = MagicMock()
+    svc.files.return_value = files_api
+    uploader = DriveUploader(sa_json, "ROOT")
+    monkeypatch.setattr(uploader, "_ensure_service", lambda: svc)
+
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.drive_uploader"):
+        url = uploader.upload_directory(out, run_id="RUN1")
+    assert url is None
+    quota = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "service account has no storage quota" in r.message
+    ]
+    assert len(quota) == 1
+    assert quota[0].exc_info is None
+
+
 def test_is_malformed_service_account_key_error_duck_types_shadow_class() -> None:
     """Duplicate-loaded google.auth can yield MalformedError not isinstance-importable."""
     shadow = type(
@@ -345,6 +568,10 @@ async def test_maybe_upload_shadow_malformed_from_thread_one_warning_no_tracebac
     monkeypatch.setattr(
         "equity_analyst.drive_uploader._service_account_key_file_issue",
         lambda _path: None,
+    )
+    monkeypatch.setattr(
+        "equity_analyst.drive_uploader._drive_root_preflight_probe",
+        lambda *_a, **_k: {"id": "ROOT", "name": "r", "driveId": "D", "capabilities": {"canAddChildren": True}},
     )
     monkeypatch.setattr("equity_analyst.drive_uploader.asyncio.to_thread", fake_to_thread)
 

@@ -23,13 +23,18 @@ Copy `.env.example` to `.env` and set keys for the providers you enable in confi
 
 After each standard or iterative run finishes writing `outputs/<run-id>/` (including `run.json`), you can optionally mirror that folder to Google Drive using a **Google Cloud service account** JSON key. The CLI creates a subfolder named after the run id under a folder you choose, uploads every file (preserving paths such as `iterations/`), skips dotfiles, and appends `drive_folder_url` to `run.json` on success. Iterative runs also append the link to the footer of `synthesis.md`. Upload failures are logged and never fail the analysis run.
 
-### Service account setup
+At startup the CLI **preflights** the configured root folder via the Drive API: the folder must live on a **Google Shared Drive** (Workspace “Team Drive”). If it does not, uploads are disabled for that run and a clear warning is printed so you do not spend a long model run only to hit `storageQuotaExceeded` on upload.
+
+### Google Drive setup (service account)
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create or pick a project, then **IAM & Admin → Service Accounts → Create service account** (any name).
-2. **Keys → Add key → Create new key → JSON** and download the key file (keep it private; do not commit it).
+2. **Keys → Add key → Create new key → JSON** and download the key file (keep it private; do not commit it). Point `drive_credentials_path` / `DRIVE_CREDENTIALS_PATH` at this file.
 3. **APIs & Services → Library → Google Drive API → Enable**.
-4. In Google Drive, create or pick a destination folder, open it, and copy the **folder id** from the URL (`https://drive.google.com/drive/folders/<this-part>`).
-5. **Share that folder** with the service account email from the JSON (`client_email`) as **Editor** (required so the SA can create the run subfolder and upload files).
+4. **Use a folder on a Shared Drive, not personal “My Drive”.** Service accounts have **no personal Drive storage quota**; uploads into a personal folder fail with HTTP 403 `storageQuotaExceeded` even if the folder is shared with the SA. Create or move your destination folder inside a [Shared Drive](https://developers.google.com/workspace/drive/api/guides/about-shareddrives) (requires Google Workspace).
+5. **Share** that Shared Drive folder (or grant membership on the drive) with the service account’s `client_email` as **Content Manager** (or a role that includes **create/upload** and **add files**). Editor on a personal folder is **not** enough if the folder is not on a Shared Drive.
+6. Set `drive_root_folder_id` / `DRIVE_ROOT_FOLDER_ID` to the folder id from the URL: `https://drive.google.com/drive/folders/<this-part>`.
+
+If you cannot use Shared Drives, the alternative is **OAuth / domain-wide delegation** so the app acts as a human user who has quota (see [Google’s documentation](http://support.google.com/a/answer/7281227)); that path is not implemented in this repo’s uploader today.
 
 ### Configuration
 
@@ -67,8 +72,8 @@ python -m equity_analyst run --config ... --no-upload-to-drive
 
 ### Caveats
 
-- Quota for uploads is charged to the **service account’s** Drive storage, not necessarily your personal account’s, unless you use a shared drive / organization setup that maps differently.
-- Files land in the folder you shared; anyone who can **view** that Drive folder can see uploaded runs. Treat the folder and sharing like sensitive storage.
+- With a service account, file bytes are stored against **Shared Drive** (or delegated-user) quota—not “free” personal My Drive space for the SA.
+- Files land in the folder you configure; anyone who can **view** that Drive folder can see uploaded runs. Treat the folder and sharing like sensitive storage.
 
 ## Configs
 
