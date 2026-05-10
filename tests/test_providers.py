@@ -319,6 +319,32 @@ async def test_openai_provider_assembles_request_and_parses_usage() -> None:
     assert {"type": "web_search"} in (fake.responses.last_kwargs["tools"] or [])
 
 
+@pytest.mark.asyncio
+async def test_openai_debug_prefix_hash_matches_for_identical_requests(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="equity_analyst.providers.openai_provider")
+    fake = _FakeOpenAIClient()
+    p = OpenAIProvider(model="gpt-5.5", client=fake)  # type: ignore[arg-type]
+    prompt = "identical-prefix-for-cache-check\n" + "x" * 300
+    await p.generate(prompt, enable_web_search=True)
+    await p.generate(prompt, enable_web_search=True)
+
+    prefix_msgs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "DEBUG" and "OpenAI request prefix" in r.getMessage()
+    ]
+    assert len(prefix_msgs) == 2
+    hashes: list[str] = []
+    for msg in prefix_msgs:
+        assert "prefix_chars=200" in msg
+        assert "input: identical-prefix-for-cache-check" in msg
+        tail = msg.split("hash=", 1)[1]
+        hashes.append(tail.split()[0].rstrip(","))
+    assert hashes[0] == hashes[1]
+
+
 class _FakeGeminiUsage:
     prompt_token_count = 5
     candidates_token_count = 6

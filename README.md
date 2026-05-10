@@ -235,6 +235,8 @@ When the CLI writes a run under `outputs/<symbol>_<timestamp>/` (standard mode, 
 
 OpenAI and Grok cache hits are logged automatically when present (`cache_read=<N>`). Caching is automatic for both providers — no setup required.
 
+Run with `--log-level DEBUG` to see the first 200 characters and a truncated SHA256 hash of each OpenAI/Grok request body. If consecutive runs have the same hash and `cache_read` is still 0, the prefix is stable but caching is not engaging — usually because the static prefix is below the 1024-token minimum.
+
 ## Customizing prompts
 
 **Reference prices in YAML are hints, not facts.** The equity template requires providers to pull **live or recently sourced** quotes—especially the **last regular-session close** and last session range—and to **cite** source and timestamp. Optional config numbers are only for rough rescaling; models are instructed to cross-check them against fetched data.

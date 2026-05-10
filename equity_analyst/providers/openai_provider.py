@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import time
@@ -11,6 +12,20 @@ from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_responses_request_body_for_debug(*, input_text: str, tools: list[Any] | None) -> str:
+    """Stable string of user-visible Responses API body fields (for prefix / cache debugging)."""
+    lines: list[str] = [f"input: {input_text}"]
+    if tools:
+        names: list[str] = []
+        for t in tools:
+            if isinstance(t, dict):
+                names.append(str(t.get("type", t)))
+            else:
+                names.append(str(getattr(t, "type", repr(t))))
+        lines.append("tools: " + ", ".join(names))
+    return "\n".join(lines)
 
 
 def _prompt_cache_read_tokens(usage_obj: Any) -> int | None:
@@ -89,6 +104,19 @@ class OpenAIProvider(LLMProvider):
             len(prompt),
             len(create_kwargs.get("tools", []) or []),
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            body_str = _serialize_responses_request_body_for_debug(
+                input_text=prompt,
+                tools=create_kwargs.get("tools"),
+            )
+            body_hash = hashlib.sha256(body_str.encode("utf-8")).hexdigest()[:16]
+            logger.debug(
+                "OpenAI request prefix model=%s prefix_chars=200 prefix=%r hash=%s len=%s",
+                self._model,
+                body_str[:200],
+                body_hash,
+                len(body_str),
+            )
         logger.info("Calling provider %s", self.name)
         stream = await self._client.responses.create(**create_kwargs)
         text, resp = await _consume_responses_stream(stream)

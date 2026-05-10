@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import time
@@ -8,6 +9,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from equity_analyst.providers.base import LLMProvider
+from equity_analyst.providers.openai_provider import _serialize_responses_request_body_for_debug
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,19 @@ class GrokProvider(LLMProvider):
             len(prompt),
             len(create_kwargs.get("tools", []) or []),
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            body_str = _serialize_responses_request_body_for_debug(
+                input_text=prompt,
+                tools=create_kwargs.get("tools"),
+            )
+            body_hash = hashlib.sha256(body_str.encode("utf-8")).hexdigest()[:16]
+            logger.debug(
+                "Grok request prefix model=%s prefix_chars=200 prefix=%r hash=%s len=%s",
+                self._model,
+                body_str[:200],
+                body_hash,
+                len(body_str),
+            )
         logger.info("Calling provider %s", self.name)
         resp = await self._client.responses.create(**create_kwargs)
 
