@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
 from equity_analyst.config import RunConfig
 from equity_analyst.providers.base import LLMProvider
-from equity_analyst.synthesizer import SYNTHESIS_SYSTEM_PROMPT, Synthesizer
+from equity_analyst.synthesizer import (
+    SYNTHESIS_SYSTEM_PROMPT,
+    Synthesizer,
+    detect_max_tokens_truncation,
+)
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 
@@ -75,9 +80,7 @@ async def test_synthesizer_passes_summarize_flag_to_maybe_summarize(
 ) -> None:
     captured: dict[str, bool] = {}
 
-    async def fake_maybe(
-        *, healthy: object, summarize_oversized_providers: bool, **_: object
-    ) -> object:
+    async def fake_maybe(*, healthy: object, summarize_oversized_providers: bool, **_: object) -> object:
         captured["summarize_oversized_providers"] = summarize_oversized_providers
         return healthy, False
 
@@ -192,3 +195,128 @@ async def test_summarizer_runs_when_aggregate_exceeds_target_even_if_individuals
     assert summarized_providers[0] == "anthropic"
     assert any("total tokens after summarization=" in r.message for r in caplog.records)
     assert not any("trimmed inputs" in r.message for r in caplog.records)
+
+
+def test_detect_max_tokens_truncation_gemini_shape() -> None:
+    raw = SimpleNamespace(
+        candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="MAX_TOKENS"))],
+    )
+    truncated, label = detect_max_tokens_truncation(raw)
+    assert truncated is True
+    assert label == "MAX_TOKENS"
+
+
+def test_detect_max_tokens_truncation_anthropic_shape() -> None:
+    raw = SimpleNamespace(stop_reason="max_tokens")
+    truncated, label = detect_max_tokens_truncation(raw)
+    assert truncated is True
+    assert label == "max_tokens"
+
+
+def test_detect_max_tokens_truncation_openai_responses_shape() -> None:
+    raw = SimpleNamespace(incomplete_details=SimpleNamespace(reason="max_output_tokens"))
+    truncated, label = detect_max_tokens_truncation(raw)
+    assert truncated is True
+    assert label == "max_output_tokens"
+
+
+def test_detect_max_tokens_truncation_clean_stop() -> None:
+    raw = SimpleNamespace(
+        candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="STOP"))],
+        stop_reason="end_turn",
+        incomplete_details=None,
+    )
+    truncated, label = detect_max_tokens_truncation(raw)
+    assert truncated is False
+    assert label is None
+
+
+def test_detect_max_tokens_truncation_handles_none_raw() -> None:
+    truncated, label = detect_max_tokens_truncation(None)
+    assert truncated is False
+    assert label is None
+
+
+class _MaxTokensProvider(LLMProvider):
+    name = "gemini"
+
+    def __init__(self) -> None:
+        self.last_max_output_tokens: int | None = None
+
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
+        self.last_max_output_tokens = max_output_tokens
+        raw = SimpleNamespace(
+            candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="MAX_TOKENS"))],
+        )
+        return ProviderResponse(
+            provider_name="gemini",
+            model="gemini-3.1-pro-preview",
+            text="truncated body",
+            usage=ProviderUsage(input_tokens=1000, output_tokens=24_000, total_tokens=25_000),
+            raw=raw,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_warns_when_provider_reports_max_tokens(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    p = _MaxTokensProvider()
+    s = Synthesizer(p)
+    responses = {
+        "openai": ProviderResponse(
+            provider_name="openai",
+            model="gpt",
+            text="ok",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.synthesizer"):
+        await s.synthesize(
+            original_prompt="ORIG",
+            responses=responses,
+            enable_web_search=False,
+            max_output_tokens=24_000,
+        )
+
+    truncation_warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "Synthesizer output truncated" in r.message
+    ]
+    assert len(truncation_warnings) == 1
+    rendered = truncation_warnings[0].getMessage()
+    assert "MAX_TOKENS" in rendered
+    assert "24000" in rendered.replace(",", "")
+    assert "output_tokens=24000" in rendered.replace(",", "")
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_no_warning_on_clean_stop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    p = _RecordingProvider()
+    s = Synthesizer(p)
+    responses = {
+        "openai": ProviderResponse(
+            provider_name="openai",
+            model="gpt",
+            text="ok",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+    }
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.synthesizer"):
+        await s.synthesize(
+            original_prompt="ORIG",
+            responses=responses,
+            enable_web_search=False,
+            max_output_tokens=24_000,
+        )
+    assert not any(
+        "Synthesizer output truncated" in r.getMessage() for r in caplog.records
+    )
+

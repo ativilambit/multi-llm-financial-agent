@@ -89,6 +89,42 @@ def parse_overall_confidence(text: str) -> float | None:
     return v
 
 
+CHANGELOG_ROUND_SUMMARY_MAX_CHARS = 1500
+
+
+def round_summary_for_changelog(
+    synthesis_text: str,
+    *,
+    iteration_index: int,
+    max_chars: int = CHANGELOG_ROUND_SUMMARY_MAX_CHARS,
+) -> str:
+    """Render a per-round preview for the final report's iteration changelog.
+
+    The full per-round synthesis is preserved verbatim in
+    ``iterations/iteration_{i}_synthesis.md`` and (for the last round) in the
+    ``Final synthesis (last round)`` section of ``synthesis.md``. This helper
+    builds a short preview for the changelog that cuts at a paragraph
+    boundary (never mid-sentence) so the abridgement is visually clear and
+    can't be mistaken for an LLM ``MAX_TOKENS`` truncation.
+    """
+    text = synthesis_text.rstrip()
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars]
+    cut = window.rfind("\n\n")
+    if cut < max_chars // 2:
+        # No paragraph boundary in the first half — fall back to the last
+        # sentence terminator we can find in the window.
+        candidates = [window.rfind(t) for t in (". ", "! ", "? ", ".\n", "!\n", "?\n")]
+        sentence_cut = max(candidates)
+        cut = sentence_cut + 1 if sentence_cut >= max_chars // 2 else max_chars
+    preview = text[:cut].rstrip()
+    pointer = (
+        f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
+    )
+    return f"{preview}\n\n{pointer}"
+
+
 def _excerpt_for_verifier(synthesis: str, *, max_chars: int = 12000) -> str:
     lines = synthesis.splitlines()
     picked: list[str] = []
@@ -846,7 +882,8 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             "## Iteration changelog\n",
         ]
         for i, syn in enumerate(state["synthesis_history"], start=1):
-            parts.append(f"### Round {i} synthesis (summary)\n\n{syn[:1500]}...\n\n")
+            summary = round_summary_for_changelog(syn, iteration_index=i)
+            parts.append(f"### Round {i} synthesis (summary)\n\n{summary}\n\n")
         parts.append("## Verification summary\n\n")
         trunc_notes = [
             f"(round {i} verifier output was truncated; partial recovery)"

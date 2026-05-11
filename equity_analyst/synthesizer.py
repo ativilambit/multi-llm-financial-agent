@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.provider_runtime import partition_provider_responses
@@ -12,6 +13,44 @@ from equity_analyst.retry import async_retry_call
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
+
+
+def detect_max_tokens_truncation(raw: Any) -> tuple[bool, str | None]:
+    """Best-effort detection of provider-side ``MAX_TOKENS``-style truncation.
+
+    Returns ``(was_truncated, finish_reason_label)``. The label is the raw
+    provider value (e.g. ``"MAX_TOKENS"``, ``"max_tokens"``,
+    ``"max_output_tokens"``) when truncation is detected, else ``None``.
+
+    Looks for Gemini ``candidates[0].finish_reason``, Anthropic ``stop_reason``,
+    and OpenAI/Grok Responses ``incomplete_details.reason``. Returns
+    ``(False, None)`` for unrecognised shapes so callers can ignore safely.
+    """
+    if raw is None:
+        return False, None
+
+    candidates = getattr(raw, "candidates", None)
+    if candidates:
+        first = candidates[0]
+        fr = getattr(first, "finish_reason", None)
+        label: str | None = None if fr is None else (getattr(fr, "name", None) or str(fr))
+        if label and "MAX_TOKENS" in label.upper():
+            return True, label
+
+    stop_reason = getattr(raw, "stop_reason", None)
+    if isinstance(stop_reason, str) and stop_reason.lower() == "max_tokens":
+        return True, stop_reason
+
+    incomplete = getattr(raw, "incomplete_details", None)
+    if incomplete is not None:
+        reason = getattr(incomplete, "reason", None)
+        if isinstance(reason, str) and reason.lower() in {
+            "max_output_tokens",
+            "max_tokens",
+        }:
+            return True, reason
+
+    return False, None
 
 
 def __getattr__(name: str) -> str:
@@ -244,4 +283,16 @@ class Synthesizer:
             resp.model,
             f"{resp.latency_s:.3f}" if resp.latency_s is not None else "n/a",
         )
+        truncated, finish_label = detect_max_tokens_truncation(resp.raw)
+        if truncated:
+            logger.warning(
+                "Synthesizer output truncated by provider cap: provider=%s model=%s "
+                "finish_reason=%s output_tokens=%s max_output_tokens=%s — raise "
+                "synthesizer_max_output_tokens to recover the full synthesis.",
+                self._provider.name,
+                resp.model,
+                finish_label,
+                resp.usage.output_tokens,
+                max_output_tokens,
+            )
         return SynthesisResult(response=resp, prompt=synthesis_prompt)

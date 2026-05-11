@@ -9,11 +9,13 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from equity_analyst.config import RunConfig
 from equity_analyst.iterative import (
+    CHANGELOG_ROUND_SUMMARY_MAX_CHARS,
     build_initial_refinement_state,
     compile_refinement_workflow,
     dry_run_compile_only,
     parse_overall_confidence,
     parse_verifier_json,
+    round_summary_for_changelog,
 )
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
@@ -641,3 +643,54 @@ async def test_verify_registry_create_passes_verifier_gemini_model(tmp_path: Pat
     verify_row = next(kw for kw in gemini_kw if kw.get("model") == "gemini-custom-for-test")
     assert verify_row["gemini_cache_index"] is None
     assert verify_row["gemini_cache_ttl_s"] == 3600
+
+
+def test_round_summary_short_text_passes_through() -> None:
+    text = "Synthesis body shorter than max_chars."
+    out = round_summary_for_changelog(text, iteration_index=1)
+    assert out == text
+    assert "abridged" not in out
+
+
+def test_round_summary_truncates_at_paragraph_boundary_with_pointer() -> None:
+    paragraph_a = "A" * 800
+    paragraph_b = "B" * 800
+    paragraph_c = "C" * 800
+    text = f"{paragraph_a}\n\n{paragraph_b}\n\n{paragraph_c}"
+    assert len(text) > CHANGELOG_ROUND_SUMMARY_MAX_CHARS
+
+    out = round_summary_for_changelog(text, iteration_index=2)
+
+    pointer = "iterations/iteration_2_synthesis.md"
+    assert pointer in out
+    body = out.split("\n\n…")[0]
+    assert body.endswith(("A", "B"))
+    assert not body.endswith("…")
+    assert "C" * 50 not in body, "Third paragraph must be excluded"
+
+
+def test_round_summary_never_cuts_mid_sentence() -> None:
+    # Mimic the real-world regression: full synthesis is a continuous block
+    # with a sentence trailing into the truncation window — the preview must
+    # NOT end on a partial word like "The pr..." (this was the user's bug).
+    sentence_one = (
+        "Key disagreements: "
+        + "Anthropic and OpenAI converged on a Friday close of $6.48. "
+    ) * 30
+    sentence_two = (
+        "Temporal/Methodological disagreement: The prompt asks for Monday "
+        "BMO analysis, but Anthropic and OpenAI correctly identify AMC."
+    )
+    text = sentence_one + sentence_two
+
+    out = round_summary_for_changelog(text, iteration_index=1)
+
+    assert "abridged" in out
+    body = out.split("\n\n…")[0]
+    # Should end on a sentence terminator (period/!/?), not mid-word.
+    last_char = body.rstrip()[-1]
+    assert last_char in {".", "!", "?"}, (
+        f"Preview ended on {last_char!r} — should end at a sentence boundary"
+    )
+    # The specific mid-word fragment "The pr" (the bug shape) must not be the tail.
+    assert not body.rstrip().endswith("The pr")
