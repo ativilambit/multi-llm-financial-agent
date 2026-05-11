@@ -19,14 +19,20 @@ EQUITY_FANOUT_PROMPT_CACHE_KEY = "equity_analyst_fanout_v1"
 
 
 def _serialize_responses_request_body_for_debug(
-    *, input_payload: str | list[dict[str, Any]], tools: list[Any] | None
+    *,
+    instructions: str | None,
+    input_payload: str | list[dict[str, Any]],
+    tools: list[Any] | None,
 ) -> str:
     """Stable string of user-visible Responses API body fields (for prefix / cache debugging)."""
+    lines: list[str] = []
+    if instructions:
+        lines.append("instructions_head:" + json.dumps(instructions[:240], ensure_ascii=False))
     if isinstance(input_payload, str):
         body_input_repr = f"input: {input_payload}"
     else:
         body_input_repr = "input_json:" + json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
-    lines: list[str] = [body_input_repr]
+    lines.append(body_input_repr)
     if tools:
         names: list[str] = []
         for t in tools:
@@ -42,33 +48,41 @@ def _prompt_cache_read_tokens(usage_obj: Any) -> int | None:
     """Best-effort read of provider-reported prompt cache hits from a usage object."""
     if usage_obj is None:
         return None
+    found: list[int] = []
     for attr in ("cached_tokens", "input_tokens_cached"):
         v = getattr(usage_obj, attr, None)
         if v is not None:
-            return int(v)
+            found.append(int(v))
     itd = getattr(usage_obj, "input_tokens_details", None)
     if itd is not None:
         v = getattr(itd, "cached_tokens", None)
         if v is not None:
-            return int(v)
+            found.append(int(v))
     ptd = getattr(usage_obj, "prompt_tokens_details", None)
     if ptd is not None:
         v = getattr(ptd, "cached_tokens", None)
         if v is not None:
-            return int(v)
-    return None
+            found.append(int(v))
+    return max(found) if found else None
 
 
-def _responses_input_messages(
+def _responses_input_for_prompt_cache(
     *,
     cacheable_prefix: str,
     user_message_for_cache: str,
-) -> list[dict[str, Any]]:
-    """Structured input: system (static) first, then user — matches Responses API caching docs."""
-    return [
-        {"type": "message", "role": "system", "content": cacheable_prefix},
+) -> tuple[list[dict[str, Any]], str]:
+    """Return user-only message list and static instructions for Responses API prompt caching.
+
+    OpenAI's cache uses an exact prefix match on the serialized prompt. The API's
+    top-level ``instructions`` field holds the static system persona; ``input`` carries
+    only the variable user turn. That keeps the cached prefix identical across
+    iterations when the user body grows (e.g. verifier follow-ups), which a single
+    ``input`` array ``[system, user]`` did not reliably satisfy for cache hits.
+    """
+    user_items: list[dict[str, Any]] = [
         {"type": "message", "role": "user", "content": user_message_for_cache},
     ]
+    return user_items, cacheable_prefix
 
 
 def _text_from_response_output(resp: Any) -> str:
@@ -121,6 +135,8 @@ class OpenAIProvider(LLMProvider):
             and user_message_for_cache is not None
             and cacheable_prefix != ""
         )
+        instructions: str | None = None
+        input_payload: str | list[dict[str, Any]]
         if use_structured_cache_split:
             assert cacheable_prefix is not None and user_message_for_cache is not None
             expected = f"{cacheable_prefix}\n\n{user_message_for_cache}"
@@ -131,10 +147,11 @@ class OpenAIProvider(LLMProvider):
                     len(prompt),
                     len(expected),
                 )
-            input_payload: str | list[dict[str, Any]] = _responses_input_messages(
+            user_items, instructions = _responses_input_for_prompt_cache(
                 cacheable_prefix=cacheable_prefix,
                 user_message_for_cache=user_message_for_cache,
             )
+            input_payload = user_items
         else:
             input_payload = prompt
 
@@ -144,7 +161,9 @@ class OpenAIProvider(LLMProvider):
             "stream": True,
         }
         if use_structured_cache_split:
+            create_kwargs["instructions"] = instructions
             create_kwargs["prompt_cache_key"] = EQUITY_FANOUT_PROMPT_CACHE_KEY
+            create_kwargs["prompt_cache_retention"] = "24h"
         if max_output_tokens is not None:
             create_kwargs["max_output_tokens"] = max_output_tokens
         if enable_web_search:
@@ -158,16 +177,31 @@ class OpenAIProvider(LLMProvider):
             len(create_kwargs.get("tools", []) or []),
         )
         if logger.isEnabledFor(logging.DEBUG):
+            if use_structured_cache_split:
+                assert user_message_for_cache is not None
+                logger.debug(
+                    "OpenAI user block head model=%s chars=500 text=%r",
+                    self._model,
+                    user_message_for_cache[:500],
+                )
             body_str = _serialize_responses_request_body_for_debug(
+                instructions=instructions,
                 input_payload=input_payload,
                 tools=create_kwargs.get("tools"),
             )
+            instr_stable = (
+                hashlib.sha256((instructions or "").encode("utf-8")).hexdigest()[:16]
+                if instructions
+                else "none"
+            )
             body_hash = hashlib.sha256(body_str.encode("utf-8")).hexdigest()[:16]
             logger.debug(
-                "OpenAI request prefix model=%s prefix_chars=200 prefix=%r hash=%s len=%s",
+                "OpenAI request prefix model=%s prefix_chars=200 prefix=%r hash=%s "
+                "instructions_sha16=%s len=%s",
                 self._model,
                 body_str[:200],
                 body_hash,
+                instr_stable,
                 len(body_str),
             )
         logger.info("Calling provider %s", self.name)

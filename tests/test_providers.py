@@ -340,13 +340,32 @@ async def test_openai_fanout_structured_input_system_first_for_caching() -> None
     kw = fake.responses.last_kwargs
     inp = kw["input"]
     assert isinstance(inp, list)
+    assert kw.get("instructions") == static
     assert inp[0]["type"] == "message"
-    assert inp[0]["role"] == "system"
-    assert inp[0]["content"] == static
-    assert inp[1]["type"] == "message"
-    assert inp[1]["role"] == "user"
-    assert inp[1]["content"] == user
+    assert inp[0]["role"] == "user"
+    assert inp[0]["content"] == user
+    assert len(inp) == 1
     assert kw.get("prompt_cache_key") == EQUITY_FANOUT_PROMPT_CACHE_KEY
+    assert kw.get("prompt_cache_retention") == "24h"
+
+
+@pytest.mark.asyncio
+async def test_openai_prompt_cache_key_identical_for_same_prefix_different_user_bodies() -> None:
+    fake = _FakeOpenAIClient()
+    p = OpenAIProvider(model="gpt-5.5", client=fake)  # type: ignore[arg-type]
+    static = "STATIC\n" * 50
+    keys: list[Any] = []
+    for user in ("first-user-body", "second-user-body" + "x" * 400):
+        full = f"{static}\n\n{user}"
+        await p.generate(
+            full,
+            enable_web_search=True,
+            cacheable_prefix=static,
+            user_message_for_cache=user,
+        )
+        assert fake.responses.last_kwargs is not None
+        keys.append(fake.responses.last_kwargs.get("prompt_cache_key"))
+    assert keys == [EQUITY_FANOUT_PROMPT_CACHE_KEY, EQUITY_FANOUT_PROMPT_CACHE_KEY]
 
 
 @pytest.mark.asyncio

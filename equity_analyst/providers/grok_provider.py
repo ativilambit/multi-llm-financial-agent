@@ -70,6 +70,7 @@ class GrokProvider(LLMProvider):
         )
         if logger.isEnabledFor(logging.DEBUG):
             body_str = _serialize_responses_request_body_for_debug(
+                instructions=None,
                 input_payload=prompt,
                 tools=create_kwargs.get("tools"),
             )

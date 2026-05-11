@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
@@ -15,10 +15,13 @@ from equity_analyst.iterative import (
     parse_overall_confidence,
     parse_verifier_json,
 )
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.providers.base import LLMProvider
+from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
+from tests.test_providers import _FakeOpenAIClient
 
 
 def _base_cfg(**kwargs: Any) -> RunConfig:
@@ -42,6 +45,49 @@ def _base_cfg(**kwargs: Any) -> RunConfig:
     }
     d.update(kwargs)
     return RunConfig.model_validate(d)
+
+
+class _RecordingOpenAI(OpenAIProvider):
+    """Captures ``cacheable_prefix`` for each fan-out OpenAI call (real request shape via super)."""
+
+    captured: ClassVar[list[str | None]] = []
+
+    def __init__(self) -> None:
+        super().__init__(model="gpt-5.5", client=_FakeOpenAIClient())  # type: ignore[arg-type]
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        cacheable_prefix: str | None = None,
+        user_message_for_cache: str | None = None,
+    ) -> ProviderResponse:
+        _RecordingOpenAI.captured.append(cacheable_prefix)
+        return await super().generate(
+            prompt,
+            enable_web_search=enable_web_search,
+            max_output_tokens=max_output_tokens,
+            cacheable_prefix=cacheable_prefix,
+            user_message_for_cache=user_message_for_cache,
+        )
+
+
+def _refinement_state_with_equity_system(cfg: RunConfig, out: Path) -> dict[str, Any]:
+    user_body = "Test user message for iterative cache stability.\n"
+    full = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_body}"
+    rendered = RenderedPrompt(
+        template_path="t",
+        text=full,
+        context={},
+        user_message_text=user_body,
+    )
+    st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out)
+    st["max_iterations"] = 5
+    st["confidence_threshold"] = 0.85
+    st["enable_web_search"] = False
+    return st
 
 
 _VERIFIER_MARK = "You are a financial fact-checker"
@@ -346,6 +392,32 @@ async def test_loop_continues_on_low_confidence(tmp_path: Path) -> None:
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
     final = await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "t2"}})
     assert len(final["provider_responses"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_iterative_openai_cacheable_prefix_identical_across_rounds(tmp_path: Path) -> None:
+    _RecordingOpenAI.captured.clear()
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _RecordingOpenAI())
+    ver = _VerCalls("gemini")
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "syn\nOVERALL_CONFIDENCE: 0.95\n"),
+            ver,
+        ),
+    )
+    cfg = _base_cfg()
+    out = tmp_path / "o"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(
+        _refinement_state_with_equity_system(cfg, out),
+        config={"configurable": {"thread_id": "openai-cache-prefix"}},
+    )
+    assert len(_RecordingOpenAI.captured) >= 2
+    assert all(p == EQUITY_ANALYST_SYSTEM_PROMPT for p in _RecordingOpenAI.captured)
+    assert all(p for p in _RecordingOpenAI.captured)
 
 
 @pytest.mark.asyncio
