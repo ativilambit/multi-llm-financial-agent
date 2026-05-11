@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Batch runner for the 10 symbol configs created on 2026-05-10.
+# Batch runner: iterates `python -m equity_analyst run` over a symbol list and a
+# shared config date suffix (e.g. configs/asts_2026_05_10.yaml).
 #
 # Sequential by default (one symbol at a time) so provider rate limits and
 # long web-search runs do not stack; each symbol’s Python output is tee’d to
@@ -23,9 +24,9 @@ if [ ! -x "$PYTHON_BIN" ]; then
   exit 2
 fi
 
-# Fixed symbol order — keep aligned with the README table.
-SYMBOLS="ASTS FIGR HIMS RGTI GTM PLUG STE ACHR IX QUBT"
-CONFIG_DATE="2026_05_10"
+# Defaults (2026-05-10 batch).
+SYMBOLS_DEFAULT="ASTS FIGR HIMS RGTI GTM PLUG STE ACHR IX QUBT"
+CONFIG_DATE_DEFAULT="2026_05_10"
 
 # Defaults.
 MODE="sequential"
@@ -33,6 +34,42 @@ JOBS=""
 ITERATIVE=1
 MAX_ITERATIONS=3
 LOG_LEVEL="INFO"
+
+HAVE_DATE=0
+RAW_DATE=""
+HAVE_SYMBOLS=0
+SYMBOLS_ARG=""
+HAVE_SYMBOLS_FILE=0
+SYMBOLS_FILE_PATH=""
+
+normalize_config_date() {
+  local d="$1"
+  d="$(printf '%s' "$d" | tr '-' '_')"
+  case "$d" in
+    [0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9]) printf '%s' "$d"; return 0 ;;
+    *)
+      echo "ERROR: --date must be YYYY-MM-DD or YYYY_MM_DD (got: $1)" >&2
+      return 1
+      ;;
+  esac
+}
+
+load_symbols_from_file() {
+  local path="$1"
+  local line acc
+  acc=""
+  if [ ! -f "$path" ]; then
+    echo "ERROR: --symbols-file not a readable file: $path" >&2
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(printf '%s' "$line" | tr ',' ' ' | xargs)"
+    [ -z "$line" ] && continue
+    acc="$acc $line"
+  done <"$path"
+  printf '%s' "$acc" | xargs
+}
 
 validate_jobs() {
   local j="$1"
@@ -68,9 +105,17 @@ finalize_parallel_jobs() {
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/run_all_symbols.sh [--parallel] [--jobs N] [--no-iterative] [--max-iterations N] [--log-level LEVEL]
+Usage: scripts/run_all_symbols.sh [options]
 
-Options:
+Batch options:
+  --date YYYY-MM-DD       Config filename suffix (underscores in paths). Default:
+                          2026-05-10 → configs/<sym>_2026_05_10.yaml
+  --symbols A,B,C       Comma-separated tickers (overrides default list and
+                          --symbols-file if both are passed).
+  --symbols-file PATH   One or more tickers per line (# comments allowed).
+                          Ignored if --symbols is also passed.
+
+Run options:
   --parallel              Run symbols as background jobs with bounded concurrency
                           (default: 2 at a time). Per-symbol logs only; see README.
                           Warning: shares one set of API keys across symbols;
@@ -83,7 +128,7 @@ Options:
   --log-level LEVEL       Forward to --log-level (DEBUG|INFO|WARNING|ERROR; default INFO).
   -h, --help              Show this help and exit.
 
-Symbols are run in this fixed order:
+Default symbol order (with default --date 2026-05-10):
   ASTS FIGR HIMS RGTI GTM PLUG STE ACHR IX QUBT
 
 A per-batch summary is written to outputs/batch_<timestamp>/batch_summary.txt
@@ -93,6 +138,48 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --date)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --date requires a value" >&2
+        exit 2
+      fi
+      HAVE_DATE=1
+      RAW_DATE="$2"
+      shift 2
+      ;;
+    --date=*)
+      HAVE_DATE=1
+      RAW_DATE="${1#--date=}"
+      shift
+      ;;
+    --symbols)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --symbols requires a value" >&2
+        exit 2
+      fi
+      HAVE_SYMBOLS=1
+      SYMBOLS_ARG="$2"
+      shift 2
+      ;;
+    --symbols=*)
+      HAVE_SYMBOLS=1
+      SYMBOLS_ARG="${1#--symbols=}"
+      shift
+      ;;
+    --symbols-file)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --symbols-file requires a path" >&2
+        exit 2
+      fi
+      HAVE_SYMBOLS_FILE=1
+      SYMBOLS_FILE_PATH="$2"
+      shift 2
+      ;;
+    --symbols-file=*)
+      HAVE_SYMBOLS_FILE=1
+      SYMBOLS_FILE_PATH="${1#--symbols-file=}"
+      shift
+      ;;
     --parallel)
       MODE="parallel"
       shift
@@ -151,6 +238,25 @@ done
 
 finalize_parallel_jobs
 
+if [ "$HAVE_DATE" -eq 1 ]; then
+  CONFIG_DATE="$(normalize_config_date "$RAW_DATE")" || exit 2
+else
+  CONFIG_DATE="$CONFIG_DATE_DEFAULT"
+fi
+
+if [ "$HAVE_SYMBOLS" -eq 1 ]; then
+  SYMBOLS="$(printf '%s' "$SYMBOLS_ARG" | tr ',' ' ' | xargs)"
+elif [ "$HAVE_SYMBOLS_FILE" -eq 1 ]; then
+  SYMBOLS="$(load_symbols_from_file "$SYMBOLS_FILE_PATH")" || exit 2
+else
+  SYMBOLS="$SYMBOLS_DEFAULT"
+fi
+
+if [ -z "$SYMBOLS" ]; then
+  echo "ERROR: resolved symbol list is empty (check --symbols / --symbols-file / defaults)" >&2
+  exit 2
+fi
+
 BATCH_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BATCH_DIR="outputs/batch_${BATCH_TS}"
 mkdir -p "$BATCH_DIR"
@@ -163,6 +269,7 @@ SUMMARY_FILE="$BATCH_DIR/batch_summary.txt"
     echo "Parallel jobs (max concurrent): $JOBS"
   fi
   echo "Iterative: $ITERATIVE  Max iterations: $MAX_ITERATIONS  Log level: $LOG_LEVEL"
+  echo "Config date suffix: $CONFIG_DATE"
   echo "Symbols (in order): $SYMBOLS"
   echo "Repo root: $REPO_ROOT"
   echo "----"

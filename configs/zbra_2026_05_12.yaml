@@ -1,0 +1,58 @@
+symbol: ZBRA
+company_name: Zebra Technologies Corporation
+
+# Price fields are optional reference hints only (unverified); models must source last close via web_search.
+today_low: null  # reference-only; LLMs fetch via web_search
+today_high: null  # reference-only; LLMs fetch via web_search
+current_price: null  # reference-only; LLMs fetch via web_search
+today_date: "Tue May 12, 2026"
+today_session: "regular U.S. session; earnings cluster around this date"
+
+earnings_date: "Tue May 12 2026"
+earnings_timing: "varies by issuer; confirm BMO/AMC via IR or web_search"
+
+target_dates:
+  - "Tue May 12"
+  - "Fri May 16"
+  - "Fri May 23"
+  - "Fri May 30"
+  - "Fri Jun 6"
+next_trading_day: "Wed May 13"
+followup_open_date: "Mon May 19"
+
+historical_quarters: 6
+short_interest_lookbacks:
+  - "last two months back"
+  - "last month"
+  - "last week"
+  - "yesterday"
+  - "today"
+
+request_timeout_s: 600
+pdf_output_enabled: true
+drive_upload_enabled: true
+
+providers:
+  - name: anthropic
+    model: claude-opus-4-7
+    request_timeout_s: 600
+    web_search: true
+  - name: openai
+    model: gpt-5.5
+    request_timeout_s: 600
+    web_search: true
+  - name: grok
+    request_timeout_s: 600
+    web_search: true
+  - name: gemini
+    model: gemini-3-flash-preview
+    request_timeout_s: 600
+    web_search: true
+synthesizer:
+  name: gemini
+  model: gemini-3.1-pro-preview
+  request_timeout_s: 600
+  web_search: true
+
+verifier_provider: gemini
+verifier_model: gemini-3.1-pro-preview

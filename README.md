@@ -162,12 +162,33 @@ The 2026-05-10 batch ships ten standard configs that all mirror **CRCL**’s pro
 | IX | ORIX Corporation (NYSE ADR: IX) | `configs/ix_2026_05_10.yaml` |
 | QUBT | Quantum Computing Inc. (Nasdaq: QUBT) | `configs/qubt_2026_05_10.yaml` |
 
-`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` for the ten symbols above and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`:
+The **2026-05-12 earnings batch** adds ten configs keyed to **Tue May 12, 2026** (same provider stack as above: Anthropic Opus, **OpenAI `gpt-5.5`**, Grok, Gemini Flash fan-out; Gemini Pro synthesizer with `web_search: true`; Gemini verifier; **600 s** timeouts on every step; `historical_quarters: 6`; `drive_upload_enabled: true`; `pdf_output_enabled: true`; price fields `null` with the comment *reference-only; LLMs fetch via web_search*).
+
+| Symbol | Company | Config |
+|--------|---------|--------|
+| SE | Sea Limited (NYSE ADR: SE) | `configs/se_2026_05_12.yaml` |
+| ZBRA | Zebra Technologies Corporation (Nasdaq: ZBRA) | `configs/zbra_2026_05_12.yaml` |
+| ONON | On Holding AG (NYSE: ONON) | `configs/onon_2026_05_12.yaml` |
+| QBTS | D-Wave Quantum Inc. (NYSE: QBTS) | `configs/qbts_2026_05_12.yaml` |
+| LIF | Life360, Inc. (Nasdaq: LIF) | `configs/lif_2026_05_12.yaml` |
+| ETOR | eToro Group Ltd. (Nasdaq: ETOR) | `configs/etor_2026_05_12.yaml` |
+| JD | JD.com, Inc. (Nasdaq ADR: JD) | `configs/jd_2026_05_12.yaml` |
+| VOD | Vodafone Group Public Limited Company (Nasdaq ADR: VOD) | `configs/vod_2026_05_12.yaml` |
+| TME | Tencent Music Entertainment Group (NYSE ADR: TME) | `configs/tme_2026_05_12.yaml` |
+| RDY | Dr. Reddy's Laboratories Limited (NYSE ADR: RDY) | `configs/rdy_2026_05_12.yaml` |
+
+`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above. Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`, and **`--symbols A,B,C`** or **`--symbols-file path`** to override the ticker list (`--symbols` wins if both are passed).
 
 ```bash
 # Sequential (default): one symbol at a time, --iterative --max-iterations 3 --log-level INFO.
 # Live Python logs stream to your terminal and are also copied to outputs/batch_<ts>/<symbol>.log.
 scripts/run_all_symbols.sh
+
+# May 12, 2026 batch (all ten symbols, sequential):
+scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY
+
+# Same batch in parallel (example: three concurrent symbols):
+scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY --parallel --jobs 3
 
 # Common overrides:
 scripts/run_all_symbols.sh --max-iterations 2
