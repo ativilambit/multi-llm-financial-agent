@@ -270,20 +270,23 @@ else
   echo "         Expect rate-limit pushback on Anthropic/OpenAI/Gemini/Grok and longer per-symbol wall time." >&2
   echo "[INFO] --parallel: running up to $JOBS symbols concurrently. Per-symbol output goes to log files only; tail ${BATCH_DIR}/<SYMBOL>.log to follow a specific run" >&2
 
+  # Bash 3.2 + `set -u` treats `"${arr[@]}"` on an empty array as an unbound
+  # variable, so wrap every expansion in the `${arr[@]+"${arr[@]}"}` idiom
+  # (expands to the elements if set, to nothing if empty/unset).
   running_pids=()
   for sym in $SYMBOLS; do
     while [ "${#running_pids[@]}" -ge "$JOBS" ]; do
       new_pids=()
-      for p in "${running_pids[@]}"; do
+      for p in ${running_pids[@]+"${running_pids[@]}"}; do
         if kill -0 "$p" 2>/dev/null; then
-          new_pids=("${new_pids[@]}" "$p")
+          new_pids=(${new_pids[@]+"${new_pids[@]}"} "$p")
         fi
       done
-      running_pids=("${new_pids[@]}")
+      running_pids=(${new_pids[@]+"${new_pids[@]}"})
       [ "${#running_pids[@]}" -ge "$JOBS" ] && sleep 1
     done
     run_one_parallel_worker "$sym" &
-    running_pids=("${running_pids[@]}" "$!")
+    running_pids=(${running_pids[@]+"${running_pids[@]}"} "$!")
   done
 
   wait
