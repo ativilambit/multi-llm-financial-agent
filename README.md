@@ -174,16 +174,17 @@ scripts/run_all_symbols.sh --max-iterations 2
 scripts/run_all_symbols.sh --no-iterative
 scripts/run_all_symbols.sh --log-level DEBUG
 
-# Optional parallel mode (all 10 background jobs + `wait`).
-# WARNING: every symbol shares one API key per provider. Anthropic/OpenAI/Gemini/Grok
-# will rate-limit aggressive fan-out, so the wall-clock win over sequential is small
-# unless you have elevated tier limits. Sequential is safer for production runs.
+# Optional parallel mode: up to 2 symbols run concurrently by default (override with
+# `--jobs N` or `-j N`, allowed range 1–10). Example: `--parallel --jobs 3`.
+# WARNING: every symbol shares one API key per provider. Higher concurrency increases
+# the chance of HTTP 429 rate-limit errors from Anthropic/OpenAI/Gemini/Grok; sequential
+# mode is safer for production runs.
 scripts/run_all_symbols.sh --parallel
 ```
 
-Each run writes one combined log per symbol plus a `batch_summary.txt` under `outputs/batch_<UTC-timestamp>/`. In **sequential** mode (default), output is **tee’d**: you see each symbol’s run live in the terminal while the same lines are saved to that symbol’s log file. In **`--parallel`** mode, per-symbol output goes to the log files only (no interleaved live streams); follow one job with `tail -f outputs/batch_*/<SYMBOL>.log` (symbol names are lowercased in filenames, e.g. `asts.log`). Successful symbols append `[OK]   <SYM>  duration=<sec>s  output_dir=<abs path>` lines; failures append `[FAIL] <SYM>  duration=...  exit=...  log=...`. The script exits non-zero if any symbol failed.
+Each run writes one combined log per symbol plus a `batch_summary.txt` under `outputs/batch_<UTC-timestamp>/`. In **sequential** mode (default), output is **tee’d**: you see each symbol’s run live in the terminal while the same lines are saved to that symbol’s log file. In **`--parallel`** mode, per-symbol output goes to the log files only (no interleaved live streams); follow one job with `tail -f outputs/batch_*/<SYMBOL>.log` (symbol names are lowercased in filenames, e.g. `asts.log`). Passing **`--jobs N`** (or **`-j N`**) without **`--parallel`** enables parallel mode when **N > 1**; **`--jobs 1`** alone keeps sequential mode. Successful symbols append `[OK]   <SYM>  duration=<sec>s  output_dir=<abs path>` lines; failures append `[FAIL] <SYM>  duration=...  exit=...  log=...`. The script exits non-zero if any symbol failed.
 
-**Wall-clock expectations.** Sequential iterative runs typically take several minutes per symbol — for ten symbols with `--max-iterations 3` and grounded web search on every provider, plan on **multiple hours** end-to-end (often **4–10+ hours** depending on provider latency, web-search retries, and Drive upload). Use `--max-iterations 2` or `--no-iterative` for faster passes, and let the batch run unattended overnight. `--parallel` reduces overall wall time only if your provider rate limits permit four concurrent grounded searches across 10 jobs; otherwise per-symbol time grows while the total still pays for ten runs.
+**Wall-clock expectations.** Sequential iterative runs typically take several minutes per symbol — for ten symbols with `--max-iterations 3` and grounded web search on every provider, plan on **multiple hours** end-to-end (often **4–10+ hours** depending on provider latency, web-search retries, and Drive upload). Use `--max-iterations 2` or `--no-iterative` for faster passes, and let the batch run unattended overnight. `--parallel` can reduce overall wall time when your provider rate limits allow it; raising `--jobs` speeds the batch only if APIs tolerate the extra concurrency—otherwise expect more 429s and retries.
 
 ### Diagnostics
 

@@ -3,10 +3,10 @@
 #
 # Sequential by default (one symbol at a time) so provider rate limits and
 # long web-search runs do not stack; each symbol’s Python output is tee’d to
-# the terminal and its log file. Use --parallel to launch every symbol as
-# a background job; that warning is intentional — every provider key is shared
-# across symbols, and Anthropic/Gemini/OpenAI/Grok will rate-limit aggressive
-# fan-out. See the README "Running multiple symbols" subsection.
+# the terminal and its log file. Use --parallel to run symbols in the background
+# with bounded concurrency (default 2 at a time; override with --jobs N). Every
+# provider key is shared across symbols, and Anthropic/Gemini/OpenAI/Grok will
+# rate-limit aggressive fan-out. See the README "Running multiple symbols" subsection.
 #
 # Compatibility: macOS /bin/bash (Bash 3.2). No mapfile, no ${var,,}, no
 # associative arrays. Avoid Bash 4+ features.
@@ -29,18 +29,55 @@ CONFIG_DATE="2026_05_10"
 
 # Defaults.
 MODE="sequential"
+JOBS=""
 ITERATIVE=1
 MAX_ITERATIONS=3
 LOG_LEVEL="INFO"
 
+validate_jobs() {
+  local j="$1"
+  case "$j" in
+    ''|*[!0-9]*)
+      echo "ERROR: --jobs must be a positive integer between 1 and 10 (got: $j)" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$j" -lt 1 ] || [ "$j" -gt 10 ]; then
+    echo "ERROR: --jobs must be between 1 and 10 (got: $j)" >&2
+    exit 2
+  fi
+}
+
+finalize_parallel_jobs() {
+  # Apply --jobs / --parallel defaults after argv parsing.
+  if [ -n "$JOBS" ]; then
+    validate_jobs "$JOBS"
+    if [ "$JOBS" -gt 1 ]; then
+      MODE="parallel"
+    fi
+  fi
+  if [ "$MODE" = "parallel" ]; then
+    if [ -z "$JOBS" ]; then
+      JOBS=2
+    elif [ "$JOBS" -lt 1 ]; then
+      echo "ERROR: internal: invalid JOBS" >&2
+      exit 2
+    fi
+  fi
+}
+
 usage() {
   cat <<'USAGE'
-Usage: scripts/run_all_symbols.sh [--parallel] [--no-iterative] [--max-iterations N] [--log-level LEVEL]
+Usage: scripts/run_all_symbols.sh [--parallel] [--jobs N] [--no-iterative] [--max-iterations N] [--log-level LEVEL]
 
 Options:
-  --parallel              Launch every symbol as a background job and wait.
-                          Warning: shares one set of API keys across all symbols;
+  --parallel              Run symbols as background jobs with bounded concurrency
+                          (default: 2 at a time). Per-symbol logs only; see README.
+                          Warning: shares one set of API keys across symbols;
                           providers may rate-limit. Sequential mode is safer.
+  --jobs N, -j N          With --parallel: max concurrent symbols (1–10; default 2).
+                          Without --parallel: if N>1, enables parallel mode with
+                          this cap; if N is 1, ignored (stay sequential).
   --no-iterative          Skip --iterative; run a single fan-out + synthesis pass.
   --max-iterations N      Forward to --max-iterations N (default 3, iterative only).
   --log-level LEVEL       Forward to --log-level (DEBUG|INFO|WARNING|ERROR; default INFO).
@@ -58,6 +95,18 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --parallel)
       MODE="parallel"
+      shift
+      ;;
+    --jobs|-j)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: $1 requires a value" >&2
+        exit 2
+      fi
+      JOBS="$2"
+      shift 2
+      ;;
+    --jobs=*)
+      JOBS="${1#--jobs=}"
       shift
       ;;
     --no-iterative)
@@ -100,6 +149,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+finalize_parallel_jobs
+
 BATCH_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BATCH_DIR="outputs/batch_${BATCH_TS}"
 mkdir -p "$BATCH_DIR"
@@ -108,6 +159,9 @@ SUMMARY_FILE="$BATCH_DIR/batch_summary.txt"
 {
   echo "Batch run started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "Mode: $MODE"
+  if [ "$MODE" = "parallel" ]; then
+    echo "Parallel jobs (max concurrent): $JOBS"
+  fi
   echo "Iterative: $ITERATIVE  Max iterations: $MAX_ITERATIONS  Log level: $LOG_LEVEL"
   echo "Symbols (in order): $SYMBOLS"
   echo "Repo root: $REPO_ROOT"
@@ -190,6 +244,19 @@ run_one() {
   return "$rc"
 }
 
+# Parallel worker: run_one then persist exit code for parent aggregation (bash 3.2-safe).
+run_one_parallel_worker() {
+  local sym="$1"
+  local lower
+  lower="$(lowercase "$sym")"
+  local rc
+  set +e
+  run_one "$sym"
+  rc=$?
+  set -e
+  echo "$rc" >"$BATCH_DIR/.exit.$lower"
+}
+
 OVERALL_RC=0
 
 if [ "$MODE" = "sequential" ]; then
@@ -201,25 +268,46 @@ if [ "$MODE" = "sequential" ]; then
 else
   echo "WARNING: --parallel mode shares one API key per provider across $(echo "$SYMBOLS" | wc -w | tr -d ' ') symbols." >&2
   echo "         Expect rate-limit pushback on Anthropic/OpenAI/Gemini/Grok and longer per-symbol wall time." >&2
-  echo "[INFO] --parallel: per-symbol output goes to log files only; tail ${BATCH_DIR}/<SYMBOL>.log to follow a specific run" >&2
+  echo "[INFO] --parallel: running up to $JOBS symbols concurrently. Per-symbol output goes to log files only; tail ${BATCH_DIR}/<SYMBOL>.log to follow a specific run" >&2
 
-  PIDS=""
+  running_pids=()
   for sym in $SYMBOLS; do
-    run_one "$sym" &
-    PIDS="$PIDS $!:$sym"
+    while [ "${#running_pids[@]}" -ge "$JOBS" ]; do
+      new_pids=()
+      for p in "${running_pids[@]}"; do
+        if kill -0 "$p" 2>/dev/null; then
+          new_pids=("${new_pids[@]}" "$p")
+        fi
+      done
+      running_pids=("${new_pids[@]}")
+      [ "${#running_pids[@]}" -ge "$JOBS" ] && sleep 1
+    done
+    run_one_parallel_worker "$sym" &
+    running_pids=("${running_pids[@]}" "$!")
   done
 
-  for entry in $PIDS; do
-    pid="${entry%%:*}"
-    sym="${entry##*:}"
-    set +e
-    wait "$pid"
-    rc=$?
-    set -e
-    if [ "$rc" -ne 0 ]; then
+  wait
+
+  for sym in $SYMBOLS; do
+    lower="$(lowercase "$sym")"
+    ef="$BATCH_DIR/.exit.$lower"
+    if [ ! -f "$ef" ]; then
       OVERALL_RC=1
-      echo "[FAIL-WAIT] $sym  pid=$pid  exit=$rc" >>"$SUMMARY_FILE"
+      echo "[FAIL-EXITFILE] $sym  missing_exit_record=$ef" >>"$SUMMARY_FILE"
+      continue
     fi
+    rc="$(tr -d ' \t\n\r' <"$ef")"
+    case "$rc" in
+      ''|*[!0-9]*)
+        OVERALL_RC=1
+        echo "[FAIL-EXITFILE] $sym  invalid_exit_record=$ef" >>"$SUMMARY_FILE"
+        ;;
+      *)
+        if [ "$rc" -ne 0 ]; then
+          OVERALL_RC=1
+        fi
+        ;;
+    esac
   done
 fi
 
