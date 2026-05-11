@@ -68,6 +68,15 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     assert "source URL and timestamp" in text
     assert "sections 1, 9, and 11" in text or "(sections 1, 9, 11)" in text
 
+    sigma = "\N{GREEK SMALL LETTER SIGMA}"
+    ndash = "\N{EN DASH}"
+    assert f"1{sigma}" in text
+    assert f"2{sigma}" in text
+    assert f"3{sigma}" in text
+    assert f"  - 1{sigma}: $X.XX {ndash} $X.XX (±Y.Y%)" in text
+    assert f"  - 2{sigma}: $X.XX {ndash} $X.XX (±Y.Y%)" in text
+    assert f"  - 3{sigma}: $X.XX {ndash} $X.XX (±Y.Y%)" in text
+
 
 def test_template_uses_config_earnings_timing_when_provided() -> None:
     cfg = RunConfig.model_validate(

@@ -26,6 +26,11 @@ def test_synthesizer_system_prompt_file_exists_nonempty_and_matches_export() -> 
     raw = path.read_text(encoding="utf-8")
     assert raw.strip() != ""
     assert raw.rstrip() == SYNTHESIS_SYSTEM_PROMPT
+    assert "preserve ALL standard deviation levels" in SYNTHESIS_SYSTEM_PROMPT
+    sigma = "\N{GREEK SMALL LETTER SIGMA}"
+    assert f"1{sigma}" in SYNTHESIS_SYSTEM_PROMPT
+    assert f"2{sigma}" in SYNTHESIS_SYSTEM_PROMPT
+    assert f"3{sigma}" in SYNTHESIS_SYSTEM_PROMPT
 
 
 def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_export() -> None:
