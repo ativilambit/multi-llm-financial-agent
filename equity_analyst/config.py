@@ -41,9 +41,7 @@ def resolve_drive_oauth_client_secrets_path_from_optional(raw: str | None) -> Pa
 
 def resolve_drive_oauth_client_secrets_path(cfg: RunConfig) -> Path:
     """Resolved client secrets path for a loaded :class:`RunConfig`."""
-    return resolve_drive_oauth_client_secrets_path_from_optional(
-        cfg.drive_oauth_client_secrets_path
-    )
+    return resolve_drive_oauth_client_secrets_path_from_optional(cfg.drive_oauth_client_secrets_path)
 
 
 class ProviderConfig(BaseModel):
@@ -166,6 +164,30 @@ class RunConfig(BaseModel):
         ge=1,
         le=900,
         description="Wall-clock timeout (seconds) for the prediction extractor LLM call.",
+    )
+
+    facts_packet_enabled: bool = Field(
+        default=True,
+        description="Iterative: after round-1 synthesis, extract a compact facts_packet.md and prepend it "
+        "on later fan-out rounds to reduce duplicate web fetches.",
+    )
+    conditional_fanout_enabled: bool = Field(
+        default=True,
+        description="Iterative: after round 1, skip fan-out providers unless the verifier requests re-fan-out.",
+    )
+    facts_packet_extractor_provider: str = Field(
+        default="gemini",
+        description="Registry key for the facts-packet extractor LLM (default fast/cheap).",
+    )
+    facts_packet_extractor_model: str = Field(
+        default="gemini-3-flash-preview",
+        description="Model id for facts-packet extraction.",
+    )
+    facts_packet_max_output_tokens: int = Field(
+        default=2048,
+        ge=256,
+        le=128_000,
+        description="Completion budget for facts-packet extraction markdown.",
     )
 
     max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
@@ -306,6 +328,16 @@ class RunConfig(BaseModel):
             )
         return v
 
+    @field_validator("facts_packet_extractor_provider")
+    @classmethod
+    def _known_facts_packet_extractor_provider(cls, v: str) -> str:
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown facts_packet_extractor_provider {v!r}. Expected one of: "
+                f"{', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
+
     @field_validator("synthesizer", mode="before")
     @classmethod
     def _coerce_synthesizer(cls, v: Any) -> Any:
@@ -414,6 +446,17 @@ class RunConfig(BaseModel):
         s = str(raw).strip().lower()
         delete_after = s in ("1", "true", "yes", "on")
         return self.model_copy(update={"delete_checkpoint_after_success": delete_after})
+
+    @model_validator(mode="after")
+    def _facts_packet_and_conditional_fanout_env_fallback(self) -> Self:
+        updates: dict[str, Any] = {}
+        fp = os.environ.get("FACTS_PACKET_ENABLED")
+        if fp is not None and str(fp).strip():
+            updates["facts_packet_enabled"] = str(fp).strip().lower() in ("1", "true", "yes", "on")
+        cf = os.environ.get("CONDITIONAL_FANOUT_ENABLED")
+        if cf is not None and str(cf).strip():
+            updates["conditional_fanout_enabled"] = str(cf).strip().lower() in ("1", "true", "yes", "on")
+        return self.model_copy(update=updates) if updates else self
 
     def provider_names(self) -> list[str]:
         return [p.name for p in self.providers]

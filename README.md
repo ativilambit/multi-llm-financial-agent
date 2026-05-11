@@ -441,6 +441,24 @@ flowchart TD
   finalize --> END([end])
 ```
 
+### Cost optimization (iterative)
+
+Two defaults-on behaviors reduce token and tool use on **iteration 2+** (see `RunConfig` / `run.json` `config`):
+
+1. **Frozen facts packet (Strategy A)** — After round-1 synthesis, a compact **`facts_packet.md`** is written under the run directory (Gemini Flash extractor: `facts_packet_extractor_*`, `facts_packet_max_output_tokens`). Later fan-out rounds prepend a **FACTS (frozen from iteration 1 — do NOT re-fetch via web_search)** block so models lean on that snapshot instead of repeating the same market pulls. The verifier JSON may set **`"refresh_facts": true`** to re-extract from the **latest** synthesis before the next fan-out when figures are genuinely stale.
+
+2. **Conditional fan-out (Strategy B)** — From iteration 2 onward, **only the synthesizer** re-runs on verifier feedback (plus the optional refinement block) unless the verifier requests more provider work via **`"refan_out_providers": ["anthropic", ...]`** or **`"refan_out_all": true`**. Empty list / false means “synthesizer only” for that transition.
+
+**YAML / `RunConfig`:** `facts_packet_enabled` (default `true`), `conditional_fanout_enabled` (default `true`), plus extractor fields above.
+
+**Env:** `FACTS_PACKET_ENABLED`, `CONDITIONAL_FANOUT_ENABLED` (`1` / `true` / `yes` / `on` vs anything else treated as off when set).
+
+**CLI:** `--facts-packet` / `--no-facts-packet`, `--conditional-fanout` / `--no-conditional-fanout` (Boolean optional actions; omit to keep YAML/env defaults).
+
+**Logs:** Each fan-out logs `Iteration N: fan_out=skipped|partial|full, facts_packet=frozen|refreshed|pending|off` and, when savings apply, `Iteration N saved approx X tokens vs full re-run` (rough `len(prompt)//4` estimate for skipped or partially skipped fan-out bodies).
+
+**Legacy behavior:** pass **`--no-facts-packet --no-conditional-fanout`** (or set both false in YAML) to match the older “full fan-out every iteration” shape.
+
 ## Logging
 
 Progress logs use the stdlib `logging` package on the `equity_analyst` logger. By default the CLI prints **INFO** lines to **stderr** with timestamp, level, logger name, and message.
@@ -468,6 +486,7 @@ These plain-text and template files control model instructions without editing P
 - `prompts/equity_analyst.j2` — the 11 numbered sections, a Jinja template with `{{ symbol }}`, optional `reference_*` / legacy price context, dates, and the other template variables.
 - `prompts/synthesizer_system.md` — how the synthesizer compares provider answers and formats the consensus.
 - `prompts/prediction_extract_system.md` — JSON-only instructions for the optional prediction-extractor LLM (five fixed horizons).
+- `prompts/facts_extract_system.md` — markdown-only instructions for the iterative **facts packet** extractor (round-1 synthesis → `facts_packet.md`).
 
 Edits take effect on the next CLI run; you do not need to change code or restart a long-lived process.
 

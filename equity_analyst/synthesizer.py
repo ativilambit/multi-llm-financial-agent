@@ -182,6 +182,7 @@ class Synthesizer:
         oversized_summarize_model: str = "gemini-3-flash-preview",
         oversized_summarize_max_output_tokens: int = 8192,
         oversized_summarize_max_input_tokens: int = 100_000,
+        refinement_markdown: str | None = None,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -231,9 +232,12 @@ class Synthesizer:
                 total_after,
                 target_body_tokens,
             )
+        refine = (refinement_markdown or "").strip()
+        refine_block = f"\n\n### Iterative refinement task\n{refine}\n" if refine else ""
         fixed_intro = (
             f"{_load_prompt_file('synthesizer_system.md')}\n\n"
-            f"### Original user prompt\n{original_prompt}\n\n"
+            f"### Original user prompt\n{original_prompt}"
+            f"{refine_block}\n\n"
             f"### Provider responses\n\n"
         )
         trimmed_bodies, _est_before, _est_after = _trim_healthy_bodies_to_token_budget(

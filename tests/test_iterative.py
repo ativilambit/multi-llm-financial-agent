@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -25,6 +26,8 @@ from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
 from tests.test_providers import _FakeOpenAIClient
 
+_FANOUT_CALL_COUNTS: defaultdict[str, int] = defaultdict(int)
+
 
 def _base_cfg(**kwargs: Any) -> RunConfig:
     d: dict[str, Any] = {
@@ -44,6 +47,8 @@ def _base_cfg(**kwargs: Any) -> RunConfig:
         "short_interest_lookbacks": ["last month"],
         "providers": ["openai"],
         "synthesizer": "gemini",
+        "facts_packet_enabled": False,
+        "conditional_fanout_enabled": False,
     }
     d.update(kwargs)
     return RunConfig.model_validate(d)
@@ -223,9 +228,15 @@ class _VerCalls(LLMProvider):
     ) -> ProviderResponse:
         self.calls += 1
         if self.calls == 1:
-            payload = '{"verified":[],"contradicted":["numbers look off"],"unverifiable":[]}'
+            payload = (
+                '{"verified":[],"contradicted":["numbers look off"],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
         else:
-            payload = '{"verified":[],"contradicted":[],"unverifiable":[]}'
+            payload = (
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
         return ProviderResponse(
             provider_name=self.name,
             model="m",
@@ -336,7 +347,11 @@ async def test_iterative_maybe_write_pdf_sibling_targets_expected_md_paths(
         "gemini",
         lambda **_: _GeminiSplit(
             _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
-            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
         ),
     )
     cfg = _base_cfg()
@@ -359,7 +374,11 @@ async def test_loop_converges_when_synthesis_high_confidence(tmp_path: Path) -> 
         "gemini",
         lambda **_: _GeminiSplit(
             _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
-            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
         ),
     )
     cfg = _base_cfg()
@@ -385,7 +404,11 @@ async def test_loop_continues_on_low_confidence(tmp_path: Path) -> None:
         "gemini",
         lambda **_: _GeminiSplit(
             synth,
-            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
         ),
     )
     cfg = _base_cfg()
@@ -475,7 +498,11 @@ async def test_checkpoint_resume(tmp_path: Path) -> None:
         "gemini",
         lambda **_: _GeminiSplit(
             synth_ck,
-            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
         ),
     )
     cfg = _base_cfg()
@@ -516,6 +543,9 @@ def test_parse_verifier_json_handles_prose_wrapped_json() -> None:
     assert out["verified"] == ["claim 1"]
     assert out["contradicted"] == []
     assert out["unverifiable"] == []
+    assert out.get("refresh_facts") is False
+    assert out.get("refan_out_all") is False
+    assert out.get("refan_out_providers") == []
 
 
 def test_parse_verifier_json_handles_markdown_fences() -> None:
@@ -576,6 +606,131 @@ def test_parse_verifier_json_repairs_minimal_truncation() -> None:
     assert out["unverifiable"] == []
 
 
+class _CountingFan(LLMProvider):
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        _FANOUT_CALL_COUNTS[self.name] += 1
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=f"fan-{self.name}\n",
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+class _VerSkipFan(LLMProvider):
+    """First round contradicts; second clears (no re-fan-out requested)."""
+
+    def __init__(self) -> None:
+        self.name = "gemini"
+        self.k = 0
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        self.k += 1
+        if self.k == 1:
+            body = (
+                '{"verified":[],"contradicted":["issue"],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        else:
+            body = (
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=body,
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+class _VerRefanOpenAi(LLMProvider):
+    """Request only ``openai`` on the second fan-out round."""
+
+    def __init__(self) -> None:
+        self.name = "gemini"
+        self.k = 0
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        self.k += 1
+        if self.k == 1:
+            body = (
+                '{"verified":[],"contradicted":["issue"],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":["openai"],"refan_out_all":false}'
+            )
+        else:
+            body = (
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=body,
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+class _VerRefreshFacts(LLMProvider):
+    def __init__(self) -> None:
+        self.name = "gemini"
+        self.k = 0
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        self.k += 1
+        if self.k == 1:
+            body = (
+                '{"verified":[],"contradicted":["issue"],"unverifiable":[],'
+                '"refresh_facts":true,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        else:
+            body = (
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=body,
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
 class _VerRaw(LLMProvider):
     """Verifier stub returning a fixed body (used inside `_GeminiSplit`)."""
 
@@ -630,7 +785,11 @@ async def test_verify_registry_create_passes_verifier_gemini_model(tmp_path: Pat
         "gemini",
         lambda **_: _GeminiSplit(
             _Txt("gemini", "ok\nOVERALL_CONFIDENCE: 0.95\n"),
-            _Txt("gemini", '{"verified":[],"contradicted":[],"unverifiable":[]}'),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
         ),
     )
     cfg = _base_cfg(verifier_provider="gemini", verifier_model="gemini-custom-for-test")
@@ -643,6 +802,83 @@ async def test_verify_registry_create_passes_verifier_gemini_model(tmp_path: Pat
     verify_row = next(kw for kw in gemini_kw if kw.get("model") == "gemini-custom-for-test")
     assert verify_row["gemini_cache_index"] is None
     assert verify_row["gemini_cache_ttl_s"] == 3600
+
+
+@pytest.mark.asyncio
+async def test_iteration_two_conditional_fanout_skips_fan_providers(tmp_path: Path) -> None:
+    _FANOUT_CALL_COUNTS.clear()
+    reg = ProviderRegistry()
+
+    def _fan_factory(name: str):
+        return lambda **__: _CountingFan(name)
+
+    for n in ("anthropic", "openai", "grok"):
+        reg.register(n, _fan_factory(n))
+    synth = _SynthCalls("gemini")
+    ver = _VerSkipFan()
+    reg.register("gemini", lambda **_: _GeminiSplit(synth, ver))
+    cfg = _base_cfg(
+        providers=["anthropic", "openai", "grok"],
+        synthesizer="gemini",
+        facts_packet_enabled=False,
+        conditional_fanout_enabled=True,
+    )
+    out = tmp_path / "o"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "cond-skip"}})
+    assert _FANOUT_CALL_COUNTS["anthropic"] == 1
+    assert _FANOUT_CALL_COUNTS["openai"] == 1
+    assert _FANOUT_CALL_COUNTS["grok"] == 1
+
+
+@pytest.mark.asyncio
+async def test_iteration_two_refan_out_providers_only_openai(tmp_path: Path) -> None:
+    _FANOUT_CALL_COUNTS.clear()
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _CountingFan("openai"))
+    reg.register("grok", lambda **_: _CountingFan("grok"))
+    synth = _SynthCalls("gemini")
+    ver = _VerRefanOpenAi()
+    reg.register("gemini", lambda **_: _GeminiSplit(synth, ver))
+    cfg = _base_cfg(
+        providers=["openai", "grok"],
+        synthesizer="gemini",
+        facts_packet_enabled=False,
+        conditional_fanout_enabled=True,
+    )
+    out = tmp_path / "o2"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "refan-partial"}})
+    assert _FANOUT_CALL_COUNTS["openai"] == 2
+    assert _FANOUT_CALL_COUNTS["grok"] == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_facts_reruns_extractor(monkeypatch: Any, tmp_path: Path) -> None:
+    calls = {"n": 0}
+
+    async def _track_extract(**kwargs: Any) -> str:
+        calls["n"] += 1
+        return "# Market facts (frozen from iteration 1)\n\n- extracted\n"
+
+    monkeypatch.setattr("equity_analyst.iterative.extract_facts_packet", _track_extract)
+
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    synth = _SynthCalls("gemini")
+    ver = _VerRefreshFacts()
+    reg.register("gemini", lambda **_: _GeminiSplit(synth, ver))
+    cfg = _base_cfg(
+        facts_packet_enabled=True,
+        conditional_fanout_enabled=False,
+    )
+    out = tmp_path / "o3"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "refresh"}})
+    assert calls["n"] >= 2
 
 
 def test_round_summary_short_text_passes_through() -> None:

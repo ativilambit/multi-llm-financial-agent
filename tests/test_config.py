@@ -12,6 +12,23 @@ from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
 from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL
 
 
+def test_iterative_cost_optimization_flags_default_on() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.facts_packet_enabled is True
+    assert cfg.conditional_fanout_enabled is True
+
+
 def test_reference_price_yaml_aliases() -> None:
     cfg = RunConfig.model_validate(
         {

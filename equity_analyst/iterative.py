@@ -19,6 +19,11 @@ from langgraph.types import Command
 
 from equity_analyst.config import ProviderConfig, RunConfig, RunEnvironment, SynthesizerConfig
 from equity_analyst.drive_uploader import DriveAuthMode, maybe_upload_run_to_drive_raw
+from equity_analyst.facts_packet import (
+    extract_facts_packet,
+    facts_frozen_user_prefix,
+    write_facts_packet,
+)
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
@@ -101,12 +106,19 @@ Keep each of "verified", "contradicted", and "unverifiable" to at most 10 items;
 Prioritize material claims (figures, ratings, ratios) over narrative.
 
 Example (format only; replace with real claims from the excerpt):
-{"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": ""}
+{"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": "", "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false}
 
 CRITICAL — your entire reply must be parseable as a single JSON object. No markdown code fences, no prose
 before or after the object, no commentary outside the JSON. One line or pretty-printed is fine.
 
 Required keys (arrays of short strings): "verified", "contradicted", "unverifiable". Optional: "notes" (string).
+
+Optional cost-control directives (defaults conservative — leave false/empty unless truly needed):
+- "refresh_facts" (boolean): true only if the frozen round-1 facts packet is materially stale or internally inconsistent with the synthesis excerpt.
+- "refan_out_providers" (array of strings): provider names to re-run in parallel fan-out next iteration (e.g. ["anthropic", "openai"]). Empty means do not request extra fan-out.
+- "refan_out_all" (boolean): true only if multiple provider lenses are required again; next iteration re-runs every configured fan-out provider.
+
+When in doubt, use "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false.
 """
 
 _OVERALL_CONFIDENCE_RE = re.compile(
@@ -158,7 +170,9 @@ def round_summary_for_changelog(
         sentence_cut = max(candidates)
         cut = sentence_cut + 1 if sentence_cut >= max_chars // 2 else max_chars
     preview = text[:cut].rstrip()
-    pointer = f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
+    pointer = (
+        f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
+    )
     return f"{preview}\n\n{pointer}"
 
 
@@ -397,6 +411,16 @@ def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) ->
     notes_val = best_data.get("notes")
     if isinstance(notes_val, str) and notes_val.strip():
         result["notes"] = notes_val.strip()
+    result["refresh_facts"] = bool(best_data.get("refresh_facts"))
+    rop = best_data.get("refan_out_providers")
+    refan_list: list[str] = []
+    if isinstance(rop, list):
+        for x in rop:
+            s = str(x).strip().lower()
+            if s:
+                refan_list.append(s)
+    result["refan_out_providers"] = refan_list
+    result["refan_out_all"] = bool(best_data.get("refan_out_all"))
     if truncated:
         result["_truncated"] = True
     return result
@@ -419,7 +443,14 @@ def parse_verifier_json(text: str) -> dict[str, Any]:
                 "verifier JSON parse failed (no object decoded); verifier_raw=%s",
                 raw[:1000] if raw else "",
             )
-            return {"verified": [], "contradicted": [], "unverifiable": []}
+            return {
+                "verified": [],
+                "contradicted": [],
+                "unverifiable": [],
+                "refresh_facts": False,
+                "refan_out_providers": [],
+                "refan_out_all": False,
+            }
     else:
         best_rank: tuple[int, int] = (-1, -1)
         for data, raw_len in candidates:
@@ -511,20 +542,132 @@ class RefinementState(TypedDict, total=False):
     drive_oauth_token_path: NotRequired[str | None]
     pdf_output_enabled: NotRequired[bool]
     delete_checkpoint_after_success: NotRequired[bool]
+    iterative_config_snapshot: NotRequired[dict[str, Any]]
+    facts_packet_enabled: NotRequired[bool]
+    conditional_fanout_enabled: NotRequired[bool]
+    facts_packet_md: NotRequired[str]
+
+
+def _estimate_prompt_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def _build_synthesis_refinement_markdown(state: RefinementState) -> str | None:
+    """Extra markdown for the synthesizer on iteration >= 2."""
+    sh = state.get("synthesis_history") or []
+    if not sh:
+        return None
+    parts: list[str] = []
+    facts = (state.get("facts_packet_md") or "").strip()
+    if facts and bool(state.get("facts_packet_enabled", True)):
+        parts.append("## Frozen market facts\n\n" + facts)
+    parts.append("## Prior synthesis to revise\n\n" + sh[-1].strip())
+    vh = state.get("verification_history") or []
+    if vh:
+        parts.append("## Latest verification JSON\n\n```json\n" + json.dumps(vh[-1], indent=2) + "\n```")
+    fu = state.get("followup_questions") or []
+    if fu:
+        parts.append("## Router follow-up targets\n\n" + "\n".join(f"- {x}" for x in fu))
+    parts.append(
+        "Revise the full 12-section synthesis to resolve verification issues. "
+        "When frozen market facts are present, prefer them over stale narrative numbers. "
+        "End with the required OVERALL_CONFIDENCE line."
+    )
+    return "\n\n".join(parts)
+
+
+def _fan_out_task_body(state: RefinementState) -> str:
+    extra = "\n\n".join(state.get("followup_questions", []))
+    base = state["original_prompt"]
+    if extra:
+        return f"{base}\n\n### Follow-up verification targets\n{extra}"
+    return base
 
 
 def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
     async def fan_out(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
-        extra = "\n\n".join(state.get("followup_questions", []))
-        body = state["original_prompt"]
-        if extra:
-            body = f"{body}\n\n### Follow-up verification targets\n{extra}"
         round_idx = len(state.get("provider_responses", []))
+        it_no = round_idx + 1
         max_it = state["max_iterations"]
+        task_body = _fan_out_task_body(state)
+        facts_enabled = bool(state.get("facts_packet_enabled", True))
+        conditional = bool(state.get("conditional_fanout_enabled", True))
+        allowed_names = frozenset(str(n) for n in state["providers"])
+
+        ver_for_directives: dict[str, Any] = {}
+        if it_no >= 2 and state.get("verification_history"):
+            ver_for_directives = state["verification_history"][-1]
+
+        facts_label = "off"
+        facts_md = (state.get("facts_packet_md") or "").strip()
+        state_update: dict[str, Any] = {}
+
+        if facts_enabled and it_no >= 2 and ver_for_directives.get("refresh_facts") and state.get(
+            "synthesis_history"
+        ):
+            snap = state.get("iterative_config_snapshot") or {}
+            try:
+                cfg_fp = RunConfig.model_validate(snap)
+                facts_md = (
+                    await extract_facts_packet(
+                        synthesis_text=state["synthesis_history"][-1],
+                        symbol=str(state.get("symbol", "")),
+                        config=cfg_fp,
+                    )
+                ).strip()
+                write_facts_packet(out, facts_md + ("\n" if not facts_md.endswith("\n") else ""))
+                state_update["facts_packet_md"] = facts_md
+                facts_label = "refreshed"
+            except Exception as exc:
+                logger.warning("facts_packet: refresh failed iteration=%s err=%r", it_no, exc)
+                facts_label = "frozen" if facts_md else "off"
+        elif facts_enabled and it_no >= 2 and facts_md:
+            facts_label = "frozen"
+        elif facts_enabled and it_no == 1:
+            facts_label = "pending"
+
+        body = task_body
+        if facts_enabled and it_no >= 2 and facts_md:
+            body = facts_frozen_user_prefix(facts_markdown=facts_md) + task_body
+
+        refan_all = bool(ver_for_directives.get("refan_out_all"))
+        raw_refan = ver_for_directives.get("refan_out_providers") or []
+        refan_set = {str(x).strip().lower() for x in raw_refan if str(x).strip()} & allowed_names
+
+        skip_fanout = it_no >= 2 and conditional and not refan_all and not refan_set
+        partial_fanout = it_no >= 2 and conditional and bool(refan_set) and not refan_all
+
+        fan_label = "full"
+        if skip_fanout:
+            fan_label = "skipped"
+        elif partial_fanout:
+            fan_label = "partial"
+
+        logger.info(
+            "Iteration %s: fan_out=%s, facts_packet=%s",
+            it_no,
+            fan_label,
+            facts_label,
+        )
+        est_full = _estimate_prompt_tokens(_fan_out_task_body(state))
+        n_providers = len(state["providers"])
+        saved_tokens = 0
+        if skip_fanout:
+            saved_tokens = est_full * n_providers
+        elif partial_fanout:
+            saved_tokens = est_full * max(0, n_providers - len(refan_set))
+
+        if saved_tokens > 0:
+            logger.info(
+                "Iteration %s saved approx %s tokens vs full re-run",
+                it_no,
+                saved_tokens,
+            )
+
         logger.info(
             "Node fan_out iteration=%s max_iterations=%s providers=%s output_dir=%s",
-            round_idx + 1,
+            it_no,
             max_it,
             list(state["providers"]),
             str(out.resolve()),
@@ -532,14 +675,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         pcs_raw = state.get("provider_configs")
         if not pcs_raw:
-            pcs_raw = [
-                {"name": n, "web_search": None, "request_timeout_s": None}
-                for n in state["providers"]
-            ]
+            pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
         pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
         cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
         cfg_mot = int(state.get("max_output_tokens", 16_000))
-        names = [pc.name for pc in pcs]
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
         gemini_cache_index: GeminiCacheIndex | None = (
@@ -560,7 +699,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         int(time.perf_counter() - start),
                     )
 
-        async def _run_one(pc: ProviderConfig) -> ProviderResponse:
+        async def _run_one(pc: ProviderConfig, prompt_body: str) -> ProviderResponse:
             t0 = time.perf_counter()
             p = registry.create(
                 pc.name,
@@ -569,9 +708,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 gemini_cache_ttl_s=gemini_ttl,
             )
             ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
-            to = (
-                float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
-            )
+            to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
 
             async def _attempt() -> ProviderResponse:
                 mot = fan_out_max_output_tokens(pc, cfg_mot)
@@ -579,9 +716,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 if isinstance(p, AnthropicProvider):
                     static = EQUITY_ANALYST_SYSTEM_PROMPT
                     sep = f"{static}\n\n"
-                    user_only = body[len(sep) :] if body.startswith(sep) else body
+                    user_only = prompt_body[len(sep) :] if prompt_body.startswith(sep) else prompt_body
                     return await p.generate(
-                        body,
+                        prompt_body,
                         enable_web_search=ws,
                         max_output_tokens=mot,
                         prompt_cache_enabled=pce,
@@ -591,26 +728,26 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 if isinstance(p, GeminiProvider) and pce and gemini_cache_index is not None:
                     static = EQUITY_ANALYST_SYSTEM_PROMPT
                     sep = f"{static}\n\n"
-                    if body.startswith(sep):
+                    if prompt_body.startswith(sep):
                         return await p.generate(
-                            body,
+                            prompt_body,
                             enable_web_search=ws,
                             max_output_tokens=mot,
                             cacheable_prefix=static,
-                            user_message_for_cache=body[len(sep) :],
+                            user_message_for_cache=prompt_body[len(sep) :],
                         )
                 if isinstance(p, OpenAIProvider):
                     static = EQUITY_ANALYST_SYSTEM_PROMPT
                     sep = f"{static}\n\n"
-                    if body.startswith(sep):
+                    if prompt_body.startswith(sep):
                         return await p.generate(
-                            body,
+                            prompt_body,
                             enable_web_search=ws,
                             max_output_tokens=mot,
                             cacheable_prefix=static,
-                            user_message_for_cache=body[len(sep) :],
+                            user_message_for_cache=prompt_body[len(sep) :],
                         )
-                return await p.generate(body, enable_web_search=ws, max_output_tokens=mot)
+                return await p.generate(prompt_body, enable_web_search=ws, max_output_tokens=mot)
 
             try:
                 return await asyncio.wait_for(
@@ -627,45 +764,73 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             except TimeoutError as exc:
                 return failure_response_from_completed(pc.name, exc, started_perf=t0)
 
-        stop_hb = asyncio.Event()
-        hb = asyncio.create_task(_heartbeat(stop_hb, names))
-        batch_t0 = time.perf_counter()
-        try:
-            res_list = await asyncio.gather(*[_run_one(pc) for pc in pcs], return_exceptions=True)
-        finally:
-            stop_hb.set()
-            hb.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await hb
-
+        parallel_wall = 0.0
         responses: dict[str, ProviderResponse] = {}
-        for pc, item in zip(pcs, res_list, strict=True):
-            if isinstance(item, ProviderResponse):
-                responses[pc.name] = item
-            elif isinstance(item, Exception):
-                responses[pc.name] = failure_response(pc.name, item, latency_s=None)
-            else:
-                raise item
 
-        parallel_wall = time.perf_counter() - batch_t0
+        if skip_fanout:
+            prev = state["provider_responses"][-1]["responses"]
+            responses = {k: _dict_to_response(v) for k, v in prev.items()}
+        else:
+            to_run = pcs if not partial_fanout else [pc for pc in pcs if pc.name in refan_set]
+            if partial_fanout and not to_run:
+                logger.warning(
+                    "refan_out_providers produced an empty runnable set; falling back to full fan-out",
+                )
+                to_run = pcs
+                partial_fanout = False
+            stop_hb = asyncio.Event()
+            hb = asyncio.create_task(_heartbeat(stop_hb, [pc.name for pc in to_run]))
+            batch_t0 = time.perf_counter()
+            try:
+                res_list = await asyncio.gather(
+                    *[_run_one(pc, body) for pc in to_run],
+                    return_exceptions=True,
+                )
+            finally:
+                stop_hb.set()
+                hb.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await hb
+            parallel_wall = time.perf_counter() - batch_t0
+            ran: dict[str, ProviderResponse] = {}
+            for pc, item in zip(to_run, res_list, strict=True):
+                if isinstance(item, ProviderResponse):
+                    ran[pc.name] = item
+                elif isinstance(item, Exception):
+                    ran[pc.name] = failure_response(pc.name, item, latency_s=None)
+                else:
+                    raise item
+            if partial_fanout:
+                prev = state["provider_responses"][-1]["responses"]
+                for pc in pcs:
+                    if pc.name in refan_set:
+                        responses[pc.name] = ran[pc.name]
+                    else:
+                        responses[pc.name] = _dict_to_response(prev[pc.name])
+            else:
+                responses = ran
 
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
-        lines: list[str] = []
+        lines_out: list[str] = []
         for name, resp in responses.items():
-            lines.append(f"## {name}\n\n{resp.text}\n")
-        (iter_dir / f"iteration_{round_idx + 1}_providers.md").write_text(
-            "\n".join(lines), encoding="utf-8"
-        )
+            if skip_fanout:
+                lines_out.append(
+                    f"## {name}\n\n(fan-out skipped — reused iteration {round_idx} body)\n\n{resp.text}\n",
+                )
+            else:
+                lines_out.append(f"## {name}\n\n{resp.text}\n")
+        (iter_dir / f"iteration_{round_idx + 1}_providers.md").write_text("\n".join(lines_out), encoding="utf-8")
 
         ser = {"responses": {k: _response_to_dict(v) for k, v in responses.items()}}
-        it_no = round_idx + 1
-        return {
+        out_fan: dict[str, Any] = {
             "provider_responses": [ser],
             "timing_events": [
                 {"iteration": it_no, "providers_parallel_wall_s": parallel_wall},
             ],
         }
+        out_fan.update(state_update)
+        return out_fan
 
     async def synthesize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
@@ -691,12 +856,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         syn_max_in = int(state.get("synthesizer_max_input_tokens", 100_000))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
-        syn_ws = effective_synthesizer_web_search(
-            run_default=state["enable_web_search"], syn=syn_cfg
-        )
+        syn_ws = effective_synthesizer_web_search(run_default=state["enable_web_search"], syn=syn_cfg)
         s0 = time.perf_counter()
         it_no = round_idx + 1
         err_ev: list[dict[str, Any]] = []
+        refinement = _build_synthesis_refinement_markdown(state) if round_idx >= 1 else None
         try:
             result = await asyncio.wait_for(
                 syn.synthesize(
@@ -709,9 +873,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     retry_base_delay_s=retry_base,
                     anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
                     symbol=state.get("symbol"),
-                    summarize_oversized_providers=bool(
-                        state.get("summarize_oversized_providers", True)
-                    ),
+                    summarize_oversized_providers=bool(state.get("summarize_oversized_providers", True)),
                     summarize_threshold_input_tokens=int(
                         state.get("summarize_threshold_input_tokens", 8000),
                     ),
@@ -724,6 +886,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     oversized_summarize_max_input_tokens=int(
                         state.get("oversized_summarize_max_input_tokens", 100_000),
                     ),
+                    refinement_markdown=refinement,
                 ),
                 timeout=timeout_syn,
             )
@@ -773,6 +936,23 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             md_path=syn_path,
             markdown_text=syn_body,
         )
+        facts_state: dict[str, Any] = {}
+        if bool(state.get("facts_packet_enabled", True)) and round_idx == 0 and not result.response.model.startswith(
+            "error:",
+        ):
+            snap = state.get("iterative_config_snapshot") or {}
+            try:
+                cfg0 = RunConfig.model_validate(snap)
+                md = await extract_facts_packet(
+                    synthesis_text=result.response.text,
+                    symbol=str(state.get("symbol", "")),
+                    config=cfg0,
+                )
+                write_facts_packet(out, md)
+                facts_state["facts_packet_md"] = md.rstrip() + "\n"
+            except Exception as exc:
+                logger.warning("facts_packet: initial extraction failed err=%r", exc)
+
         out_update: dict[str, Any] = {
             "synthesis_history": [result.response.text],
             "synthesis_meta": [
@@ -785,6 +965,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             ],
             "timing_events": [{"iteration": it_no, "synthesis_wall_s": syn_wall}],
         }
+        out_update.update(facts_state)
         if err_ev:
             out_update["error_events"] = err_ev
         return out_update
@@ -862,9 +1043,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(
-                run_error_record(stage="verify", provider=state["verifier_name"], exc=exc)
-            )
+            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         except Exception as exc:
             logger.error(
@@ -873,9 +1052,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(
-                run_error_record(stage="verify", provider=state["verifier_name"], exc=exc)
-            )
+            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         ver_wall = time.perf_counter() - v0
         if resp.model.startswith("error:"):
@@ -886,9 +1063,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             )
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
-        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(
-            resp.text, encoding="utf-8"
-        )
+        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(resp.text, encoding="utf-8")
         data = parse_verifier_json(resp.text)
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -939,11 +1114,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
     async def finalize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
-        logger.info(
-            "Node finalize output_dir=%s rounds=%s",
-            str(out.resolve()),
-            len(state["provider_responses"]),
-        )
+        logger.info("Node finalize output_dir=%s rounds=%s", str(out.resolve()), len(state["provider_responses"]))
         parts: list[str] = [
             f"# Refined equity report: {state['symbol']}\n",
             "## Iteration changelog\n",
@@ -976,11 +1147,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         )
         iter_dir = out / "iterations"
         for i, syn in enumerate(state["synthesis_history"], start=1):
-            ver = (
-                state["verification_history"][i - 1]
-                if i <= len(state["verification_history"])
-                else {}
-            )
+            ver = state["verification_history"][i - 1] if i <= len(state["verification_history"]) else {}
             block = f"# Iteration {i}\n\n## Synthesis\n\n{syn}\n\n## Verification\n\n{json.dumps(ver, indent=2)}\n"
             iter_md = iter_dir / f"iteration_{i}.md"
             iter_md.write_text(block, encoding="utf-8")
@@ -992,7 +1159,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         run_json = out / "run.json"
         timing_summary = merge_timing_events(state.get("timing_events", []))
-        meta = json.loads(run_json.read_text(encoding="utf-8")) if run_json.is_file() else {}
+        meta = (
+            json.loads(run_json.read_text(encoding="utf-8"))
+            if run_json.is_file()
+            else {}
+        )
         meta["timing"] = timing_summary
         meta["iterations_completed"] = len(state.get("provider_responses", []))
         meta["verification_history"] = state.get("verification_history", [])
@@ -1046,9 +1217,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         maybe_delete_iterative_checkpoint(
             out,
-            delete_checkpoint_after_success=bool(
-                state.get("delete_checkpoint_after_success", True)
-            ),
+            delete_checkpoint_after_success=bool(state.get("delete_checkpoint_after_success", True)),
         )
 
         return {"final_report": report}
@@ -1130,6 +1299,9 @@ def build_initial_refinement_state(
         "drive_oauth_token_path": cfg.drive_oauth_token_path,
         "pdf_output_enabled": cfg.pdf_output_enabled,
         "delete_checkpoint_after_success": cfg.delete_checkpoint_after_success,
+        "iterative_config_snapshot": cfg.model_dump(mode="json"),
+        "facts_packet_enabled": cfg.facts_packet_enabled,
+        "conditional_fanout_enabled": cfg.conditional_fanout_enabled,
     }
 
 
