@@ -184,6 +184,10 @@ Each run writes one combined log per symbol plus a `batch_summary.txt` under `ou
 
 **Wall-clock expectations.** Sequential iterative runs typically take several minutes per symbol — for ten symbols with `--max-iterations 3` and grounded web search on every provider, plan on **multiple hours** end-to-end (often **4–10+ hours** depending on provider latency, web-search retries, and Drive upload). Use `--max-iterations 2` or `--no-iterative` for faster passes, and let the batch run unattended overnight. `--parallel` reduces overall wall time only if your provider rate limits permit four concurrent grounded searches across 10 jobs; otherwise per-symbol time grows while the total still pays for ten runs.
 
+### Diagnostics
+
+- **`scripts/test_openai_cache.sh`** — quick way to verify OpenAI prompt caching is working. Runs `configs/cache_test_openai.yaml` (OpenAI-only fan-out + synthesizer, no web search, no Drive, no PDF) twice at `--log-level DEBUG`, then prints **`[PASS]`** when the two runs share the same `instructions_sha16` and run 2 reports `cache_read > 0`, or **`[FAIL]`** with the offending values.
+
 ## Standard mode
 
 ```bash

@@ -1,0 +1,72 @@
+# Purpose: validate OpenAI prompt caching end-to-end.
+#
+# OpenAI-only fan-out + OpenAI synthesizer (gpt-5.5). No web search.
+# No Drive upload. No PDF. Hardcoded price hints so nothing depends on
+# live market data and the rendered prompt is byte-stable across runs.
+#
+# Workflow: run twice back-to-back with `--log-level DEBUG`, then check the
+# second run's `OpenAI cache stats cache_read=...` for a value >0 and confirm
+# the `instructions_sha16=...` DEBUG line matches between the two runs.
+# See `scripts/test_openai_cache.sh` for the automated PASS/FAIL probe.
+
+symbol: CRCL
+company_name: Circle Internet Group
+
+# Hardcoded reference hints (cache-test config only) — keeps the rendered
+# prompt deterministic with web_search off. Do not promote these placeholders
+# into "real" symbol configs; live runs should still source verified closes.
+today_low: 110
+today_high: 115
+current_price: 113
+today_date: "Fri May 8, 2026"
+today_session: "after the market trading window"
+
+earnings_date: "Mon May 11 2026"
+earnings_timing: "early morning et, before the market open"
+
+target_dates:
+  - "Mon May 11"
+  - "Fri May 15"
+  - "Fri May 22"
+  - "Fri May 29"
+  - "Fri Jun 5"
+next_trading_day: "Tues May 12"
+followup_open_date: "Mon May 18"
+
+historical_quarters: 4
+short_interest_lookbacks:
+  - "last two months back"
+  - "last month"
+  - "last week"
+  - "yesterday"
+  - "today"
+
+# OpenAI-only fan-out: omit anthropic / gemini / grok entirely so no other
+# provider keys are required to exercise this config.
+providers:
+  - name: openai
+    model: gpt-5.5
+    web_search: false
+    request_timeout_s: 300
+
+# Synthesizer on OpenAI gpt-5.5 too: with only one fan-out response the
+# synthesis prompt itself isn't deterministic (provider body varies run to
+# run), so the synthesizer call won't normally show cache hits — but keeping
+# it on OpenAI maximizes the surface area exercised end-to-end on a single
+# API key.
+synthesizer:
+  name: openai
+  model: gpt-5.5
+  web_search: false
+  request_timeout_s: 300
+
+# Verifier defaults are only used when --iterative is passed. Keep OpenAI
+# wired in so an accidental iterative invocation still uses one provider.
+verifier_provider: openai
+verifier_model: gpt-5.5
+
+max_output_tokens: 8000
+request_timeout_s: 300
+
+drive_upload_enabled: false
+pdf_output_enabled: false
