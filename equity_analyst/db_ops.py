@@ -115,7 +115,9 @@ async def best_effort_upsert_run_and_responses(
             stmt = pg_insert(RunRow).values(**run_row)
             stmt = stmt.on_conflict_do_update(
                 index_elements=[RunRow.run_id],
-                set_={k: stmt.excluded[k] for k in run_row if k not in ("run_id", "created_at_utc")},
+                set_={
+                    k: stmt.excluded[k] for k in run_row if k not in ("run_id", "created_at_utc")
+                },
             )
             await session.execute(stmt)
 
@@ -202,7 +204,9 @@ async def best_effort_replace_predictions(
 ) -> bool:
     """DELETE existing ``predictions`` for ``run_id`` then bulk INSERT ``rows``."""
     if not cfg_db_enabled:
-        logger.warning("prediction_extract: DB writes disabled; skipping Postgres run_id=%s", run_id)
+        logger.warning(
+            "prediction_extract: DB writes disabled; skipping Postgres run_id=%s", run_id
+        )
         return False
     if not await is_db_available(database_url=database_url):
         logger.warning("prediction_extract: DB unavailable run_id=%s", run_id)
@@ -222,4 +226,3 @@ async def best_effort_replace_predictions(
     except Exception as exc:
         logger.warning("prediction_extract: DB replace failed run_id=%s error=%r", run_id, exc)
         return False
-

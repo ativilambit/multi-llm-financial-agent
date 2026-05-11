@@ -77,7 +77,9 @@ class Orchestrator:
         out.mkdir(parents=True, exist_ok=False)
         return out
 
-    async def run_async(self, *, dry_run: bool, enable_web_search: bool = True) -> tuple[str, RunArtifacts]:
+    async def run_async(
+        self, *, dry_run: bool, enable_web_search: bool = True
+    ) -> tuple[str, RunArtifacts]:
         rendered = render_prompt(self._config, self._prompt_path)
         out_dir = self._make_output_dir()
         started_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
@@ -132,7 +134,9 @@ class Orchestrator:
                         "providers": {
                             pc.name: {
                                 "enabled": True,
-                                "web_search": effective_web_search(run_default=enable_web_search, pc=pc),
+                                "web_search": effective_web_search(
+                                    run_default=enable_web_search, pc=pc
+                                ),
                             }
                             for pc in self._config.providers
                         },
@@ -151,7 +155,9 @@ class Orchestrator:
                 markdown_text=preview_md,
             )
             if self._config.drive_upload_enabled:
-                await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
+                await maybe_upload_run_to_drive(
+                    self._config, out_dir, append_synthesis_footer=False
+                )
             finished_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
             try:
                 run_json_data = json.loads(run_json.read_text(encoding="utf-8"))
@@ -328,7 +334,9 @@ class Orchestrator:
                 exc,
                 started_perf=syn_t0,
             )
-            synthesis = SynthesisResult(response=synthesis_resp, prompt="(synthesis stage timed out)")
+            synthesis = SynthesisResult(
+                response=synthesis_resp, prompt="(synthesis stage timed out)"
+            )
         except Exception as exc:
             logger.error(
                 "Synthesis failed: provider=%s error_type=%s detail=%r",
@@ -447,7 +455,9 @@ class Orchestrator:
                     synthesis.response.provider_name,
                     synthesis.response,
                     syn_rel,
-                    effective_synthesizer_web_search(run_default=enable_web_search, syn=self._config.synthesizer),
+                    effective_synthesizer_web_search(
+                        run_default=enable_web_search, syn=self._config.synthesizer
+                    ),
                 )
             )
             await best_effort_upsert_run_and_responses(
@@ -470,7 +480,9 @@ class Orchestrator:
             "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s timing=%s",
             str(out_dir.resolve()),
             synthesis.response.model,
-            f"{synthesis.response.latency_s:.3f}" if synthesis.response.latency_s is not None else "n/a",
+            f"{synthesis.response.latency_s:.3f}"
+            if synthesis.response.latency_s is not None
+            else "n/a",
             timing,
         )
         return (synthesis.response.text, artifacts)

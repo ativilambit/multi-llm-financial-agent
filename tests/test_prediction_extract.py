@@ -38,14 +38,41 @@ def _minimal_run_config() -> RunConfig:
 
 
 @pytest.mark.asyncio
-async def test_extract_predictions_valid_json_builds_five_horizons(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_extract_predictions_valid_json_builds_five_horizons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     payload = {
         "horizons": {
-            "earnings_day_open": {"probability_up": 0.62, "range_low": 10.5, "range_high": 11.2, "point": None},
-            "earnings_day_close": {"probability_up": None, "range_low": None, "range_high": None, "point": 10.9},
-            "next_trading_day_open": {"probability_up": 0.55, "range_low": None, "range_high": None, "point": None},
-            "next_trading_day_close": {"probability_up": None, "range_low": 9.8, "range_high": 11.0, "point": None},
-            "one_week_later_close": {"probability_up": 0.48, "range_low": None, "range_high": None, "point": None},
+            "earnings_day_open": {
+                "probability_up": 0.62,
+                "range_low": 10.5,
+                "range_high": 11.2,
+                "point": None,
+            },
+            "earnings_day_close": {
+                "probability_up": None,
+                "range_low": None,
+                "range_high": None,
+                "point": 10.9,
+            },
+            "next_trading_day_open": {
+                "probability_up": 0.55,
+                "range_low": None,
+                "range_high": None,
+                "point": None,
+            },
+            "next_trading_day_close": {
+                "probability_up": None,
+                "range_low": 9.8,
+                "range_high": 11.0,
+                "point": None,
+            },
+            "one_week_later_close": {
+                "probability_up": 0.48,
+                "range_low": None,
+                "range_high": None,
+                "point": None,
+            },
         },
         "confidence": "high",
         "notes": "none",
@@ -182,8 +209,12 @@ async def test_replace_predictions_second_call_deletes_then_inserts_again(
             "source": "llm_extracted",
         }
     ]
-    assert await best_effort_replace_predictions(cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows)
-    assert await best_effort_replace_predictions(cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows)
+    assert await best_effort_replace_predictions(
+        cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows
+    )
+    assert await best_effort_replace_predictions(
+        cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows
+    )
     assert exec_kinds == ["delete", "insert", "delete", "insert"]
 
 

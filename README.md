@@ -467,6 +467,7 @@ These plain-text and template files control model instructions without editing P
 - `prompts/equity_analyst_system.md` — persona / instructions (cached as the Anthropic system prompt and prepended for other providers).
 - `prompts/equity_analyst.j2` — the 11 numbered sections, a Jinja template with `{{ symbol }}`, optional `reference_*` / legacy price context, dates, and the other template variables.
 - `prompts/synthesizer_system.md` — how the synthesizer compares provider answers and formats the consensus.
+- `prompts/prediction_extract_system.md` — JSON-only instructions for the optional prediction-extractor LLM (five fixed horizons).
 
 Edits take effect on the next CLI run; you do not need to change code or restart a long-lived process.
 
@@ -544,6 +545,28 @@ python -m equity_analyst outcome-record-batch \
 ```
 
 Common flags: `--dry-run` (no `outcome.json` / registry / DB writes), `--rate-limit-sleep-s 0.5` (delay between symbols after the first, to reduce yfinance throttling), `--continue-on-error` / `--no-continue-on-error`, and `--outputs-dir` for Shape B when runs live outside the default `outputs/` folder. Exit code **1** if any `[FAIL]` line is printed (missing run directory, missing `run.json`, I/O error, and so on); `[WARN]` lines (partial or empty auto-fetch) still exit **0**.
+
+## Prediction extraction (calibration prep)
+
+After a run, you can populate the Postgres **`predictions`** table with five fixed **horizons** (`earnings_day_open`, `earnings_day_close`, `next_trading_day_open`, `next_trading_day_close`, `one_week_later_close`) by calling a **fast LLM** (default **Gemini Flash**, `gemini-3-flash-preview`, no web search) against the same synthesis file the rest of the pipeline treats as final: `outputs/<run-id>/synthesis.md` when present (iterative runs write the packaged report there; otherwise the newest `iterations/iteration_*_synthesis.md` is used, matching outcome tooling).
+
+**Explicit CLI (always runs extraction for the given run dir(s)):**
+
+```bash
+python -m equity_analyst predictions-extract --run-dir outputs/CRCL_20260511T023747Z
+python -m equity_analyst predictions-extract-batch --batch-dir outputs/batch_20260511T025203Z
+python -m equity_analyst predictions-extract-batch --symbols SE,ZBRA,ONON --since 2026-05-12
+```
+
+Batch mode mirrors **`outcome-record-batch`**: Shape A parses `output_dir=` lines from `batch_summary.txt`; Shape B resolves per-symbol run directories under `outputs/` on or after `--since` (default seven days ago UTC), with `--newest-only` (default) or all matches. Use **`--dry-run`** to list targets without calling the extractor.
+
+**Postgres writes:** existing `predictions` rows for the run are **deleted** then re-inserted (idempotent reruns). Each row uses `source = 'llm_extracted'`.
+
+**Fallback file:** if Postgres is unavailable, `DATABASE_URL` is unset/invalid, **`db_enabled`** is false in the run’s config snapshot, or the insert fails, the tool logs a **WARNING** and writes **`predictions_extract.json`** next to `run.json` when at least one structured row was parsed.
+
+**Auto-run after each completion (default off):** set **`prediction_extract_enabled: true`** in YAML (it is recorded in `run.json`), or pass **`--extract-predictions`** on `python -m equity_analyst run` (Boolean optional: `--no-extract-predictions` forces off for that invocation). When enabled, standard runs invoke extraction after synthesis; iterative runs invoke it at the end of **`finalize`** (after `synthesis.md` and `run.json` are written).
+
+**Tuning (RunConfig):** `prediction_extract_provider` (default `gemini`), `prediction_extract_model` (default `gemini-3-flash-preview`), `prediction_extract_max_output_tokens` (default `2048`), `prediction_extract_timeout_s` (default `120`).
 
 ## Backfilling existing runs into Postgres
 

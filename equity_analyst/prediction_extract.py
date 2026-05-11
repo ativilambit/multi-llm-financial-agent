@@ -280,11 +280,7 @@ def _user_message(*, symbol: str, run_id: str, synthesis_text: str) -> str:
             + "\n\n...(synthesis truncated for extraction request; prefer signals from the excerpt above)..."
         )
     )
-    return (
-        f"Symbol: {symbol}\n"
-        f"Run ID: {run_id}\n\n"
-        f"## Synthesis markdown\n\n{body}\n"
-    )
+    return f"Symbol: {symbol}\nRun ID: {run_id}\n\n## Synthesis markdown\n\n{body}\n"
 
 
 async def _invoke_prediction_extract_llm(
@@ -345,7 +341,9 @@ async def extract_predictions_from_synthesis(
     return rows_from_parsed_payload(run_id=run_id, data=parsed)
 
 
-def _write_predictions_fallback_json(*, run_dir: Path, run_id: str, symbol: str, rows: list[PredictionRow]) -> None:
+def _write_predictions_fallback_json(
+    *, run_dir: Path, run_id: str, symbol: str, rows: list[PredictionRow]
+) -> None:
     path = run_dir / "predictions_extract.json"
     payload = {
         "run_id": run_id,
@@ -358,7 +356,9 @@ def _write_predictions_fallback_json(*, run_dir: Path, run_id: str, symbol: str,
     logger.info("prediction_extract: wrote fallback artifact path=%s", path)
 
 
-async def run_prediction_extract_for_run_dir(*, run_dir: Path, cfg: RunConfig) -> list[PredictionRow]:
+async def run_prediction_extract_for_run_dir(
+    *, run_dir: Path, cfg: RunConfig
+) -> list[PredictionRow]:
     """Read final synthesis for ``run_dir``, extract rows, persist to DB or fallback JSON."""
     try:
         run_dir = run_dir.expanduser().resolve()
@@ -394,7 +394,9 @@ async def run_prediction_extract_for_run_dir(*, run_dir: Path, cfg: RunConfig) -
             database_url=cfg.database_url,
         )
         if not ok and rows:
-            _write_predictions_fallback_json(run_dir=run_dir, run_id=run_id, symbol=symbol, rows=rows)
+            _write_predictions_fallback_json(
+                run_dir=run_dir, run_id=run_id, symbol=symbol, rows=rows
+            )
         elif not ok and not rows:
             logger.warning("prediction_extract: no rows and DB not updated run_id=%s", run_id)
         return rows

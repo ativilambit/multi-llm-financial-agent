@@ -239,7 +239,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     outcome = sub.add_parser("outcome-record", help="Record realized outcomes for a prior run")
-    outcome.add_argument("--run-dir", required=True, help="Absolute or relative path to outputs/<run>/")
+    outcome.add_argument(
+        "--run-dir", required=True, help="Absolute or relative path to outputs/<run>/"
+    )
     outcome.add_argument(
         "--interactive",
         action="store_true",
@@ -581,11 +583,14 @@ async def _run_iterative_cli(
         )
         nodes = dry_run_compile_only(registry=reg)
         return (
-            "# Iterative dry-run\n\n"
-            f"Graph nodes: {', '.join(nodes)}\n\n"
-            "## Rendered prompt (excerpt)\n\n"
-            + rendered.text[:8000]
-        ), Path("."), {}
+            (
+                "# Iterative dry-run\n\n"
+                f"Graph nodes: {', '.join(nodes)}\n\n"
+                "## Rendered prompt (excerpt)\n\n" + rendered.text[:8000]
+            ),
+            Path("."),
+            {},
+        )
     out_dir: Path
     thread_id: str
     resume = bool(args.resume)
@@ -723,8 +728,16 @@ def _run_outcome_record_batch_cli(args: argparse.Namespace) -> int:
         o = res.outcome
         sym = o.symbol
         run_id = run_dir.name
-        artifact_note = "dry-run: no files written" if args.dry_run else "outcome.json written with nulls; rerun later"
-        partial_note = "dry-run: no files written" if args.dry_run else "outcome.json written; rerun later if needed"
+        artifact_note = (
+            "dry-run: no files written"
+            if args.dry_run
+            else "outcome.json written with nulls; rerun later"
+        )
+        partial_note = (
+            "dry-run: no files written"
+            if args.dry_run
+            else "outcome.json written; rerun later if needed"
+        )
         if res.auto_fetch_used and res.yfinance_empty:
             partial += 1
             _print_outcome_batch_warn_line(
@@ -876,7 +889,9 @@ def main(argv: list[str] | None = None) -> int:
                     run_json = out_dir / "run.json"
                     if run_json.is_file():
                         data = json.loads(run_json.read_text(encoding="utf-8"))
-                        data["finished_at_utc"] = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+                        data["finished_at_utc"] = (
+                            datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+                        )
                         run_json.write_text(
                             json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                         )
@@ -901,19 +916,23 @@ def main(argv: list[str] | None = None) -> int:
                                 continue
                             try:
                                 response_path = str(
-                                    (out_dir / "iterations" / f"iteration_{i}_providers.md").relative_to(
-                                        out_dir.parent
-                                    )
+                                    (
+                                        out_dir / "iterations" / f"iteration_{i}_providers.md"
+                                    ).relative_to(out_dir.parent)
                                 )
                             except Exception:
-                                response_path = str(out_dir / "iterations" / f"iteration_{i}_providers.md")
+                                response_path = str(
+                                    out_dir / "iterations" / f"iteration_{i}_providers.md"
+                                )
                             for prov_name, d in raw.items():
                                 if not isinstance(d, dict):
                                     continue
                                 resp = _dict_to_provider_response(d)
                                 pc = provider_map.get(prov_name)
                                 ws_enabled = (
-                                    bool(pc.web_search) if pc and pc.web_search is not None else bool(args.enable_web_search)
+                                    bool(pc.web_search)
+                                    if pc and pc.web_search is not None
+                                    else bool(args.enable_web_search)
                                 )
                                 pr_rows.append((i, prov_name, resp, response_path, ws_enabled))
 
@@ -1006,8 +1025,12 @@ def main(argv: list[str] | None = None) -> int:
                 earnings_day_high = _prompt_float("earnings_day_high", earnings_day_high)
                 earnings_day_low = _prompt_float("earnings_day_low", earnings_day_low)
                 earnings_day_close = _prompt_float("earnings_day_close", earnings_day_close)
-                next_trading_day_open = _prompt_float("next_trading_day_open", next_trading_day_open)
-                next_trading_day_close = _prompt_float("next_trading_day_close", next_trading_day_close)
+                next_trading_day_open = _prompt_float(
+                    "next_trading_day_open", next_trading_day_open
+                )
+                next_trading_day_close = _prompt_float(
+                    "next_trading_day_close", next_trading_day_close
+                )
                 one_week_later_close = _prompt_float("one_week_later_close", one_week_later_close)
                 direction_vs_prior_close = _prompt_choice(
                     "direction_vs_prior_close", direction_vs_prior_close, ["up", "down", "flat"]
@@ -1052,7 +1075,9 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("run.json missing config snapshot")
         cfg = RunConfig.model_validate(cfg_raw)
         rows = asyncio.run(run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg))
-        sys.stdout.write(json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n"
+        )
         return 0
 
     if args.command == "predictions-extract-batch":
@@ -1095,7 +1120,9 @@ def _run_db_backfill_cli(args: argparse.Namespace) -> int:
         )
         for d in dirs:
             sys.stdout.write(f"DRY-RUN run_id={d.name}\n")
-        _print_backfill_summary(scanned=len(dirs), inserted=0, skipped=len(dirs), errors=0, dry_run=True)
+        _print_backfill_summary(
+            scanned=len(dirs), inserted=0, skipped=len(dirs), errors=0, dry_run=True
+        )
         return 0
 
     return asyncio.run(_run_db_backfill_async(dirs, run_dirs_count=len(dirs)))

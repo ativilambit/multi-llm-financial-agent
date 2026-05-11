@@ -158,9 +158,7 @@ def round_summary_for_changelog(
         sentence_cut = max(candidates)
         cut = sentence_cut + 1 if sentence_cut >= max_chars // 2 else max_chars
     preview = text[:cut].rstrip()
-    pointer = (
-        f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
-    )
+    pointer = f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
     return f"{preview}\n\n{pointer}"
 
 
@@ -534,7 +532,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         pcs_raw = state.get("provider_configs")
         if not pcs_raw:
-            pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
+            pcs_raw = [
+                {"name": n, "web_search": None, "request_timeout_s": None}
+                for n in state["providers"]
+            ]
         pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
         cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
         cfg_mot = int(state.get("max_output_tokens", 16_000))
@@ -568,7 +569,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 gemini_cache_ttl_s=gemini_ttl,
             )
             ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
-            to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+            to = (
+                float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+            )
 
             async def _attempt() -> ProviderResponse:
                 mot = fan_out_max_output_tokens(pc, cfg_mot)
@@ -688,7 +691,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         syn_max_in = int(state.get("synthesizer_max_input_tokens", 100_000))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
-        syn_ws = effective_synthesizer_web_search(run_default=state["enable_web_search"], syn=syn_cfg)
+        syn_ws = effective_synthesizer_web_search(
+            run_default=state["enable_web_search"], syn=syn_cfg
+        )
         s0 = time.perf_counter()
         it_no = round_idx + 1
         err_ev: list[dict[str, Any]] = []
@@ -704,7 +709,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     retry_base_delay_s=retry_base,
                     anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
                     symbol=state.get("symbol"),
-                    summarize_oversized_providers=bool(state.get("summarize_oversized_providers", True)),
+                    summarize_oversized_providers=bool(
+                        state.get("summarize_oversized_providers", True)
+                    ),
                     summarize_threshold_input_tokens=int(
                         state.get("summarize_threshold_input_tokens", 8000),
                     ),
@@ -855,7 +862,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
+            err_ev.append(
+                run_error_record(stage="verify", provider=state["verifier_name"], exc=exc)
+            )
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         except Exception as exc:
             logger.error(
@@ -864,7 +873,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
+            err_ev.append(
+                run_error_record(stage="verify", provider=state["verifier_name"], exc=exc)
+            )
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         ver_wall = time.perf_counter() - v0
         if resp.model.startswith("error:"):
@@ -875,7 +886,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             )
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
-        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(resp.text, encoding="utf-8")
+        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(
+            resp.text, encoding="utf-8"
+        )
         data = parse_verifier_json(resp.text)
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -926,7 +939,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
     async def finalize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
-        logger.info("Node finalize output_dir=%s rounds=%s", str(out.resolve()), len(state["provider_responses"]))
+        logger.info(
+            "Node finalize output_dir=%s rounds=%s",
+            str(out.resolve()),
+            len(state["provider_responses"]),
+        )
         parts: list[str] = [
             f"# Refined equity report: {state['symbol']}\n",
             "## Iteration changelog\n",
@@ -959,7 +976,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         )
         iter_dir = out / "iterations"
         for i, syn in enumerate(state["synthesis_history"], start=1):
-            ver = state["verification_history"][i - 1] if i <= len(state["verification_history"]) else {}
+            ver = (
+                state["verification_history"][i - 1]
+                if i <= len(state["verification_history"])
+                else {}
+            )
             block = f"# Iteration {i}\n\n## Synthesis\n\n{syn}\n\n## Verification\n\n{json.dumps(ver, indent=2)}\n"
             iter_md = iter_dir / f"iteration_{i}.md"
             iter_md.write_text(block, encoding="utf-8")
@@ -971,11 +992,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         run_json = out / "run.json"
         timing_summary = merge_timing_events(state.get("timing_events", []))
-        meta = (
-            json.loads(run_json.read_text(encoding="utf-8"))
-            if run_json.is_file()
-            else {}
-        )
+        meta = json.loads(run_json.read_text(encoding="utf-8")) if run_json.is_file() else {}
         meta["timing"] = timing_summary
         meta["iterations_completed"] = len(state.get("provider_responses", []))
         meta["verification_history"] = state.get("verification_history", [])
@@ -1029,7 +1046,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         maybe_delete_iterative_checkpoint(
             out,
-            delete_checkpoint_after_success=bool(state.get("delete_checkpoint_after_success", True)),
+            delete_checkpoint_after_success=bool(
+                state.get("delete_checkpoint_after_success", True)
+            ),
         )
 
         return {"final_report": report}

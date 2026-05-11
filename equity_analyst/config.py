@@ -41,7 +41,9 @@ def resolve_drive_oauth_client_secrets_path_from_optional(raw: str | None) -> Pa
 
 def resolve_drive_oauth_client_secrets_path(cfg: RunConfig) -> Path:
     """Resolved client secrets path for a loaded :class:`RunConfig`."""
-    return resolve_drive_oauth_client_secrets_path_from_optional(cfg.drive_oauth_client_secrets_path)
+    return resolve_drive_oauth_client_secrets_path_from_optional(
+        cfg.drive_oauth_client_secrets_path
+    )
 
 
 class ProviderConfig(BaseModel):
