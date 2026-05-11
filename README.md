@@ -2,6 +2,8 @@
 
 Python CLI that renders a Jinja2 equity/options prompt from YAML config, fans out to multiple LLM providers in parallel, and synthesizes a consensus report. Optional **iterative** mode runs a LangGraph loop: multi-provider fan-out, synthesis with per-round confidence parsing, web-grounded verification, routing, and final packaging with SQLite checkpointing for resume.
 
+See [CHANGELOG.md](CHANGELOG.md) for the change history.
+
 ## Install
 
 ```bash
