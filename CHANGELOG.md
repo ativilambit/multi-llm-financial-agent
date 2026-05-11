@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- **Outcomes** Added `outcome-record` CLI to record realized earnings outcomes per run and append to an outcomes registry JSONL for future calibration/training. (`feat(outcomes): record realized earnings outcomes per run`)
 - **Prompt template** Added new section 8 "Bottom-up qualitative overlay" (mandatory before predictions). Renumbered subsequent sections 8→9, 9→10, 10→11, 11→12. Updated synthesizer and verifier cross-references. (`feat(prompt): add bottom-up qualitative overlay as new section 8`)
 - **Drive upload** Added `run_environment` (`production` | `test`, default `production`) with CLI `--environment` / `--env` and `RUN_ENVIRONMENT` env override. Uploads resolve or create lowercase **`prod`** or **`test`** child folders under `drive_root_folder_id` before creating the per-run folder; `run.json` records `run_environment`, `drive_upload_parent_folder_id`, and `drive_upload_parent_folder_name`. (`feat(drive): route uploads to prod/test subfolders by run environment`)
 - **Prompt template** Generalized price-action wording to relational phrasing (“day of the earnings call”, “next trading day”, “end of that earnings week”). Added Date anchors line at the top of the template. (`3943099`)

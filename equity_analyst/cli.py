@@ -7,7 +7,7 @@ import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -21,6 +21,7 @@ from equity_analyst.iterative import (
 )
 from equity_analyst.logging_setup import attach_run_file_logging, configure_cli_logging
 from equity_analyst.orchestrator import Orchestrator
+from equity_analyst.outcome_tracker import record_outcome
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
 
@@ -176,6 +177,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit PDF alongside primary analysis markdown (default on). Use --no-pdf to disable.",
     )
 
+    outcome = sub.add_parser("outcome-record", help="Record realized outcomes for a prior run")
+    outcome.add_argument("--run-dir", required=True, help="Absolute or relative path to outputs/<run>/")
+    outcome.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Prompt for missing fields on stdin (press Enter to skip a field).",
+    )
+    outcome.add_argument("--earnings-day-open", type=float, default=None)
+    outcome.add_argument("--earnings-day-high", type=float, default=None)
+    outcome.add_argument("--earnings-day-low", type=float, default=None)
+    outcome.add_argument("--earnings-day-close", type=float, default=None)
+    outcome.add_argument("--next-trading-day-open", type=float, default=None)
+    outcome.add_argument("--next-trading-day-close", type=float, default=None)
+    outcome.add_argument("--one-week-later-close", type=float, default=None)
+    outcome.add_argument("--direction-vs-prior-close", choices=["up", "down", "flat"], default=None)
+    outcome.add_argument("--notes", default=None)
+    outcome.add_argument(
+        "--source",
+        choices=["manual", "yahoo_csv", "alpaca", "polygon"],
+        default="manual",
+        help="How the realized outcomes were sourced.",
+    )
+
     return parser
 
 
@@ -324,6 +348,77 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(text)
         if not text.endswith("\n"):
             sys.stdout.write("\n")
+        return 0
+
+    if args.command == "outcome-record":
+        configure_cli_logging(logging.INFO)
+        run_dir = Path(str(args.run_dir))
+
+        def _prompt_float(label: str, cur: float | None) -> float | None:
+            if cur is not None:
+                return cur
+            raw = input(f"{label} (blank to skip): ").strip()
+            if not raw:
+                return None
+            return float(raw)
+
+        def _prompt_str(label: str, cur: str | None) -> str | None:
+            if cur is not None:
+                return cur
+            raw = input(f"{label} (blank to skip): ").strip()
+            return raw or None
+
+        def _prompt_choice(label: str, cur: str | None, choices: list[str]) -> str | None:
+            if cur is not None:
+                return cur
+            raw = input(f"{label} {choices} (blank to skip): ").strip().lower()
+            if not raw:
+                return None
+            if raw not in choices:
+                raise SystemExit(f"Invalid value for {label}: {raw!r} (choices: {choices})")
+            return raw
+
+        try:
+            earnings_day_open = args.earnings_day_open
+            earnings_day_high = args.earnings_day_high
+            earnings_day_low = args.earnings_day_low
+            earnings_day_close = args.earnings_day_close
+            next_trading_day_open = args.next_trading_day_open
+            next_trading_day_close = args.next_trading_day_close
+            one_week_later_close = args.one_week_later_close
+            direction_vs_prior_close = args.direction_vs_prior_close
+            notes = args.notes
+
+            if args.interactive:
+                earnings_day_open = _prompt_float("earnings_day_open", earnings_day_open)
+                earnings_day_high = _prompt_float("earnings_day_high", earnings_day_high)
+                earnings_day_low = _prompt_float("earnings_day_low", earnings_day_low)
+                earnings_day_close = _prompt_float("earnings_day_close", earnings_day_close)
+                next_trading_day_open = _prompt_float("next_trading_day_open", next_trading_day_open)
+                next_trading_day_close = _prompt_float("next_trading_day_close", next_trading_day_close)
+                one_week_later_close = _prompt_float("one_week_later_close", one_week_later_close)
+                direction_vs_prior_close = _prompt_choice(
+                    "direction_vs_prior_close", direction_vs_prior_close, ["up", "down", "flat"]
+                )
+                notes = _prompt_str("notes", notes)
+
+            outcome = record_outcome(
+                run_dir=run_dir,
+                earnings_day_open=earnings_day_open,
+                earnings_day_high=earnings_day_high,
+                earnings_day_low=earnings_day_low,
+                earnings_day_close=earnings_day_close,
+                next_trading_day_open=next_trading_day_open,
+                next_trading_day_close=next_trading_day_close,
+                one_week_later_close=one_week_later_close,
+                direction_vs_prior_close=direction_vs_prior_close,
+                notes=notes,
+                source=cast(Literal["manual", "yahoo_csv", "alpaca", "polygon"], args.source),
+            )
+        except KeyboardInterrupt as exc:
+            raise SystemExit(130) from exc
+
+        sys.stdout.write(json.dumps(outcome.model_dump(), indent=2, sort_keys=True) + "\n")
         return 0
 
     raise AssertionError("unreachable")

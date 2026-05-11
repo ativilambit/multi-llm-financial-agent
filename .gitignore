@@ -17,4 +17,5 @@ build/
 *.sa.json
 **/secrets/
 outputs/
+outputs/outcomes_registry.jsonl
 

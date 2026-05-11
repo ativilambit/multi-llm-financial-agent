@@ -405,3 +405,25 @@ ruff check .
 mypy --strict equity_analyst
 pytest -q
 ```
+
+## Recording outcomes (for calibration / future training)
+
+After earnings occur, you can label a prior run with realized market outcomes. This produces structured data for later calibration / RL / DPO workflows without changing the original model outputs.
+
+Example:
+
+```bash
+python -m equity_analyst outcome-record \
+  --run-dir /abs/path/to/outputs/SYM_20260511T123456Z \
+  --earnings-day-close 12.34 \
+  --next-trading-day-close 11.95 \
+  --direction-vs-prior-close down \
+  --notes "Beat on EPS, guide down; stock faded into close"
+```
+
+Files written:
+
+- `outputs/<run-id>/outcome.json` (stored next to `run.json`)
+- `outputs/outcomes_registry.jsonl` (one JSON line per recorded outcome, append-only)
+
+`outputs/outcomes_registry.jsonl` is ignored by git by default (see `.gitignore`). If you want a shared registry (team workflow), you may choose to commit it.
