@@ -15,7 +15,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
 from googleapiclient.http import MediaFileUpload  # type: ignore[import-untyped]
 
-from equity_analyst.config import RunConfig, resolve_drive_oauth_token_path_from_optional
+from equity_analyst.config import (
+    RunConfig,
+    RunEnvironment,
+    resolve_drive_oauth_token_path_from_optional,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -596,6 +600,93 @@ def _drive_query_escape_name(name: str) -> str:
     return name.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def drive_upload_child_folder_name(run_environment: RunEnvironment) -> str:
+    """Lowercase Drive folder segment: ``prod`` for production runs, ``test`` for test runs."""
+    return "prod" if run_environment == "production" else "test"
+
+
+def resolve_drive_upload_parent_folder_id(service: Any, root_folder_id: str, environment: str) -> str:
+    """Return the Drive folder id for ``prod`` or ``test`` under ``root_folder_id``, creating it if absent.
+
+    ``environment`` must be ``\"production\"`` or ``\"test\"`` (maps to child folder names ``prod`` / ``test``).
+
+    If ``files().create`` fails (for example two concurrent creators), the folder is listed again and an
+    existing match is returned when found.
+    """
+    if environment not in ("production", "test"):
+        raise ValueError(f"environment must be 'production' or 'test', not {environment!r}")
+    folder_name = drive_upload_child_folder_name(cast(RunEnvironment, environment))
+    root = root_folder_id.strip()
+    q = (
+        f"'{root}' in parents and "
+        f"mimeType = 'application/vnd.google-apps.folder' and "
+        f"name = '{_drive_query_escape_name(folder_name)}' and trashed = false"
+    )
+
+    def _list_match() -> str | None:
+        res = (
+            service.files()
+            .list(
+                q=q,
+                spaces="drive",
+                fields="files(id, name)",
+                pageSize=10,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        files = res.get("files") or []
+        if not files:
+            return None
+        return str(files[0]["id"])
+
+    found = _list_match()
+    if found is not None:
+        logger.info(
+            "Drive upload: resolved environment=%s upload_parent=%s (folder name %s under root %s)",
+            environment,
+            found,
+            folder_name,
+            root,
+        )
+        return found
+
+    body: dict[str, Any] = {
+        "name": folder_name,
+        "mimeType": _FOLDER_MIMETYPE,
+        "parents": [root],
+    }
+    try:
+        created = (
+            service.files()
+            .create(body=body, fields="id", supportsAllDrives=True)
+            .execute()
+        )
+        folder_id = str(created["id"])
+    except HttpError:
+        found2 = _list_match()
+        if found2 is not None:
+            logger.info(
+                "Drive upload: resolved environment=%s upload_parent=%s (folder name %s under root %s)",
+                environment,
+                found2,
+                folder_name,
+                root,
+            )
+            return found2
+        raise
+
+    logger.info(
+        "Drive upload: resolved environment=%s upload_parent=%s (folder name %s under root %s)",
+        environment,
+        folder_id,
+        folder_name,
+        root,
+    )
+    return folder_id
+
+
 class DriveUploader:
     """Upload a local directory tree to Google Drive (service account or OAuth user)."""
 
@@ -606,6 +697,7 @@ class DriveUploader:
         *,
         auth_mode: DriveAuthMode = "service_account",
         oauth_token_path: str | Path | None = None,
+        run_environment: RunEnvironment = "production",
     ) -> None:
         self._auth_mode: DriveAuthMode = auth_mode
         self._credentials_path = Path(credentials_path) if credentials_path is not None else None
@@ -613,7 +705,11 @@ class DriveUploader:
             Path(oauth_token_path) if oauth_token_path is not None else None
         )
         self._root_folder_id = root_folder_id.strip()
+        self._run_environment: RunEnvironment = run_environment
         self._service: Any = None
+        self._cached_upload_parent_folder_id: str | None = None
+        self.last_resolved_upload_parent_folder_id: str | None = None
+        self.last_resolved_upload_parent_folder_name: str | None = None
 
     def _ensure_service(self) -> Any:
         if self._service is not None:
@@ -751,8 +847,17 @@ class DriveUploader:
             raise NotADirectoryError(str(local_dir))
 
         quota_emit = [False]
+        if self._cached_upload_parent_folder_id is None:
+            self._cached_upload_parent_folder_id = resolve_drive_upload_parent_folder_id(
+                self._ensure_service(),
+                self._root_folder_id,
+                self._run_environment,
+            )
+        upload_parent_id = self._cached_upload_parent_folder_id
+        self.last_resolved_upload_parent_folder_id = upload_parent_id
+        self.last_resolved_upload_parent_folder_name = drive_upload_child_folder_name(self._run_environment)
         try:
-            run_folder_id = self._get_or_create_folder(parent_id=self._root_folder_id, name=run_id)
+            run_folder_id = self._get_or_create_folder(parent_id=upload_parent_id, name=run_id)
         except HttpError as exc:
             if self._auth_mode == "oauth_user":
                 st, _, _ = _http_error_status_reason_message(exc)
@@ -891,12 +996,22 @@ class DriveUploader:
         return folder_url
 
 
-def _append_drive_url_to_run_json(out_dir: Path, folder_url: str) -> None:
+def _append_drive_url_to_run_json(
+    out_dir: Path,
+    folder_url: str,
+    *,
+    run_environment: str,
+    drive_upload_parent_folder_id: str,
+    drive_upload_parent_folder_name: str,
+) -> None:
     run_json = out_dir / "run.json"
     if not run_json.is_file():
         return
     meta = json.loads(run_json.read_text(encoding="utf-8"))
     meta["drive_folder_url"] = folder_url
+    meta["run_environment"] = run_environment
+    meta["drive_upload_parent_folder_id"] = drive_upload_parent_folder_id
+    meta["drive_upload_parent_folder_name"] = drive_upload_parent_folder_name
     run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -921,6 +1036,7 @@ async def maybe_upload_run_to_drive_raw(
     append_synthesis_footer: bool = False,
     drive_auth_mode: DriveAuthMode = "service_account",
     drive_oauth_token_path: str | None = None,
+    run_environment: RunEnvironment = "production",
 ) -> str | None:
     """Optionally upload `out_dir` to Drive; never raises. Returns folder URL or None."""
     if not drive_upload_enabled:
@@ -964,13 +1080,17 @@ async def maybe_upload_run_to_drive_raw(
         if _drive_root_preflight_probe_oauth(loaded, root_id, emit_capability_warning=False) is None:
             return None
 
+        last_uploader: list[DriveUploader | None] = [None]
+
         def _sync_upload_oauth() -> str | None:
             uploader = DriveUploader(
                 None,
                 root_id,
                 auth_mode="oauth_user",
                 oauth_token_path=token_path,
+                run_environment=run_environment,
             )
+            last_uploader[0] = uploader
             return uploader.upload_directory(out_dir.resolve(), run_id=rid)
 
         try:
@@ -997,8 +1117,24 @@ async def maybe_upload_run_to_drive_raw(
         final_folder_url: str = folder_url
         logger.info("Run uploaded to Drive: %s", final_folder_url)
 
+        up = last_uploader[0]
+        parent_folder_id = (
+            (up.last_resolved_upload_parent_folder_id or "") if up is not None else ""
+        )
+        parent_folder_name = (
+            (up.last_resolved_upload_parent_folder_name or drive_upload_child_folder_name(run_environment))
+            if up is not None
+            else drive_upload_child_folder_name(run_environment)
+        )
+
         def _sync_record_oauth() -> None:
-            _append_drive_url_to_run_json(out_dir, final_folder_url)
+            _append_drive_url_to_run_json(
+                out_dir,
+                final_folder_url,
+                run_environment=run_environment,
+                drive_upload_parent_folder_id=parent_folder_id,
+                drive_upload_parent_folder_name=parent_folder_name,
+            )
             if append_synthesis_footer:
                 _append_synthesis_footer(out_dir, final_folder_url)
 
@@ -1031,8 +1167,16 @@ async def maybe_upload_run_to_drive_raw(
     if _drive_root_preflight_probe(cred_path, root_id, emit_capability_warning=False) is None:
         return None
 
+    last_uploader_sa: list[DriveUploader | None] = [None]
+
     def _sync_upload() -> str | None:
-        uploader = DriveUploader(cred_path, root_id, auth_mode="service_account")
+        uploader = DriveUploader(
+            cred_path,
+            root_id,
+            auth_mode="service_account",
+            run_environment=run_environment,
+        )
+        last_uploader_sa[0] = uploader
         return uploader.upload_directory(out_dir.resolve(), run_id=rid)
 
     try:
@@ -1060,8 +1204,24 @@ async def maybe_upload_run_to_drive_raw(
 
     logger.info("Run uploaded to Drive: %s", folder_url)
 
+    up_sa = last_uploader_sa[0]
+    parent_folder_id_sa = (
+        (up_sa.last_resolved_upload_parent_folder_id or "") if up_sa is not None else ""
+    )
+    parent_folder_name_sa = (
+        (up_sa.last_resolved_upload_parent_folder_name or drive_upload_child_folder_name(run_environment))
+        if up_sa is not None
+        else drive_upload_child_folder_name(run_environment)
+    )
+
     def _sync_record() -> None:
-        _append_drive_url_to_run_json(out_dir, folder_url)
+        _append_drive_url_to_run_json(
+            out_dir,
+            folder_url,
+            run_environment=run_environment,
+            drive_upload_parent_folder_id=parent_folder_id_sa,
+            drive_upload_parent_folder_name=parent_folder_name_sa,
+        )
         if append_synthesis_footer:
             _append_synthesis_footer(out_dir, folder_url)
 
@@ -1095,4 +1255,5 @@ async def maybe_upload_run_to_drive(
         append_synthesis_footer=append_synthesis_footer,
         drive_auth_mode=cfg.drive_auth_mode,
         drive_oauth_token_path=cfg.drive_oauth_token_path,
+        run_environment=cfg.run_environment,
     )

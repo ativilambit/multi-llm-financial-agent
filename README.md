@@ -40,7 +40,7 @@ Copy `.env.example` to `.env` and set keys for the providers you enable in confi
 
 ## Google Drive auto-upload
 
-After each standard or iterative run finishes writing `outputs/<run-id>/` (including `run.json`), you can optionally mirror that folder to Google Drive using a **Google Cloud service account** JSON key. The CLI creates a subfolder named after the run id under a folder you choose, uploads every file (preserving paths such as `iterations/`), skips dotfiles, and appends `drive_folder_url` to `run.json` on success. Iterative runs also append the link to the footer of `synthesis.md`. Upload failures are logged and never fail the analysis run.
+After each standard or iterative run finishes writing `outputs/<run-id>/` (including `run.json`), you can optionally mirror that folder to Google Drive using a **Google Cloud service account** JSON key. The CLI resolves your configured `drive_root_folder_id` / `DRIVE_ROOT_FOLDER_ID`, then uploads under a **child folder** named exactly **`prod`** (production runs, the default) or **`test`** (test runs), creating that child folder on first upload if it does not exist. Under that environment folder it creates a subfolder named after the run id, uploads every file (preserving paths such as `iterations/`), skips dotfiles, and appends `drive_folder_url` plus `run_environment`, `drive_upload_parent_folder_id`, and `drive_upload_parent_folder_name` to `run.json` on success. Iterative runs also append the link to the footer of `synthesis.md`. Upload failures are logged and never fail the analysis run.
 
 At startup the CLI **preflights** the configured root folder via the Drive API: the folder must live on a **Google Shared Drive** (Workspace “Team Drive”). If it does not, uploads are disabled for that run and a clear warning is printed so you do not spend a long model run only to hit `storageQuotaExceeded` on upload.
 
@@ -122,6 +122,7 @@ Environment keys (optional; typically set in `.env` or the shell):
 - `DRIVE_AUTH_MODE=service_account|oauth_user`
 - `DRIVE_OAUTH_CLIENT_SECRETS_PATH` (path to Desktop OAuth client JSON; used by `drive_oauth_setup`)
 - `DRIVE_OAUTH_TOKEN_PATH` (saved refresh token JSON)
+- `RUN_ENVIRONMENT=production|test` (optional; routes uploads under the `prod` or `test` subfolder; overrides YAML `run_environment` when set)
 
 Per-run CLI overrides:
 
@@ -129,6 +130,8 @@ Per-run CLI overrides:
 python -m equity_analyst run --config ... --upload-to-drive --drive-folder-id <folder-id>
 python -m equity_analyst run --config ... --no-upload-to-drive
 python -m equity_analyst run --config ... --drive-auth-mode oauth_user
+python -m equity_analyst run --config ... --environment test
+python -m equity_analyst run --config ... --env production
 ```
 
 ### Caveats

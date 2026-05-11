@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- **Drive upload** Added `run_environment` (`production` | `test`, default `production`) with CLI `--environment` / `--env` and `RUN_ENVIRONMENT` env override. Uploads resolve or create lowercase **`prod`** or **`test`** child folders under `drive_root_folder_id` before creating the per-run folder; `run.json` records `run_environment`, `drive_upload_parent_folder_id`, and `drive_upload_parent_folder_name`. (`feat(drive): route uploads to prod/test subfolders by run environment`)
 - **Prompt template** Generalized price-action wording to relational phrasing (“day of the earnings call”, “next trading day”, “end of that earnings week”). Added Date anchors line at the top of the template. (`3943099`)
 - **Prompt template** Made `earnings_timing` optional; LLM can confirm timing via web search when omitted. Stripped from legacy configs. (`39b2e4a`)
 - **Iterative** Fixed mid-sentence truncation in iteration changelog preview (paragraph-boundary cut instead of a fixed character slice). Added WARNING when synthesizer hits real MAX_TOKENS across providers. (`baac3de`)

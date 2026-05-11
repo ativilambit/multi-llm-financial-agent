@@ -199,6 +199,39 @@ def test_cli_drive_upload_and_folder_overrides(tmp_path: Path) -> None:
     assert cfg.drive_root_folder_id == "newroot"
 
 
+def test_cli_run_environment_override(tmp_path: Path) -> None:
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "run_environment": "production",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml), "--env", "test"])
+    base = _load_cfg(args)
+    cfg = _apply_cli_config_overrides(base, args)
+    assert cfg.run_environment == "test"
+
+    args2 = parser.parse_args(["run", "--config", str(yml), "--environment", "production"])
+    cfg2 = _apply_cli_config_overrides(_load_cfg(args2), args2)
+    assert cfg2.run_environment == "production"
+
+
 def test_cli_drive_auth_mode_override(tmp_path: Path) -> None:
     yml = tmp_path / "c.yaml"
     yml.write_text(

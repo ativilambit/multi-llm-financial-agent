@@ -154,6 +154,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Google Drive folder ID for this run's upload root (overrides drive_root_folder_id / env).",
     )
     run.add_argument(
+        "--environment",
+        "--env",
+        dest="run_environment",
+        choices=["production", "test"],
+        default=None,
+        help="Run environment for Drive uploads: ``production`` → child folder ``prod``; ``test`` → ``test``. "
+        "Overrides run_environment / RUN_ENVIRONMENT when set.",
+    )
+    run.add_argument(
         "--drive-auth-mode",
         choices=["service_account", "oauth_user"],
         default=None,
@@ -204,6 +213,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["drive_auth_mode"] = str(args.drive_auth_mode)
     if getattr(args, "pdf_output_enabled", None) is not None:
         patch["pdf_output_enabled"] = bool(args.pdf_output_enabled)
+    if getattr(args, "run_environment", None) is not None:
+        patch["run_environment"] = str(args.run_environment)
     return cfg if not patch else cfg.model_copy(update=patch)
 
 

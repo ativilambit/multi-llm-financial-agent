@@ -17,7 +17,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from equity_analyst.config import ProviderConfig, RunConfig, SynthesizerConfig
+from equity_analyst.config import ProviderConfig, RunConfig, RunEnvironment, SynthesizerConfig
 from equity_analyst.drive_uploader import DriveAuthMode, maybe_upload_run_to_drive_raw
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
@@ -468,6 +468,7 @@ class RefinementState(TypedDict, total=False):
     drive_upload_enabled: bool
     drive_credentials_path: str | None
     drive_root_folder_id: str | None
+    run_environment: NotRequired[str]
     drive_auth_mode: NotRequired[str]
     drive_oauth_token_path: NotRequired[str | None]
     pdf_output_enabled: NotRequired[bool]
@@ -940,6 +941,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             root_raw = state.get("drive_root_folder_id")
             auth_raw = state.get("drive_auth_mode")
             oauth_tok_raw = state.get("drive_oauth_token_path")
+            env_raw = state.get("run_environment")
+            run_env: RunEnvironment = (
+                cast(RunEnvironment, env_raw) if env_raw in ("production", "test") else "production"
+            )
             resolved_mode: DriveAuthMode = (
                 cast(DriveAuthMode, auth_raw)
                 if auth_raw in ("service_account", "oauth_user")
@@ -954,6 +959,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 append_synthesis_footer=True,
                 drive_auth_mode=resolved_mode,
                 drive_oauth_token_path=oauth_tok_raw if isinstance(oauth_tok_raw, str) else None,
+                run_environment=run_env,
             )
 
         return {"final_report": report}
@@ -1030,6 +1036,7 @@ def build_initial_refinement_state(
         "drive_upload_enabled": cfg.drive_upload_enabled,
         "drive_credentials_path": cfg.drive_credentials_path,
         "drive_root_folder_id": cfg.drive_root_folder_id,
+        "run_environment": cfg.run_environment,
         "drive_auth_mode": cfg.drive_auth_mode,
         "drive_oauth_token_path": cfg.drive_oauth_token_path,
         "pdf_output_enabled": cfg.pdf_output_enabled,

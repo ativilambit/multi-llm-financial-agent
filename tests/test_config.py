@@ -433,6 +433,68 @@ def test_mndy_fast_config_has_four_fan_out_providers_with_gemini_flash() -> None
     assert by_name["gemini"].request_timeout_s == 180
 
 
+def test_run_environment_yaml_and_default() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.run_environment == "production"
+
+    cfg_test = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+            "run_environment": "test",
+        }
+    )
+    assert cfg_test.run_environment == "test"
+
+
+def test_run_environment_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RUN_ENVIRONMENT", "test")
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_low": 1,
+            "today_high": 2,
+            "current_price": 1.5,
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "t",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+            "run_environment": "production",
+        }
+    )
+    assert cfg.run_environment == "test"
+    monkeypatch.delenv("RUN_ENVIRONMENT", raising=False)
+
+
 def test_drive_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DRIVE_UPLOAD_ENABLED", "true")
     monkeypatch.setenv("DRIVE_CREDENTIALS_PATH", "/tmp/sa.json")

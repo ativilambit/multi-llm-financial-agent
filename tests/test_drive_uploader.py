@@ -20,6 +20,7 @@ from equity_analyst.drive_uploader import (
     _load_oauth_user_credentials,
     log_drive_upload_plan,
     maybe_upload_run_to_drive_raw,
+    resolve_drive_upload_parent_folder_id,
 )
 
 
@@ -113,6 +114,8 @@ def test_upload_directory_walks_and_creates_nested_folders(
 
     executes: list[Any] = [
         {"files": []},
+        {"id": "PROD_PARENT"},
+        {"files": []},
         {"id": "RUN_FOLDER"},
         {"id": "f_top"},
         {"files": []},
@@ -137,7 +140,7 @@ def test_upload_directory_walks_and_creates_nested_folders(
 
     assert any("RUN1" in str(c) for c in list_calls)
     assert any("iterations" in str(c) for c in list_calls)
-    assert len(create_calls) >= 4
+    assert len(create_calls) >= 5
     media_bodies = [c.kwargs.get("media_body") for c in create_calls if c.kwargs.get("media_body")]
     assert len(media_bodies) == 2
 
@@ -152,8 +155,9 @@ async def test_retry_http_503_then_success(
 
     files_api = MagicMock()
     files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
-    files_api.list.return_value.execute.side_effect = [{"files": []}]
+    files_api.list.return_value.execute.side_effect = [{"files": []}, {"files": []}]
     files_api.create.return_value.execute.side_effect = [
+        {"id": "PROD"},
         {"id": "RUN_FOLDER"},
         _http_error(503, message="unavailable"),
         {"id": "file_ok"},
@@ -203,6 +207,8 @@ def test_skips_dotfiles(tmp_path: Path, sa_json: Path, monkeypatch: Any) -> None
 
     executes: list[Any] = [
         {"files": []},
+        {"id": "PROD"},
+        {"files": []},
         {"id": "RUN_FOLDER"},
         {"id": "only_one_file"},
     ]
@@ -233,8 +239,16 @@ def test_discovery_build_called_once(monkeypatch: Any, sa_json: Path, tmp_path: 
         built.append(1)
         files_api = MagicMock()
         files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
-        files_api.list.return_value.execute.return_value = {"files": [{"id": "existing"}]}
-        files_api.create.return_value.execute.side_effect = [{"id": "f1"}, {"id": "f2"}]
+        files_api.list.return_value.execute.side_effect = [
+            {"files": [{"id": "PROD_EXIST"}]},
+            {"files": []},
+            {"files": [{"id": "RUN_R1"}]},
+        ]
+        files_api.create.return_value.execute.side_effect = [
+            {"id": "RUN_R1"},
+            {"id": "f1"},
+            {"id": "f2"},
+        ]
         svc = MagicMock()
         svc.files.return_value = files_api
         return svc
@@ -450,8 +464,9 @@ def test_folder_create_storage_quota_exceeded_one_warning_graceful(
 
     files_api = MagicMock()
     files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
-    files_api.list.return_value.execute.side_effect = [{"files": []}]
+    files_api.list.return_value.execute.side_effect = [{"files": []}, {"files": []}]
     files_api.create.return_value.execute.side_effect = [
+        {"id": "PROD"},
         _http_error(403, reason="storageQuotaExceeded", message="quota"),
     ]
     svc = MagicMock()
@@ -480,6 +495,8 @@ def test_partial_upload_one_file_fails_other_succeeds(
     (out / "b.md").write_text("b", encoding="utf-8")
 
     executes: list[Any] = [
+        {"files": []},
+        {"id": "PROD"},
         {"files": []},
         {"id": "RUN_FOLDER"},
         {"id": "fa"},
@@ -516,6 +533,8 @@ def test_file_upload_storage_quota_exceeded_one_warning_graceful(
     (out / "one.md").write_text("x", encoding="utf-8")
 
     executes: list[Any] = [
+        {"files": []},
+        {"id": "PROD"},
         {"files": []},
         {"id": "RUN_FOLDER"},
         _http_error(403, b"Service Accounts do not have storage quota"),
@@ -813,8 +832,8 @@ async def test_maybe_upload_oauth_uses_discovery_build_once(
     def fake_build(*_a: Any, **_k: Any) -> MagicMock:
         built.append(1)
         files_api = MagicMock()
-        files_api.list.return_value.execute.side_effect = [{"files": []}]
-        files_api.create.return_value.execute.side_effect = [{"id": "RUNF"}]
+        files_api.list.return_value.execute.side_effect = [{"files": []}, {"files": []}]
+        files_api.create.return_value.execute.side_effect = [{"id": "PROD"}, {"id": "RUNF"}]
         svc = MagicMock()
         svc.files.return_value = files_api
         return svc
@@ -832,3 +851,90 @@ async def test_maybe_upload_oauth_uses_discovery_build_once(
     assert url is not None
     assert "RUNF" in url
     assert len(built) == 1
+
+
+def test_resolve_drive_upload_parent_creates_prod_under_root() -> None:
+    service = MagicMock()
+    files_api = MagicMock()
+    files_api.list.return_value.execute.return_value = {"files": []}
+    files_api.create.return_value.execute.return_value = {"id": "newprod"}
+    service.files.return_value = files_api
+
+    pid = resolve_drive_upload_parent_folder_id(service, "ROOT", "production")
+    assert pid == "newprod"
+    files_api.create.assert_called_once()
+    body = files_api.create.call_args.kwargs["body"]
+    assert body["name"] == "prod"
+    assert body["parents"] == ["ROOT"]
+    assert body["mimeType"] == "application/vnd.google-apps.folder"
+
+
+def test_resolve_drive_upload_parent_maps_test_environment() -> None:
+    service = MagicMock()
+    files_api = MagicMock()
+    files_api.list.return_value.execute.return_value = {"files": []}
+    files_api.create.return_value.execute.return_value = {"id": "tid"}
+    service.files.return_value = files_api
+
+    assert resolve_drive_upload_parent_folder_id(service, "ROOT", "test") == "tid"
+    assert files_api.create.call_args.kwargs["body"]["name"] == "test"
+
+
+def test_resolve_drive_upload_parent_create_http_error_then_list() -> None:
+    service = MagicMock()
+    files_api = MagicMock()
+    files_api.list.return_value.execute.side_effect = [
+        {"files": []},
+        {"files": [{"id": "race_winner"}]},
+    ]
+    files_api.create.return_value.execute.side_effect = [_http_error(409, message="conflict")]
+    service.files.return_value = files_api
+
+    assert resolve_drive_upload_parent_folder_id(service, "ROOT", "production") == "race_winner"
+    assert files_api.list.call_count == 2
+
+
+def test_drive_uploader_caches_resolved_prod_parent_across_uploads(
+    tmp_path: Path, sa_json: Path, monkeypatch: Any
+) -> None:
+    out = tmp_path / "RUN1"
+    out.mkdir()
+    (out / "x.md").write_text("a", encoding="utf-8")
+
+    list_returns: list[dict[str, Any]] = [
+        {"files": []},
+        {"files": []},
+        {"files": [{"id": "RUNF"}]},
+    ]
+
+    def list_exec() -> dict[str, Any]:
+        return list_returns.pop(0)
+
+    create_returns: list[dict[str, str]] = [
+        {"id": "PROD"},
+        {"id": "RUNF"},
+        {"id": "f1"},
+        {"id": "f2"},
+    ]
+
+    def create_exec() -> dict[str, str]:
+        return create_returns.pop(0)
+
+    files_api = MagicMock()
+    files_api.get.return_value.execute.return_value = _shared_drive_root_metadata()
+    files_api.list.return_value.execute.side_effect = list_exec
+    files_api.create.return_value.execute.side_effect = create_exec
+    svc = MagicMock()
+    svc.files.return_value = files_api
+
+    uploader = DriveUploader(sa_json, "ROOT")
+    monkeypatch.setattr(uploader, "_ensure_service", lambda: svc)
+    uploader.upload_directory(out, run_id="RUN1")
+    uploader.upload_directory(out, run_id="RUN1")
+
+    prod_creates = [
+        c
+        for c in files_api.create.call_args_list
+        if c.kwargs.get("body", {}).get("name") == "prod"
+    ]
+    assert len(prod_creates) == 1

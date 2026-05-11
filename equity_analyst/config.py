@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any, Literal, Self, TextIO
+from typing import Any, Literal, Self, TextIO, cast
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -11,6 +11,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
 
 DriveAuthMode = Literal["service_account", "oauth_user"]
+RunEnvironment = Literal["production", "test"]
 
 _DEFAULT_OAUTH_CONFIG_DIR = Path.home() / ".config" / "multi-llm-equity-analyst"
 
@@ -215,6 +216,11 @@ class RunConfig(BaseModel):
         default=None,
         description="Google Drive folder ID (under which a per-run subfolder is created).",
     )
+    run_environment: RunEnvironment = Field(
+        default="production",
+        description="Drive upload routing: production uses child folder ``prod``; test uses ``test`` "
+        "(created under drive_root_folder_id when uploads run).",
+    )
     drive_auth_mode: DriveAuthMode = Field(
         default="service_account",
         description="Google Drive credentials: service account JSON key, or end-user OAuth token file.",
@@ -314,6 +320,19 @@ class RunConfig(BaseModel):
             if cp and str(cp).strip():
                 updates["drive_oauth_client_secrets_path"] = str(cp).strip()
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _run_environment_env_override(self) -> Self:
+        raw = os.environ.get("RUN_ENVIRONMENT")
+        if raw is None or not str(raw).strip():
+            return self
+        s = str(raw).strip().lower()
+        if s not in ("production", "test"):
+            raise ValueError(
+                "RUN_ENVIRONMENT must be 'production' or 'test' "
+                f"(got {raw!r}); unset the variable or fix the value."
+            )
+        return self.model_copy(update={"run_environment": cast(RunEnvironment, s)})
 
     @model_validator(mode="after")
     def _pdf_output_env_fallback(self) -> Self:
