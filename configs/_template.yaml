@@ -5,7 +5,7 @@
 # - today_date / today_session: Human-readable session labels (not verified prices)
 # Optional price hints (unverified; models must fetch last close via web_search):
 # - today_low / today_high / current_price OR reference_session_low / reference_session_high / reference_last_price
-# - earnings_date / earnings_timing: Human-readable earnings timing text
+# - earnings_date: Human-readable earnings date string used in the prompt
 # - target_dates: List of dates referenced in the prompt
 # - next_trading_day: Next trading day after earnings
 # - followup_open_date: A later follow-up open date referenced in the prompt
@@ -14,6 +14,7 @@
 #
 # Optional:
 # - company_name: Company name (informational; not required by the base prompt)
+# - earnings_timing: Human-readable BMO/AMC/etc. label; if omitted, models verify timing via web_search (see commented example under earnings_date).
 # - historical_quarters: Number of quarters to include in the empirical move table
 # - short_interest_lookbacks: Phrases describing lookback windows to ask for
 #
@@ -36,7 +37,9 @@ today_date: "Fri May 8, 2026"
 today_session: "after the market trading window"
 
 earnings_date: "Mon May 11 2026"
-earnings_timing: "early morning et, before the market open"
+# Optional. Human-readable earnings call timing (e.g. BMO / AMC). If omitted, the equity prompt
+# instructs models to fetch and verify the actual release/call timing via web_search and cite sources.
+# earnings_timing: "early morning et, before the market open"
 
 target_dates:
   - "Mon May 11"

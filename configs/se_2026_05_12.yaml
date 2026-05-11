@@ -9,7 +9,6 @@ today_date: "Tue May 12, 2026"
 today_session: "regular U.S. session; earnings cluster around this date"
 
 earnings_date: "Tue May 12 2026"
-earnings_timing: "varies by issuer; confirm BMO/AMC via IR or web_search"
 
 target_dates:
   - "Tue May 12"

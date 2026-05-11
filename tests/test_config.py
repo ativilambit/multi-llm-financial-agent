@@ -53,6 +53,22 @@ def test_optional_price_hints_may_be_omitted() -> None:
     assert cfg.current_price is None
 
 
+def test_earnings_timing_may_be_omitted() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.earnings_timing is None
+
+
 def test_providers_object_form_and_defaults() -> None:
     cfg = RunConfig.model_validate(
         {

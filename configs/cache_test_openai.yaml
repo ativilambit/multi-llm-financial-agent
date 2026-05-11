@@ -22,7 +22,6 @@ today_date: "Fri May 8, 2026"
 today_session: "after the market trading window"
 
 earnings_date: "Mon May 11 2026"
-earnings_timing: "early morning et, before the market open"
 
 target_dates:
   - "Mon May 11"

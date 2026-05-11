@@ -108,7 +108,11 @@ class RunConfig(BaseModel):
     today_session: str
 
     earnings_date: str
-    earnings_timing: str
+    earnings_timing: str | None = Field(
+        default=None,
+        description="Optional human-readable earnings call timing (BMO/AMC/etc.). When omitted, the equity "
+        "prompt instructs models to verify timing via web_search.",
+    )
 
     target_dates: list[str] = Field(default_factory=list)
     next_trading_day: str

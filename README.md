@@ -136,7 +136,7 @@ python -m equity_analyst run --config ... --drive-auth-mode oauth_user
 
 ## Configs
 
-Stock-specific YAML lives under `configs/`. **Workflow:** pick the **MNDY** or **CRCL** pair below as a **template**, copy both YAMLs to new filenames (`<symbol>_YYYY_MM_DD.yaml` and `_fast.yaml`), then edit symbol, company name, session labels, dates, optional price hints, and any symbol-specific lookbacks. **Price fields** (`today_low` / `today_high` / `current_price`, or the aliases `reference_session_*` / `reference_last_price`) are **optional, unverified hints** for orientation only—the rendered prompt tells models to **fetch and cite** the **last regular-session official closing price** (and session high/low) via **web_search** and not to treat YAML numbers as ground truth.
+Stock-specific YAML lives under `configs/`. **Workflow:** pick the **MNDY** or **CRCL** pair below as a **template**, copy both YAMLs to new filenames (`<symbol>_YYYY_MM_DD.yaml` and `_fast.yaml`), then edit symbol, company name, session labels, dates, optional price hints, and any symbol-specific lookbacks. **Price fields** (`today_low` / `today_high` / `current_price`, or the aliases `reference_session_*` / `reference_last_price`) are **optional, unverified hints** for orientation only—the rendered prompt tells models to **fetch and cite** the **last regular-session official closing price** (and session high/low) via **web_search** and not to treat YAML numbers as ground truth. **`earnings_timing`** is also **optional**: if you omit it, the equity prompt requires **web_search** verification of the actual **BMO / AMC / during-hours** schedule for `earnings_date` (with URL citation); if you set it, that label is treated as the stated schedule while still allowing cross-checks.
 
 | File | Use case |
 |------|----------|
@@ -147,7 +147,7 @@ Stock-specific YAML lives under `configs/`. **Workflow:** pick the **MNDY** or *
 
 ### Running multiple symbols
 
-The 2026-05-10 batch ships ten standard configs that all mirror **CRCL**’s provider structure (Anthropic Opus → OpenAI → Grok → Gemini Flash fan-out, Gemini Pro synthesizer, Gemini verifier, 600 s timeouts, `historical_quarters: 6`). Price fields are `null` on purpose — every provider must source the last regular-session close via `web_search`.
+The 2026-05-10 batch ships ten standard configs that all mirror **CRCL**’s provider structure (Anthropic Opus → OpenAI → Grok → Gemini Flash fan-out, Gemini Pro synthesizer, Gemini verifier, 600 s timeouts, `historical_quarters: 6`). Price fields are `null` on purpose — every provider must source the last regular-session close via `web_search`. **`earnings_timing`** is omitted so **call timing is verified in the prompt** via **web_search** (same pattern as the May-12 batch and the checked-in **MNDY** / **CRCL** examples).
 
 | Symbol | Company | Config |
 |--------|---------|--------|
@@ -162,7 +162,7 @@ The 2026-05-10 batch ships ten standard configs that all mirror **CRCL**’s pro
 | IX | ORIX Corporation (NYSE ADR: IX) | `configs/ix_2026_05_10.yaml` |
 | QUBT | Quantum Computing Inc. (Nasdaq: QUBT) | `configs/qubt_2026_05_10.yaml` |
 
-The **2026-05-12 earnings batch** adds ten configs keyed to **Tue May 12, 2026** (same provider stack as above: Anthropic Opus, **OpenAI `gpt-5.5`**, Grok, Gemini Flash fan-out; Gemini Pro synthesizer with `web_search: true`; Gemini verifier; **600 s** timeouts on every step; `historical_quarters: 6`; `drive_upload_enabled: true`; `pdf_output_enabled: true`; price fields `null` with the comment *reference-only; LLMs fetch via web_search*).
+The **2026-05-12 earnings batch** adds ten configs keyed to **Tue May 12, 2026** (same provider stack as above: Anthropic Opus, **OpenAI `gpt-5.5`**, Grok, Gemini Flash fan-out; Gemini Pro synthesizer with `web_search: true`; Gemini verifier; **600 s** timeouts on every step; `historical_quarters: 6`; `drive_upload_enabled: true`; `pdf_output_enabled: true`; price fields `null` with the comment *reference-only; LLMs fetch via web_search*). These configs omit **`earnings_timing`** so each run’s prompt directs models to **verify** the release/call timing for that symbol and date via **web_search** rather than baking in a guessed BMO/AMC string.
 
 | Symbol | Company | Config |
 |--------|---------|--------|
@@ -383,7 +383,7 @@ Run with `--log-level DEBUG` to see the first 200 characters and a truncated SHA
 
 ## Customizing prompts
 
-**Reference prices in YAML are hints, not facts.** The equity template requires providers to pull **live or recently sourced** quotes—especially the **last regular-session close** and last session range—and to **cite** source and timestamp. Optional config numbers are only for rough rescaling; models are instructed to cross-check them against fetched data.
+**Reference prices in YAML are hints, not facts.** The equity template requires providers to pull **live or recently sourced** quotes—especially the **last regular-session close** and last session range—and to **cite** source and timestamp. Optional config numbers are only for rough rescaling; models are instructed to cross-check them against fetched data. **`earnings_timing`** in YAML is optional: when absent, the template adds a **mandatory verification** block so models use **web_search** to establish **BMO / AMC / during-hours** timing for `earnings_date` and anchor timing-sensitive sections to that evidence; when present, it is printed as the brief’s stated schedule (you can still cross-check in prose).
 
 These plain-text and template files control model instructions without editing Python:
 

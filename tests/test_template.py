@@ -21,7 +21,6 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
             "today_date": "Fri May 8, 2026",
             "today_session": "after the market trading window",
             "earnings_date": "Mon May 11 2026",
-            "earnings_timing": "early morning et, before the market open",
             "target_dates": ["Mon May 11", "Fri May 15", "Fri May 22", "Fri May 29", "Fri Jun 5"],
             "next_trading_day": "Tues May 12",
             "followup_open_date": "Mon May 18",
@@ -52,6 +51,32 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     assert "reference" in text.lower()
     assert "Fri May 8, 2026" in text
     assert "Mon May 11 2026" in text
+    assert "Earnings call timing (mandatory verification):" in text
+    assert "NOT provided in this brief" in text
+    assert "Yahoo Finance Earnings Calendar" in text
+
+
+def test_template_uses_config_earnings_timing_when_provided() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "ZZZ",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "earnings_timing": "after market close (legacy hint)",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
+    assert "{{" not in text
+    assert "Earnings timing (from this brief): after market close (legacy hint)" in text
+    assert "Earnings call timing (mandatory verification):" not in text
 
 
 def test_template_renders_when_reference_prices_omitted() -> None:
@@ -61,7 +86,6 @@ def test_template_renders_when_reference_prices_omitted() -> None:
             "today_date": "Tue Jan 1, 2026",
             "today_session": "regular hours",
             "earnings_date": "Wed Jan 15 2026",
-            "earnings_timing": "after close",
             "target_dates": ["Wed Jan 15"],
             "next_trading_day": "Thu Jan 16",
             "followup_open_date": "Mon Jan 20",
