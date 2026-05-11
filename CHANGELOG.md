@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- **Iterative** Facts packet now includes 2σ and 3σ implied moves alongside 1σ.
 - **Prompt template** Require all three standard deviation ranges (1σ / 2σ / 3σ) explicitly in section 1, 9, 11; synthesizer instructed to preserve all SD levels rather than collapsing to 1σ.
 - **Iterative / Cost** Added optional frozen **facts packet** (`facts_packet.md`, extractor LLM) after round-1 synthesis and **conditional fan-out** (synthesizer-only on iteration 2+ unless the verifier requests `refan_out_providers` / `refan_out_all`); verifier JSON gains `refresh_facts`, `refan_out_providers`, `refan_out_all`. Defaults on; CLI `--no-facts-packet` / `--no-conditional-fanout` restores prior behavior. (`feat(iterative): facts packet + conditional fan-out for cost reduction`)
 - **Outcomes** When `outcome-record --auto-fetch` (and batch) has no usable baseline in `run.json` or `synthesis.md` (`current_price` null, etc.), `direction_vs_prior_close` now falls back to the prior regular-session close from Yahoo Finance (`yfinance`) for the last trading day strictly before `earnings_date`. (`feat(outcome): yfinance prior-session close as baseline when config price null`)

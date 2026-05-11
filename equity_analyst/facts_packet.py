@@ -13,6 +13,21 @@ logger = logging.getLogger(__name__)
 
 FACTS_HEADER = "# Market facts (frozen from iteration 1)"
 
+# When extraction fails, still emit the implied-move scaffold so iteration 2+ prompts
+# list 1/2/3-sigma forward move rows (values unknown).
+_SIGMA = "\u03c3"
+_FALLBACK_IMPLIED_MOVES_BLOCK = (
+    "- IV / implied moves:\n"
+    "  - Post-Earnings IV: unknown\n"
+    f"  - Forward 1{_SIGMA} Move: unknown\n"
+    f"  - Forward 2{_SIGMA} Move: unknown\n"
+    f"  - Forward 3{_SIGMA} Move: unknown\n"
+)
+
+
+def _facts_packet_fallback_markdown(*, reason_bullet: str) -> str:
+    return f"{FACTS_HEADER}\n\n{reason_bullet}\n{_FALLBACK_IMPLIED_MOVES_BLOCK}"
+
 
 def facts_frozen_user_prefix(*, facts_markdown: str) -> str:
     """User-message prefix for fan-out iterations 2+ (discourage duplicate web fetches)."""
@@ -53,10 +68,14 @@ async def extract_facts_packet(*, synthesis_text: str, symbol: str, config: RunC
         resp = await asyncio.wait_for(_call(), timeout=timeout_s)
     except TimeoutError:
         logger.warning("facts_packet: extractor timeout symbol=%s", symbol)
-        return f"{FACTS_HEADER}\n\n- Extraction timed out; treat facts as unknown.\n"
+        return _facts_packet_fallback_markdown(
+            reason_bullet="- Extraction timed out; treat facts as unknown.",
+        )
     except Exception as exc:
         logger.warning("facts_packet: extractor failed symbol=%s err=%r", symbol, exc)
-        return f"{FACTS_HEADER}\n\n- Extraction failed ({type(exc).__name__}); treat facts as unknown.\n"
+        return _facts_packet_fallback_markdown(
+            reason_bullet=f"- Extraction failed ({type(exc).__name__}); treat facts as unknown.",
+        )
 
     text = resp.text.strip()
     if FACTS_HEADER not in text:

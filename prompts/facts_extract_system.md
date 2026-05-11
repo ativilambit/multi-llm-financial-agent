@@ -10,8 +10,33 @@ Rules:
   - Session range (low–high) if present
   - PCR volume (and vs ~1w ago if stated) and PCR open interest if stated
   - Short interest (% float, as-of) if stated
-  - IV / 1σ implied move (±% and ±$ if present)
+  - **IV / implied moves** (Post-Earnings IV plus **1σ, 2σ, and 3σ** forward bands for each horizon the synthesis gives — see “Implied moves” below)
+  - **Session / SD price targets** when the synthesis states standard-deviation envelopes for named sessions or horizons (sections 1, 9, 11 of the analyst template): include **all three** SD levels, not only 1σ (see “Session SD targets” below)
   - Analyst targets (median, range, N analysts) if stated
   - Last N quarters earnings reactions (compact table or bullets)
   - Key qualitative anchors (1–3 bullets)
 - Do not add investment advice or new trades; facts only.
+
+### Implied moves (IV / options)
+
+Use a short header line **`IV / implied moves:`** then bullets. Preserve provider numbers when the synthesis states them explicitly.
+
+For each implied-move **horizon** present in the synthesis (e.g. expiry date, “forward to May 15”, post-earnings window), compute and emit **all three** bands:
+
+- Forward **1σ** Move (horizon): ±Y.Y% (±$X.XX)
+- Forward **2σ** Move (horizon): ±Y.Y% (±$X.XX)
+- Forward **3σ** Move (horizon): ±Y.Y% (±$X.XX)
+
+**Gaussian approximation:** use **2σ ≈ 2×** the 1σ value and **3σ ≈ 3×** the 1σ value (percent and dollar move), unless the synthesis already lists distinct 2σ/3σ figures (then keep those). If the 1σ is given only as a **dollar range** $A–$B with spot $S, approximate the 1σ% as **(B−A)/(2S)** and scale dollars the same way for 2σ/3σ.
+
+Also include **Post-Earnings IV** (or equivalent) on its own bullet when stated.
+
+### Session SD targets
+
+When the packet includes session standard-deviation targets or price-target SD bands from sections **1 / 9 / 11** of the analysis, include **all three** bands per horizon, using the same style as the main equity template (three lines, not collapsed):
+
+- 1σ: $X.XX – $X.XX (±Y.Y%)
+- 2σ: $X.XX – $X.XX (±Y.Y%)
+- 3σ: $X.XX – $X.XX (±Y.Y%)
+
+If a level is missing in the source, write `unknown` for that line rather than inventing precision.

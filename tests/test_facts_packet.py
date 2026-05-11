@@ -7,12 +7,16 @@ import pytest
 
 from equity_analyst.config import RunConfig
 from equity_analyst.facts_packet import (
+    _facts_packet_fallback_markdown,
     extract_facts_packet,
     facts_frozen_user_prefix,
     write_facts_packet,
 )
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
+
+_SIGMA = "\u03c3"
+_FACTS_EXTRACT_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "facts_extract_system.md"
 
 
 def test_facts_frozen_user_prefix_format() -> None:
@@ -56,10 +60,23 @@ class _StubGemini:
         )
 
 
+def test_facts_extract_system_prompt_mentions_two_and_three_sigma() -> None:
+    text = _FACTS_EXTRACT_PROMPT_PATH.read_text(encoding="utf-8")
+    assert f"2{_SIGMA}" in text
+    assert f"3{_SIGMA}" in text
+
+
 @pytest.mark.asyncio
 async def test_extract_facts_packet_inserts_title_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_body = (
+        "- IV / implied moves:\n"
+        "- Post-Earnings IV: ~62%\n"
+        f"- Forward 1{_SIGMA} Move (May 15): ±13.46% (±$17.74)\n"
+        f"- Forward 2{_SIGMA} Move (May 15): ±26.92% (±$35.48)\n"
+        f"- Forward 3{_SIGMA} Move (May 15): ±40.38% (±$53.22)\n"
+    )
     stub_reg = ProviderRegistry()
-    stub_reg.register("gemini", lambda **_: _StubGemini(out_text="- Custom fact line\n"))
+    stub_reg.register("gemini", lambda **_: _StubGemini(out_text=stub_body))
 
     monkeypatch.setattr(
         "equity_analyst.facts_packet.ProviderRegistry.default",
@@ -83,4 +100,14 @@ async def test_extract_facts_packet_inserts_title_when_missing(monkeypatch: pyte
     )
     text = await extract_facts_packet(synthesis_text="Some synthesis", symbol="MNDY", config=cfg)
     assert "# Market facts (frozen from iteration 1)" in text
-    assert "Custom fact line" in text
+    assert f"Forward 2{_SIGMA} Move (May 15): ±26.92% (±$35.48)" in text
+    assert f"Forward 3{_SIGMA} Move (May 15): ±40.38% (±$53.22)" in text
+
+
+def test_facts_packet_fallback_markdown_lists_three_sigma_unknown_rows() -> None:
+    md = _facts_packet_fallback_markdown(
+        reason_bullet="- Extraction timed out; treat facts as unknown.",
+    )
+    assert f"Forward 2{_SIGMA} Move: unknown" in md
+    assert f"Forward 3{_SIGMA} Move: unknown" in md
+    assert "Post-Earnings IV: unknown" in md
