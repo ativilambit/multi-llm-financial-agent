@@ -9,7 +9,11 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from equity_analyst.gemini_cache import GeminiCacheIndex, prefix_sha256
+from equity_analyst.gemini_cache import (
+    GeminiCacheIndex,
+    gemini_cache_tools_signature,
+    prefix_sha256,
+)
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -108,19 +112,20 @@ class GeminiProvider(LLMProvider):
                     )
                     use_cache = False
 
-        cfg_parts: dict[str, Any] = {}
-        if enable_web_search:
-            cfg_parts["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        tools_sig = gemini_cache_tools_signature(enable_web_search)
+        gen_cfg: dict[str, Any] = {}
         if max_output_tokens is not None:
-            cfg_parts["max_output_tokens"] = max_output_tokens
+            gen_cfg["max_output_tokens"] = max_output_tokens
 
         contents: str
+        uses_explicit_cache = False
 
         if use_cache and user_turn is not None and self._cache_index is not None:
             assert cacheable_prefix is not None
-            hit = self._cache_index.lookup(cacheable_prefix, self._model)
+            hit = self._cache_index.lookup(cacheable_prefix, self._model, tools_sig)
             if hit:
-                cfg_parts["cached_content"] = hit
+                gen_cfg["cached_content"] = hit
+                uses_explicit_cache = True
                 logger.info(
                     "Gemini cache hit name=%s tokens_saved=%s",
                     hit,
@@ -133,23 +138,32 @@ class GeminiProvider(LLMProvider):
                     prefix_tokens,
                     self._cache_ttl_s,
                 )
+                cache_create: dict[str, Any] = {
+                    "system_instruction": cacheable_prefix,
+                    "display_name": _cache_display_name(cacheable_prefix, self._model),
+                    "ttl": f"{self._cache_ttl_s}s",
+                }
+                if enable_web_search:
+                    cache_create["tools"] = [types.Tool(google_search=types.GoogleSearch())]
                 cache = await self._client.aio.caches.create(
                     model=self._model,
-                    config=types.CreateCachedContentConfig(
-                        system_instruction=cacheable_prefix,
-                        display_name=_cache_display_name(cacheable_prefix, self._model),
-                        ttl=f"{self._cache_ttl_s}s",
-                    ),
+                    config=types.CreateCachedContentConfig(**cache_create),
                 )
                 cname = str(cache.name)
-                self._cache_index.store(cacheable_prefix, self._model, cname, self._cache_ttl_s)
-                cfg_parts["cached_content"] = cname
+                self._cache_index.store(
+                    cacheable_prefix, self._model, cname, self._cache_ttl_s, tools_sig
+                )
+                gen_cfg["cached_content"] = cname
+                uses_explicit_cache = True
                 contents = user_turn
         else:
             contents = prompt
 
+        if not uses_explicit_cache and enable_web_search:
+            gen_cfg["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+
         config: types.GenerateContentConfig | None = (
-            types.GenerateContentConfig(**cfg_parts) if cfg_parts else None
+            types.GenerateContentConfig(**gen_cfg) if gen_cfg else None
         )
         logger.debug(
             "Gemini request shape model=%s web_search=%s cached_content=%s prompt_chars=%s contents_chars=%s",

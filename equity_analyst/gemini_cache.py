@@ -17,6 +17,11 @@ def prefix_sha256(prefix: str) -> str:
     return hashlib.sha256(prefix.encode("utf-8")).hexdigest()
 
 
+def gemini_cache_tools_signature(enable_web_search: bool) -> str:
+    """Stable cache-index segment; explicit Gemini caches bind tools at creation time."""
+    return "google_search" if enable_web_search else "none"
+
+
 @dataclass
 class CacheEntry:
     cache_name: str
@@ -28,7 +33,7 @@ class CacheEntry:
 
 
 class GeminiCacheIndex:
-    """Persist explicit Gemini cache names keyed by (sha256(prefix), model)."""
+    """Persist explicit Gemini cache names keyed by (sha256(prefix), model, tools_signature)."""
 
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or DEFAULT_INDEX_PATH
@@ -52,11 +57,11 @@ class GeminiCacheIndex:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    def lookup(self, prefix: str, model: str) -> str | None:
+    def lookup(self, prefix: str, model: str, tools_signature: str) -> str | None:
         self.cleanup()
         data = self._load()
         entries: dict[str, Any] = data["entries"]
-        key = _entry_key(prefix_sha256(prefix), model)
+        key = _entry_key(prefix_sha256(prefix), model, tools_signature)
         ent_raw = entries.get(key)
         if not isinstance(ent_raw, dict):
             return None
@@ -85,13 +90,13 @@ class GeminiCacheIndex:
             return None
         return entry.cache_name
 
-    def store(self, prefix: str, model: str, cache_name: str, ttl_s: int) -> None:
+    def store(self, prefix: str, model: str, cache_name: str, ttl_s: int, tools_signature: str) -> None:
         self.cleanup()
         data = self._load()
         entries: dict[str, Any] = data["entries"]
         now = datetime.now(tz=UTC)
         ph = prefix_sha256(prefix)
-        key = _entry_key(ph, model)
+        key = _entry_key(ph, model, tools_signature)
         expires = now + timedelta(seconds=ttl_s)
         entries[key] = asdict(
             CacheEntry(
@@ -133,5 +138,5 @@ class GeminiCacheIndex:
             self._write(data)
 
 
-def _entry_key(prefix_hash: str, model: str) -> str:
-    return f"{prefix_hash}:{model}"
+def _entry_key(prefix_hash: str, model: str, tools_signature: str) -> str:
+    return f"{prefix_hash}:{model}:{tools_signature}"

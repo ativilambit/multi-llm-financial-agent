@@ -435,9 +435,11 @@ class _FakeGeminiAioModels:
 class _FakeGeminiAioCaches:
     def __init__(self) -> None:
         self.create_calls = 0
+        self.last_create_config: Any = None
 
     async def create(self, *, model: str, config: Any = None) -> Any:
         self.create_calls += 1
+        self.last_create_config = config
         return SimpleNamespace(name="cachedContents/fake-from-create")
 
 
@@ -508,6 +510,13 @@ async def test_gemini_uses_cache_on_hit(tmp_path: Path) -> None:
     assert fake.aio.models.last_contents == user
     assert fake.aio.models.last_config is not None
     assert fake.aio.models.last_config.cached_content == "cachedContents/fake-from-create"
+    assert getattr(fake.aio.models.last_config, "tools", None) in (None, [])
+    assert getattr(fake.aio.models.last_config, "system_instruction", None) is None
+    assert getattr(fake.aio.models.last_config, "tool_config", None) is None
+    cc = fake.aio.caches.last_create_config
+    assert cc is not None
+    assert cc.system_instruction == static
+    assert getattr(cc, "tools", None) in (None, [])
 
     await p.generate(
         full,
@@ -518,6 +527,45 @@ async def test_gemini_uses_cache_on_hit(tmp_path: Path) -> None:
     assert fake.aio.caches.create_calls == 1
     assert fake.aio.models.last_config is not None
     assert fake.aio.models.last_config.cached_content == "cachedContents/fake-from-create"
+    assert getattr(fake.aio.models.last_config, "tools", None) in (None, [])
+
+
+@pytest.mark.asyncio
+async def test_gemini_cached_path_puts_tools_on_cache_create_not_on_generate(tmp_path: Path) -> None:
+    fake = _FakeGeminiClient()
+    idx = GeminiCacheIndex(path=tmp_path / "idx.json")
+    static = "x" * 5000
+    user = "dynamic-body"
+    full = f"{static}\n\n{user}"
+    p = GeminiProvider(
+        model="gemini-2.5-flash",
+        client=fake,  # type: ignore[arg-type]
+        cache_index=idx,
+        cache_ttl_s=3600,
+    )
+    await p.generate(
+        full,
+        enable_web_search=True,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.aio.caches.create_calls == 1
+    assert fake.aio.models.last_config is not None
+    assert fake.aio.models.last_config.cached_content == "cachedContents/fake-from-create"
+    assert getattr(fake.aio.models.last_config, "tools", None) in (None, [])
+    cc = fake.aio.caches.last_create_config
+    assert cc is not None
+    assert cc.tools is not None
+    assert cc.tools[0].google_search is not None
+
+    await p.generate(
+        full,
+        enable_web_search=True,
+        cacheable_prefix=static,
+        user_message_for_cache=user,
+    )
+    assert fake.aio.caches.create_calls == 1
+    assert getattr(fake.aio.models.last_config, "tools", None) in (None, [])
 
 
 @pytest.mark.asyncio
