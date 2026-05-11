@@ -42,7 +42,11 @@ def _failure_note_line(failed: dict[str, ProviderResponse]) -> str:
     for name, resp in failed.items():
         reason = resp.model if resp.model.startswith("error:") else "empty_response"
         parts.append(f"{name} ({reason})")
-    return "Note: provider(s) " + ", ".join(parts) + " failed and are excluded from synthesis."
+    return (
+        "Note: provider(s) "
+        + ", ".join(parts)
+        + " failed and are excluded from synthesis."
+    )
 
 
 def _trim_healthy_bodies_to_token_budget(
@@ -70,7 +74,9 @@ def _trim_healthy_bodies_to_token_budget(
     trimmed = dict(bodies)
     after = before
     for _ in range(48):
-        trimmed = {k: _shrink_text(bodies[k], max(80, int(len(bodies[k]) * scale))) for k in bodies}
+        trimmed = {
+            k: _shrink_text(bodies[k], max(80, int(len(bodies[k]) * scale))) for k in bodies
+        }
         after = _estimate_tokens(assemble(trimmed))
         if after <= max_input_tokens:
             logger.info("synthesizer: trimmed inputs from %s to %s tokens", before, after)
@@ -176,6 +182,8 @@ class Synthesizer:
             oversized_summarize_max_output_tokens=oversized_summarize_max_output_tokens,
             oversized_summarize_max_input_tokens=oversized_summarize_max_input_tokens,
             symbol=symbol,
+            retry_max_attempts=retry_max_attempts,
+            retry_base_delay_s=retry_base_delay_s,
         )
         if summarized_any:
             total_after = sum(_estimate_tokens(r.text) for r in healthy.values())

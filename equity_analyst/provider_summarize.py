@@ -8,6 +8,7 @@ from google import genai
 from google.genai import types
 
 from equity_analyst.prompt_parts import _load_prompt_file
+from equity_analyst.retry import async_retry_call
 from equity_analyst.types import ProviderResponse
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ async def _generate_summary(
     model: str,
     max_output_tokens: int,
     client: genai.Client | None = None,
+    retry_max_attempts: int = 3,
+    retry_base_delay_s: float = 2.0,
 ) -> str:
     owned = client is None
     c = client or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -53,12 +56,21 @@ async def _generate_summary(
             system_instruction=summarize_system_prompt(),
             max_output_tokens=max_output_tokens,
         )
-        msg = await c.aio.models.generate_content(
-            model=model,
-            contents=user_message,
-            config=config,
+
+        async def _call() -> str:
+            msg = await c.aio.models.generate_content(
+                model=model,
+                contents=user_message,
+                config=config,
+            )
+            return (msg.text or "").strip()
+
+        return await async_retry_call(
+            _call,
+            provider="gemini_summarizer",
+            max_attempts=retry_max_attempts,
+            base_delay_s=retry_base_delay_s,
         )
-        return (msg.text or "").strip()
     finally:
         if owned:
             await c.aio.aclose()
@@ -74,6 +86,8 @@ async def summarize_provider_body_if_needed(
     max_output_tokens: int,
     max_input_tokens: int,
     client: genai.Client | None = None,
+    retry_max_attempts: int = 3,
+    retry_base_delay_s: float = 2.0,
 ) -> str:
     est = _estimate_tokens(text)
     if est < threshold:
@@ -95,6 +109,8 @@ async def summarize_provider_body_if_needed(
             model=model,
             max_output_tokens=max_output_tokens,
             client=client,
+            retry_max_attempts=retry_max_attempts,
+            retry_base_delay_s=retry_base_delay_s,
         )
     except Exception as exc:
         logger.warning(
@@ -124,6 +140,8 @@ async def maybe_summarize_healthy_for_synthesis(
     oversized_summarize_max_input_tokens: int,
     symbol: str | None,
     client: genai.Client | None = None,
+    retry_max_attempts: int = 3,
+    retry_base_delay_s: float = 2.0,
 ) -> tuple[dict[str, ProviderResponse], bool]:
     if not summarize_oversized_providers:
         return healthy, False
@@ -168,9 +186,7 @@ async def maybe_summarize_healthy_for_synthesis(
             before = _estimate_tokens(resp.text)
             need_aggregate = target_total_tokens is not None and total > target_total_tokens
             effective_threshold = (
-                0
-                if (need_aggregate and before < summarize_threshold_input_tokens)
-                else summarize_threshold_input_tokens
+                0 if (need_aggregate and before < summarize_threshold_input_tokens) else summarize_threshold_input_tokens
             )
             before_text = resp.text
             new_text = await summarize_provider_body_if_needed(
@@ -182,6 +198,8 @@ async def maybe_summarize_healthy_for_synthesis(
                 max_output_tokens=oversized_summarize_max_output_tokens,
                 max_input_tokens=oversized_summarize_max_input_tokens,
                 client=shared_client,
+                retry_max_attempts=retry_max_attempts,
+                retry_base_delay_s=retry_base_delay_s,
             )
             if new_text == before_text:
                 break

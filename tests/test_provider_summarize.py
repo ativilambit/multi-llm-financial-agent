@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from equity_analyst.provider_summarize import (
     maybe_summarize_healthy_for_synthesis,
+    summarize_provider_body_if_needed,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -19,6 +21,34 @@ class _DummyGeminiClient:
     """Avoid constructing google.genai.Client in unit tests (API key not required)."""
 
     aio = _DummyAio()
+
+
+class _SummarizeGenContentModels:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_content(self, **_kwargs: object) -> object:
+        from google.genai import errors as ge
+
+        self.calls += 1
+        if self.calls <= 2:
+            req = httpx.Request("POST", "https://generativelanguage.googleapis.com/x")
+            resp = httpx.Response(429, request=req)
+            raise ge.ClientError(429, {"error": {}}, resp)
+        return type("_M", (), {"text": "third_try_ok"})()
+
+
+class _SummarizeGenContentAio:
+    def __init__(self) -> None:
+        self.models = _SummarizeGenContentModels()
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _SummarizeGeminiClient:
+    def __init__(self) -> None:
+        self.aio = _SummarizeGenContentAio()
 
 
 def _resp(*, name: str, text: str) -> ProviderResponse:
@@ -109,6 +139,75 @@ async def test_summarize_disabled_skips_api(monkeypatch: pytest.MonkeyPatch) -> 
     assert did is False
     mock.assert_not_called()
     assert out is healthy
+
+
+@pytest.mark.asyncio
+async def test_summarize_retries_genai_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("equity_analyst.retry.asyncio.sleep", fake_sleep)
+
+    gc = _SummarizeGeminiClient()
+    big = "word " * 9000
+    out = await summarize_provider_body_if_needed(
+        text=big,
+        provider_name="openai",
+        symbol="MNDY",
+        threshold=0,
+        model="gemini-test",
+        max_output_tokens=1024,
+        max_input_tokens=100_000,
+        client=gc,
+        retry_max_attempts=4,
+        retry_base_delay_s=0.01,
+    )
+    assert out == "third_try_ok"
+    assert gc.aio.models.calls == 3
+
+
+class _Always429Models:
+    async def generate_content(self, **_kwargs: object) -> None:
+        from google.genai import errors as ge
+
+        req = httpx.Request("POST", "https://generativelanguage.googleapis.com/x")
+        raise ge.ClientError(429, {"error": {}}, httpx.Response(429, request=req))
+
+
+class _Always429Aio:
+    def __init__(self) -> None:
+        self.models = _Always429Models()
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _Always429Client:
+    def __init__(self) -> None:
+        self.aio = _Always429Aio()
+
+
+@pytest.mark.asyncio
+async def test_summarize_all_retries_fail_falls_back_to_raw(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("equity_analyst.retry.asyncio.sleep", fake_sleep)
+
+    big = "KEEP_ME " * 9000
+    out = await summarize_provider_body_if_needed(
+        text=big,
+        provider_name="openai",
+        symbol="MNDY",
+        threshold=0,
+        model="gemini-test",
+        max_output_tokens=1024,
+        max_input_tokens=100_000,
+        client=_Always429Client(),
+        retry_max_attempts=2,
+        retry_base_delay_s=0.01,
+    )
+    assert out == big
 
 
 @pytest.mark.asyncio

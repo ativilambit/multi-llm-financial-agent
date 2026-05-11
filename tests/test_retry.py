@@ -11,6 +11,43 @@ from equity_analyst.retry import (
     retry_after_seconds_from_exception,
 )
 
+try:
+    from google.genai import errors as genai_errors
+except ImportError:  # pragma: no cover
+    genai_errors = None  # type: ignore[assignment]
+
+
+@pytest.mark.skipif(genai_errors is None, reason="google.genai not installed")
+def test_is_retryable_genai_client_error_codes() -> None:
+    req = httpx.Request("POST", "https://generativelanguage.googleapis.com/v1/models")
+    for code in (429, 502, 503, 504):
+        resp = httpx.Response(code, request=req)
+        exc = genai_errors.ClientError(code, {"error": {}}, resp)
+        assert is_retryable_exception(exc) is True
+    resp400 = httpx.Response(400, request=req)
+    exc400 = genai_errors.ClientError(400, {"error": {}}, resp400)
+    assert is_retryable_exception(exc400) is False
+
+
+@pytest.mark.skipif(genai_errors is None, reason="google.genai not installed")
+def test_retry_after_from_genai_details_retry_delay_string() -> None:
+    req = httpx.Request("POST", "https://example.com")
+    exc = genai_errors.ClientError(
+        429,
+        {
+            "error": {
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "4s",
+                    }
+                ]
+            }
+        },
+        httpx.Response(429, request=req),
+    )
+    assert retry_after_seconds_from_exception(exc) == 4.0
+
 
 def test_is_retryable_rate_limit() -> None:
     import anthropic
