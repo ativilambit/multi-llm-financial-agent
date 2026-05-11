@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from equity_analyst.config import ProviderConfig, RunConfig
+from equity_analyst.db_ops import best_effort_upsert_run_and_responses
 from equity_analyst.drive_uploader import (
     log_drive_upload_plan_from_config,
     maybe_upload_run_to_drive,
@@ -79,6 +80,7 @@ class Orchestrator:
     async def run_async(self, *, dry_run: bool, enable_web_search: bool = True) -> tuple[str, RunArtifacts]:
         rendered = render_prompt(self._config, self._prompt_path)
         out_dir = self._make_output_dir()
+        started_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
         attach_run_file_logging(out_dir / "agent.log")
         self._config = log_drive_upload_plan_from_config(self._config)
 
@@ -122,6 +124,8 @@ class Orchestrator:
                 json.dumps(
                     {
                         "dry_run": True,
+                        "started_at_utc": started_at_utc.isoformat(),
+                        "finished_at_utc": datetime.now(tz=UTC).replace(microsecond=0).isoformat(),
                         "timestamp_utc": datetime.now(tz=UTC).isoformat(),
                         "config": self._config.model_dump(),
                         "template_path": rendered.template_path,
@@ -148,6 +152,22 @@ class Orchestrator:
             )
             if self._config.drive_upload_enabled:
                 await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
+            finished_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
+            try:
+                run_json_data = json.loads(run_json.read_text(encoding="utf-8"))
+            except Exception:
+                run_json_data = {}
+            with contextlib.suppress(Exception):
+                await best_effort_upsert_run_and_responses(
+                    cfg=self._config,
+                    run_dir=out_dir,
+                    run_json_data=run_json_data,
+                    started_at_utc=started_at_utc,
+                    finished_at_utc=finished_at_utc,
+                    provider_responses=[],
+                    synthesis_path=synthesis_file,
+                    database_url=self._config.database_url,
+                )
             logger.info("Run end (dry-run) output_dir=%s", str(out_dir.resolve()))
             return ("\n".join(preview_lines), artifacts)
 
@@ -363,6 +383,8 @@ class Orchestrator:
 
         run_meta: dict[str, Any] = {
             "dry_run": False,
+            "started_at_utc": started_at_utc.isoformat(),
+            "finished_at_utc": datetime.now(tz=UTC).replace(microsecond=0).isoformat(),
             "timestamp_utc": datetime.now(tz=UTC).isoformat(),
             "config": self._config.model_dump(),
             "template_path": rendered.template_path,
@@ -388,6 +410,61 @@ class Orchestrator:
 
         if self._config.drive_upload_enabled:
             await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
+
+        finished_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
+        try:
+            run_json_data = json.loads(run_json.read_text(encoding="utf-8"))
+        except Exception:
+            run_json_data = {}
+        with contextlib.suppress(Exception):
+            provider_rows: list[tuple[int | None, str, ProviderResponse, str, bool]] = []
+            for pc in self._config.providers:
+                p_resp = responses.get(pc.name)
+                if p_resp is None:
+                    continue
+                p = provider_files[pc.name]
+                try:
+                    response_rel = str(p.relative_to(out_dir.parent))
+                except Exception:
+                    response_rel = str(p)
+                provider_rows.append(
+                    (
+                        None,
+                        pc.name,
+                        p_resp,
+                        response_rel,
+                        effective_web_search(run_default=enable_web_search, pc=pc),
+                    )
+                )
+            # synthesizer row (points to synthesis.md)
+            try:
+                syn_rel = str(synthesis_file.relative_to(out_dir.parent))
+            except Exception:
+                syn_rel = str(synthesis_file)
+            provider_rows.append(
+                (
+                    None,
+                    synthesis.response.provider_name,
+                    synthesis.response,
+                    syn_rel,
+                    effective_synthesizer_web_search(run_default=enable_web_search, syn=self._config.synthesizer),
+                )
+            )
+            await best_effort_upsert_run_and_responses(
+                cfg=self._config,
+                run_dir=out_dir,
+                run_json_data=run_json_data,
+                started_at_utc=started_at_utc,
+                finished_at_utc=finished_at_utc,
+                provider_responses=provider_rows,
+                synthesis_path=synthesis_file,
+                database_url=self._config.database_url,
+            )
+
+        if self._config.prediction_extract_enabled:
+            from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
+
+            await run_prediction_extract_for_run_dir(run_dir=out_dir, cfg=self._config)
 
         logger.info(
             "Run end (live) output_dir=%s synthesis_model=%s synthesis_latency_s=%s timing=%s",

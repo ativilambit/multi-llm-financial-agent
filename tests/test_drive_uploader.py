@@ -199,6 +199,39 @@ async def test_maybe_upload_missing_credentials_no_crash(tmp_path: Path) -> None
     assert url is None
 
 
+def test_upload_directory_skips_checkpoint_sqlite_basenames(
+    tmp_path: Path, sa_json: Path, monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    out = tmp_path / "RUN1"
+    out.mkdir()
+    (out / "visible.md").write_text("a", encoding="utf-8")
+    (out / "checkpoint.sqlite").write_text("not-uploaded", encoding="utf-8")
+
+    executes: list[Any] = [
+        {"files": []},
+        {"id": "PROD"},
+        {"files": []},
+        {"id": "RUN_FOLDER"},
+        {"id": "only_visible"},
+    ]
+
+    files_api = MagicMock()
+    _attach_drive_api_mocks(files_api, executes)
+    svc = MagicMock()
+    svc.files.return_value = files_api
+
+    uploader = DriveUploader(sa_json, "ROOT")
+    monkeypatch.setattr(uploader, "_ensure_service", lambda: svc)
+
+    with caplog.at_level(logging.INFO, logger="equity_analyst.drive_uploader"):
+        uploader.upload_directory(out, run_id="RUN1")
+
+    create_with_media = [c for c in files_api.create.call_args_list if c.kwargs.get("media_body")]
+    assert len(create_with_media) == 1
+    assert create_with_media[0].kwargs["body"]["name"] == "visible.md"
+    assert any("Drive upload: skipping checkpoint file" in r.message for r in caplog.records)
+
+
 def test_skips_dotfiles(tmp_path: Path, sa_json: Path, monkeypatch: Any) -> None:
     out = tmp_path / "RUN1"
     out.mkdir()

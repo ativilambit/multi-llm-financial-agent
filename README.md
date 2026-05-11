@@ -38,9 +38,81 @@ Copy `.env.example` to `.env` and set keys for the providers you enable in confi
 - `GEMINI_API_KEY`
 - `XAI_API_KEY` (Grok)
 
+## Database (Postgres)
+
+The Postgres DB layer is **additive**: it stores structured metadata for querying/calibration, but it **does not replace** file artifacts. The human-readable source of truth remains:
+
+- `outputs/<run-id>/run.json`
+- `outputs/<run-id>/synthesis.md` (and optional PDFs)
+- `outputs/<run-id>/outcome.json`
+- `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down or `db_enabled` is false; see prediction extraction below)
+- `outputs/outcomes_registry.jsonl`
+
+### Connection
+
+Set `DATABASE_URL` in `.env` at the repo root. It is loaded automatically by the `equity_analyst` CLI, Alembic (`migrations/env.py`), and `scripts/setup_db.sh`, so you do not need to `source .env` manually for those entry points.
+
+`python-dotenv` is used with `override=False` (shell exports still win if you set them explicitly).
+
+```bash
+DATABASE_URL=postgresql+psycopg://college_brain:college_brain@localhost:5432/multi_llm_equity_runs
+```
+
+### Bootstrap
+
+Create the DB (if missing) and apply migrations:
+
+```bash
+scripts/setup_db.sh
+```
+
+This script requires `psql` on your `PATH` (Postgres client).
+
+For schema bumps:
+
+```bash
+alembic upgrade head
+```
+
+### Sample queries
+
+Hit rate by symbol (direction labels recorded):
+
+```sql
+SELECT
+  r.symbol,
+  COUNT(*) AS outcomes
+FROM runs r
+JOIN outcomes o ON o.run_id = r.run_id
+GROUP BY 1
+ORDER BY outcomes DESC;
+```
+
+Recent runs missing outcomes:
+
+```sql
+SELECT r.run_id, r.symbol, r.started_at_utc, r.earnings_date
+FROM runs r
+LEFT JOIN outcomes o ON o.run_id = r.run_id
+WHERE o.run_id IS NULL
+ORDER BY r.started_at_utc DESC
+LIMIT 50;
+```
+
+Calibration buckets (after running **prediction extraction** so `predictions` rows exist):
+
+```sql
+SELECT
+  width_bucket(p.predicted_probability_up, 0.0, 1.0, 10) AS bucket,
+  COUNT(*) AS n
+FROM predictions p
+GROUP BY 1
+ORDER BY 1;
+```
+
 ## Google Drive auto-upload
 
-After each standard or iterative run finishes writing `outputs/<run-id>/` (including `run.json`), you can optionally mirror that folder to Google Drive using a **Google Cloud service account** JSON key. The CLI resolves your configured `drive_root_folder_id` / `DRIVE_ROOT_FOLDER_ID`, then uploads under a **child folder** named exactly **`prod`** (production runs, the default) or **`test`** (test runs), creating that child folder on first upload if it does not exist. Under that environment folder it creates a subfolder named after the run id, uploads every file (preserving paths such as `iterations/`), skips dotfiles, and appends `drive_folder_url` plus `run_environment`, `drive_upload_parent_folder_id`, and `drive_upload_parent_folder_name` to `run.json` on success. Iterative runs also append the link to the footer of `synthesis.md`. Upload failures are logged and never fail the analysis run.
+After each standard or iterative run finishes writing `outputs/<run-id>/` (including `run.json`), you can optionally mirror that folder to Google Drive using a **Google Cloud service account** JSON key. The CLI resolves your configured `drive_root_folder_id` / `DRIVE_ROOT_FOLDER_ID`, then uploads under a **child folder** named exactly **`prod`** (production runs, the default) or **`test`** (test runs), creating that child folder on first upload if it does not exist. Under that environment folder it creates a subfolder named after the run id, uploads every file (preserving paths such as `iterations/`), skips dotfiles, skips iterative checkpoint basenames (`checkpoint.sqlite`, `checkpoint.sqlite-wal`, `checkpoint.sqlite-shm`, `checkpoint.sqlite-journal`), and appends `drive_folder_url` plus `run_environment`, `drive_upload_parent_folder_id`, and `drive_upload_parent_folder_name` to `run.json` on success. Iterative runs also append the link to the footer of `synthesis.md`. Upload failures are logged and never fail the analysis run.
 
 At startup the CLI **preflights** the configured root folder via the Drive API: the folder must live on a **Google Shared Drive** (Workspace “Team Drive”). If it does not, uploads are disabled for that run and a clear warning is printed so you do not spend a long model run only to hit `storageQuotaExceeded` on upload.
 
@@ -326,7 +398,7 @@ Iterative runs use a LangGraph `StateGraph` with nodes `fan_out` → `synthesize
 2. **synthesize** – the synthesizer must emit section confidences and a line `OVERALL_CONFIDENCE: <0.0-1.0>` for routing.
 3. **verify** – default **Gemini** verifier returns JSON `verified` / `contradicted` / `unverifiable` using web search when enabled (same registry keys as fan-out: `verifier_provider` defaults to **`gemini`**; override `verifier_model` in YAML or `--verifier-model` on the CLI). The verify step does **not** use Gemini explicit context caching (`cacheable_prefix=None`) so it stays separate from equity fan-out persona caching. **Anthropic** remains supported: set `verifier_provider: anthropic` (and optional `verifier_model`) or pass `--verifier-provider anthropic`. Anthropic verification still uses `prompt_cache_enabled=False` and `force_tool_use=False` so tool-choice forcing from fan-out does not apply to the short verifier prompt.
 4. **route** – finalize if `len(rounds) >= max_iterations`, or if overall confidence meets `--confidence-threshold` and there are no contradictions; otherwise append follow-ups and loop.
-5. **finalize** – writes `synthesis.md`, per-round files under `iterations/`, and `checkpoint.sqlite`.
+5. **finalize** – writes `synthesis.md`, per-round files under `iterations/`, and `checkpoint.sqlite` (removed after a successful finalize unless you pass **`--keep-checkpoint`** or set `DELETE_CHECKPOINT_AFTER_SUCCESS=false`).
 
 ```bash
 python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --iterative \
@@ -348,7 +420,7 @@ python -m equity_analyst run --config configs/mndy_2026_05_08.yaml --iterative -
 
 ## Resume after a crash
 
-Iterative runs store checkpoints at `outputs/<run_id>/checkpoint.sqlite` and metadata in `run.json`. The CLI uses LangGraph's async SQLite checkpointer (`AsyncSqliteSaver` / `aiosqlite`): the DB connection is opened at the start of the run and closed when the run finishes (`async with`), which matches `app.ainvoke` and avoids leaking handles. Resume with the output folder name (e.g. `MNDY_20260509T120000Z`):
+Iterative runs store checkpoints at `outputs/<run_id>/checkpoint.sqlite` and metadata in `run.json`. On **success**, the default is to delete `checkpoint.sqlite` plus any `-wal` / `-shm` / `-journal` siblings after `finalize` (use **`--keep-checkpoint`** to retain them for debugging). Failed or aborted runs leave the checkpoint in place so **`--resume`** can continue. The CLI uses LangGraph's async SQLite checkpointer (`AsyncSqliteSaver` / `aiosqlite`): the DB connection is opened at the start of the run and closed when the run finishes (`async with`), which matches `app.ainvoke` and avoids leaking handles. Resume with the output folder name (e.g. `MNDY_20260509T120000Z`):
 
 ```bash
 python -m equity_analyst run --iterative --resume MNDY_20260509T120000Z
@@ -427,3 +499,83 @@ Files written:
 - `outputs/outcomes_registry.jsonl` (one JSON line per recorded outcome, append-only)
 
 `outputs/outcomes_registry.jsonl` is ignored by git by default (see `.gitignore`). If you want a shared registry (team workflow), you may choose to commit it.
+
+### Auto-fetching outcomes from Yahoo Finance
+
+Use **`--auto-fetch`** to pull earnings-day OHLC, next-trading-day OHLC, and the close ~5 trading days later from Yahoo Finance via **[yfinance](https://github.com/ranaroussi/yfinance)** instead of typing numbers in by hand:
+
+```bash
+python -m equity_analyst outcome-record \
+  --run-dir /abs/path/to/outputs/CRCL_20260511T023700Z \
+  --auto-fetch
+```
+
+How it works:
+
+- Reads **`symbol`** and **`earnings_date`** from the run's `run.json` (`config` snapshot).
+- Parses `earnings_date` leniently with **`python-dateutil`** (so values like `"Mon May 11 2026"` work).
+- Calls `yfinance.Ticker(symbol).history(...)` for a 15-calendar-day window starting at the parsed earnings date, then picks bars in trading-day order: bar 0 → earnings day OHLC, bar 1 → next trading day OHLC, bar 5 → `one_week_later_close` (falls back to the last available bar with a WARNING if fewer than 6 trading days are present).
+- If a `baseline_close` is available (from `RunConfig.current_price` in `run.json`, or a "last verified close" / "last regular-session close" / "closing price" phrase in the first 8 KB of `synthesis.md`), the tool sets `direction_vs_prior_close` to **`up`** / **`down`** / **`flat`** (flat = within ±0.1%).
+- Per-field results are logged at **INFO**; missing fields log a **WARNING** but never crash the command. The same outcome flow writes `outcome.json`, appends to `outputs/outcomes_registry.jsonl`, and best-effort UPSERTs the `outcomes` row.
+
+**Override individual fields:** explicit CLI flags (e.g. `--earnings-day-close 12.34`, `--direction-vs-prior-close down`) always win over fetched values. Combine `--auto-fetch` with `--interactive` to fill in only the fields yfinance could not return.
+
+**yfinance reliability caveat:** yfinance scrapes the public Yahoo Finance endpoint, which is **unofficial and rate-limited**, and can return empty frames for **ADRs, recently-IPO'd tickers, or during Yahoo backend incidents**. The CLI treats yfinance as best-effort: any failed call (empty frame, timeout, parsing error) logs a WARNING, sets affected fields to `None`, and proceeds with whatever was returned — you can rerun `outcome-record --auto-fetch` later or fall back to the manual flags.
+
+### Batch recording (`outcome-record-batch`)
+
+After a multi-symbol earnings batch, you can record outcomes for **many runs in one command** (same per-run logic as `outcome-record`, including optional `--auto-fetch` and best-effort Postgres upsert).
+
+**Shape A — batch directory:** reads `output_dir=...` paths from `batch_summary.txt` under the batch folder (same format the `run_all_symbols.sh` runner appends on `[OK]` lines).
+
+```bash
+python -m equity_analyst outcome-record-batch \
+  --batch-dir outputs/batch_20260511T025203Z \
+  --auto-fetch
+```
+
+**Shape B — symbol list:** resolves `outputs/<SYMBOL>_<TS>/` directories whose run timestamp is **on or after** `--since` (default: seven calendar days ago, UTC midnight). Use `--symbols SYM1,SYM2,...` or `--symbols-file path.txt` (one ticker per line or comma-separated; `#` starts a comment line). With `--newest-only` (the default), only the newest matching run per symbol is recorded; symbols with no matching directory are reported as `[FAIL]` and increment the **Skipped** counter in the printed summary (per-run exceptions increment **Failed** when that line is shown).
+
+```bash
+python -m equity_analyst outcome-record-batch \
+  --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY \
+  --since 2026-05-12 \
+  --auto-fetch
+```
+
+Common flags: `--dry-run` (no `outcome.json` / registry / DB writes), `--rate-limit-sleep-s 0.5` (delay between symbols after the first, to reduce yfinance throttling), `--continue-on-error` / `--no-continue-on-error`, and `--outputs-dir` for Shape B when runs live outside the default `outputs/` folder. Exit code **1** if any `[FAIL]` line is printed (missing run directory, missing `run.json`, I/O error, and so on); `[WARN]` lines (partial or empty auto-fetch) still exit **0**.
+
+## Backfilling existing runs into Postgres
+
+The `db-backfill` CLI walks `outputs/<run_id>/` directories and inserts the corresponding rows into the `runs` and `provider_responses` tables. It is **idempotent**: `runs` is upserted on its primary key, and `provider_responses` rows for the run are deleted and re-inserted on each invocation, so rerunning the command converges to the same final state.
+
+Preview what would be written (no DB writes; safe to run anywhere):
+
+```bash
+python -m equity_analyst db-backfill --dry-run
+```
+
+Backfill everything currently under `outputs/`:
+
+```bash
+python -m equity_analyst db-backfill
+```
+
+Useful filters:
+
+- `--outputs-dir PATH` — root directory to scan (default `outputs/`).
+- `--symbol SYM` — only run dirs whose name starts with `<SYM>_` (case-insensitive).
+- `--since YYYY-MM-DD` — only run dirs whose timestamp segment is ≥ this date.
+- `--limit N` — backfill at most N runs (oldest first; combine with `--newest-first` to flip).
+
+Output ends with a small summary table:
+
+```
+Backfill summary
+  Scanned:   55
+  Inserted:  53
+  Skipped:   2  (already up to date)
+  Errors:    0
+```
+
+`batch_<ts>/` directories (no `run.json`) are skipped silently. Legacy `run.json` files missing newer fields (`run_environment`, `iterations_completed`, `started_at_utc`, ...) are backfilled with sensible defaults. **Unlike the additive best-effort DB writes in the main run path, this command requires a reachable `DATABASE_URL` and exits with a non-zero status if the DB is unavailable.**

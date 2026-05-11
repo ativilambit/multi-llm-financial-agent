@@ -140,6 +140,32 @@ class RunConfig(BaseModel):
         description="Optional API model id for the verifier; default is each provider's built-in default.",
     )
 
+    prediction_extract_enabled: bool = Field(
+        default=False,
+        description="When True, after a run completes, extract structured prediction horizons from synthesis "
+        "into Postgres (extra API cost). CLI ``--extract-predictions`` overrides for a single invocation.",
+    )
+    prediction_extract_provider: str = Field(
+        default="gemini",
+        description="Registry key for the synthesis prediction extractor LLM (default: gemini).",
+    )
+    prediction_extract_model: str = Field(
+        default="gemini-3-flash-preview",
+        description="Model id for prediction extraction (default fast Flash).",
+    )
+    prediction_extract_max_output_tokens: int = Field(
+        default=2048,
+        ge=256,
+        le=128_000,
+        description="Completion budget for the prediction extractor JSON response.",
+    )
+    prediction_extract_timeout_s: int = Field(
+        default=120,
+        ge=1,
+        le=900,
+        description="Wall-clock timeout (seconds) for the prediction extractor LLM call.",
+    )
+
     max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
     verifier_max_output_tokens: int = Field(
@@ -203,6 +229,11 @@ class RunConfig(BaseModel):
         default=True,
         description="When True, emit a .pdf next to each primary analysis .md (requires WeasyPrint).",
     )
+    delete_checkpoint_after_success: bool = Field(
+        default=True,
+        description="When True, remove iterative checkpoint.sqlite (+ WAL/SHM/journal) from the run directory "
+        "after a successful finalize. Set DELETE_CHECKPOINT_AFTER_SUCCESS=false or use --keep-checkpoint to retain.",
+    )
 
     drive_upload_enabled: bool = Field(
         default=False,
@@ -234,6 +265,15 @@ class RunConfig(BaseModel):
         description="Path to store/load OAuth user refresh token JSON; default under ~/.config/multi-llm-equity-analyst/.",
     )
 
+    db_enabled: bool = Field(
+        default=True,
+        description="When True, write best-effort structured metadata to Postgres (additive; files remain source of truth).",
+    )
+    database_url: str | None = Field(
+        default=None,
+        description="Optional DB connection override; when omitted, uses env DATABASE_URL (loaded via python-dotenv).",
+    )
+
     @field_validator("drive_auth_mode", mode="before")
     @classmethod
     def _normalize_drive_auth_mode(cls, v: Any) -> str:
@@ -251,6 +291,16 @@ class RunConfig(BaseModel):
         if v not in KNOWN_PROVIDER_NAMES:
             raise ValueError(
                 f"Unknown verifier_provider {v!r}. Expected one of: {', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
+
+    @field_validator("prediction_extract_provider")
+    @classmethod
+    def _known_prediction_extract_provider(cls, v: str) -> str:
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown prediction_extract_provider {v!r}. Expected one of: "
+                f"{', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
             )
         return v
 
@@ -341,6 +391,27 @@ class RunConfig(BaseModel):
             return self
         enabled = env_flag.strip().lower() in ("1", "true", "yes", "on")
         return self.model_copy(update={"pdf_output_enabled": enabled})
+
+    @model_validator(mode="after")
+    def _db_env_fallback(self) -> Self:
+        updates: dict[str, Any] = {}
+        env_flag = os.environ.get("DB_ENABLED")
+        if env_flag is not None and str(env_flag).strip():
+            updates["db_enabled"] = env_flag.strip().lower() in ("1", "true", "yes", "on")
+        if self.database_url is None:
+            raw = os.environ.get("DATABASE_URL")
+            if raw is not None and str(raw).strip():
+                updates["database_url"] = str(raw).strip()
+        return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _delete_checkpoint_env_fallback(self) -> Self:
+        raw = os.environ.get("DELETE_CHECKPOINT_AFTER_SUCCESS")
+        if raw is None or not str(raw).strip():
+            return self
+        s = str(raw).strip().lower()
+        delete_after = s in ("1", "true", "yes", "on")
+        return self.model_copy(update={"delete_checkpoint_after_success": delete_after})
 
     def provider_names(self) -> list[str]:
         return [p.name for p in self.providers]

@@ -500,6 +500,14 @@ def _is_retryable_error(exc: BaseException) -> bool:
 _FOLDER_MIMETYPE = "application/vnd.google-apps.folder"
 _SHARED_DRIVE_DOC = "https://developers.google.com/workspace/drive/api/guides/about-shareddrives"
 
+_SKIP_FILENAME_PATTERNS: tuple[str, ...] = (
+    "checkpoint.sqlite",
+    "checkpoint.sqlite-wal",
+    "checkpoint.sqlite-shm",
+    "checkpoint.sqlite-journal",
+)
+_SKIP_FILENAME_SET: frozenset[str] = frozenset(_SKIP_FILENAME_PATTERNS)
+
 # Dedupe personal-drive preflight warnings when both startup logging and upload probe run.
 _PERSONAL_DRIVE_WARNED_KEYS: set[tuple[str, str]] = set()
 
@@ -897,6 +905,13 @@ class DriveUploader:
 
                 for fname in filenames:
                     if fname.startswith("."):
+                        continue
+                    if fname in _SKIP_FILENAME_SET:
+                        fp_skip = Path(root) / fname
+                        logger.info(
+                            "Drive upload: skipping checkpoint file %s",
+                            str(fp_skip.resolve()),
+                        )
                         continue
                     fp = Path(root) / fname
                     if not fp.is_file():

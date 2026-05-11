@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-from datetime import UTC, datetime
+import logging
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class RunOutcome(BaseModel):
@@ -102,6 +109,7 @@ def record_outcome(
     direction_vs_prior_close: Literal["up", "down", "flat"] | None = None,
     notes: str | None = None,
     source: Literal["manual", "yahoo_csv", "alpaca", "polygon"] = "manual",
+    persist: bool = True,
 ) -> RunOutcome:
     run_dir = run_dir.expanduser().resolve()
     if not run_dir.is_dir():
@@ -146,17 +154,501 @@ def record_outcome(
         baseline_close_hint=_parse_baseline_close_hint(run_dir),
     )
 
-    outcome_path = run_dir / "outcome.json"
-    outcome_path.write_text(
-        json.dumps(outcome.model_dump(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if persist:
+        outcome_path = run_dir / "outcome.json"
+        outcome_path.write_text(
+            json.dumps(outcome.model_dump(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
-    outputs_dir = repo_root / "outputs"
-    outputs_dir.mkdir(parents=True, exist_ok=True)
-    registry_path = outputs_dir / "outcomes_registry.jsonl"
-    with registry_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(outcome.model_dump(), sort_keys=True) + "\n")
+        outputs_dir = repo_root / "outputs"
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        registry_path = outputs_dir / "outcomes_registry.jsonl"
+        with registry_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(outcome.model_dump(), sort_keys=True) + "\n")
 
     return outcome
+
+
+@dataclass(frozen=True)
+class RecordOutcomeForRunDirResult:
+    """Result of :func:`record_outcome_for_run_dir` for CLI / batch reporting."""
+
+    outcome: RunOutcome
+    auto_fetch_used: bool
+    yfinance_empty: bool
+    auto_fetch_partial: bool
+
+
+def _outcome_auto_fetch_field_coverage(outcome: RunOutcome) -> bool:
+    """True when all auto-fetch OHLC window fields are non-null on the outcome."""
+    vals = [
+        outcome.earnings_day_open,
+        outcome.earnings_day_high,
+        outcome.earnings_day_low,
+        outcome.earnings_day_close,
+        outcome.next_trading_day_open,
+        outcome.next_trading_day_close,
+        outcome.one_week_later_close,
+    ]
+    return all(v is not None for v in vals)
+
+
+def merge_auto_fetch_into_cli_fields(
+    run_dir: Path,
+    *,
+    earnings_day_open: float | None = None,
+    earnings_day_high: float | None = None,
+    earnings_day_low: float | None = None,
+    earnings_day_close: float | None = None,
+    next_trading_day_open: float | None = None,
+    next_trading_day_close: float | None = None,
+    one_week_later_close: float | None = None,
+    direction_vs_prior_close: Literal["up", "down", "flat"] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run yfinance merge for ``run_dir``; return ``(merged_fields, raw_fetched)``.
+
+    Explicit arguments always win over fetched values. Used by the interactive
+    ``outcome-record`` path before stdin prompts.
+    """
+    resolved_dir = run_dir.expanduser().resolve()
+    symbol, earnings_date = read_run_metadata(resolved_dir)
+    baseline_close = resolve_baseline_close_for_auto_fetch(resolved_dir)
+    logger.info(
+        "auto_fetch: starting symbol=%s earnings_date=%s baseline_close=%s",
+        symbol,
+        earnings_date,
+        baseline_close,
+    )
+    fetched = auto_fetch_outcome(
+        symbol=symbol,
+        earnings_date=earnings_date,
+        baseline_close=baseline_close,
+    )
+    merged = {
+        "earnings_day_open": earnings_day_open
+        if earnings_day_open is not None
+        else fetched.get("earnings_day_open"),
+        "earnings_day_high": earnings_day_high
+        if earnings_day_high is not None
+        else fetched.get("earnings_day_high"),
+        "earnings_day_low": earnings_day_low
+        if earnings_day_low is not None
+        else fetched.get("earnings_day_low"),
+        "earnings_day_close": earnings_day_close
+        if earnings_day_close is not None
+        else fetched.get("earnings_day_close"),
+        "next_trading_day_open": next_trading_day_open
+        if next_trading_day_open is not None
+        else fetched.get("next_trading_day_open"),
+        "next_trading_day_close": next_trading_day_close
+        if next_trading_day_close is not None
+        else fetched.get("next_trading_day_close"),
+        "one_week_later_close": one_week_later_close
+        if one_week_later_close is not None
+        else fetched.get("one_week_later_close"),
+        "direction_vs_prior_close": direction_vs_prior_close,
+    }
+    if merged["direction_vs_prior_close"] is None:
+        fd = fetched.get("direction_vs_prior_close")
+        if fd in ("up", "down", "flat"):
+            merged["direction_vs_prior_close"] = fd
+    return merged, fetched
+
+
+def record_outcome_for_run_dir(
+    *,
+    run_dir: Path,
+    auto_fetch: bool = False,
+    dry_run: bool = False,
+    earnings_day_open: float | None = None,
+    earnings_day_high: float | None = None,
+    earnings_day_low: float | None = None,
+    earnings_day_close: float | None = None,
+    next_trading_day_open: float | None = None,
+    next_trading_day_close: float | None = None,
+    one_week_later_close: float | None = None,
+    direction_vs_prior_close: Literal["up", "down", "flat"] | None = None,
+    notes: str | None = None,
+    source: Literal["manual", "yahoo_csv", "alpaca", "polygon"] = "manual",
+    db_upsert: bool = True,
+) -> RecordOutcomeForRunDirResult:
+    """Merge optional yfinance auto-fetch, persist outcome artifacts, best-effort DB upsert.
+
+    This is the shared implementation used by ``outcome-record`` and ``outcome-record-batch``.
+    Explicit field arguments always win over auto-fetched values. When ``dry_run`` is true,
+    no files, registry lines, or DB writes are performed (values are still computed).
+    """
+    resolved_dir = run_dir.expanduser().resolve()
+    yfinance_empty = False
+    raw_fetched: dict[str, Any] = {}
+
+    if auto_fetch:
+        merged, raw_fetched = merge_auto_fetch_into_cli_fields(
+            run_dir,
+            earnings_day_open=earnings_day_open,
+            earnings_day_high=earnings_day_high,
+            earnings_day_low=earnings_day_low,
+            earnings_day_close=earnings_day_close,
+            next_trading_day_open=next_trading_day_open,
+            next_trading_day_close=next_trading_day_close,
+            one_week_later_close=one_week_later_close,
+            direction_vs_prior_close=direction_vs_prior_close,
+        )
+        earnings_day_open = merged["earnings_day_open"]
+        earnings_day_high = merged["earnings_day_high"]
+        earnings_day_low = merged["earnings_day_low"]
+        earnings_day_close = merged["earnings_day_close"]
+        next_trading_day_open = merged["next_trading_day_open"]
+        next_trading_day_close = merged["next_trading_day_close"]
+        one_week_later_close = merged["one_week_later_close"]
+        direction_vs_prior_close = merged["direction_vs_prior_close"]
+        yfinance_empty = all(raw_fetched.get(k) is None for k in _AUTO_FETCH_FIELDS)
+
+    persist = not dry_run
+    outcome = record_outcome(
+        run_dir=run_dir,
+        earnings_day_open=earnings_day_open,
+        earnings_day_high=earnings_day_high,
+        earnings_day_low=earnings_day_low,
+        earnings_day_close=earnings_day_close,
+        next_trading_day_open=next_trading_day_open,
+        next_trading_day_close=next_trading_day_close,
+        one_week_later_close=one_week_later_close,
+        direction_vs_prior_close=direction_vs_prior_close,
+        notes=notes,
+        source=source,
+        persist=persist,
+    )
+
+    coverage = _outcome_auto_fetch_field_coverage(outcome)
+    auto_fetch_partial = bool(auto_fetch and not coverage)
+
+    if persist and db_upsert:
+        from equity_analyst.db_ops import best_effort_upsert_outcome
+
+        with contextlib.suppress(Exception):
+            asyncio.run(
+                best_effort_upsert_outcome(
+                    cfg_db_enabled=True,
+                    run_id=resolved_dir.name,
+                    outcome=outcome.model_dump(),
+                    database_url=None,
+                )
+            )
+
+    return RecordOutcomeForRunDirResult(
+        outcome=outcome,
+        auto_fetch_used=auto_fetch,
+        yfinance_empty=yfinance_empty,
+        auto_fetch_partial=auto_fetch_partial,
+    )
+
+
+_AUTO_FETCH_FIELDS: tuple[str, ...] = (
+    "earnings_day_open",
+    "earnings_day_high",
+    "earnings_day_low",
+    "earnings_day_close",
+    "next_trading_day_open",
+    "next_trading_day_close",
+    "one_week_later_close",
+)
+
+_DIRECTION_FLAT_TOLERANCE = 0.001  # ±0.1% relative move counts as flat
+
+
+def _coerce_float_safe(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN guard
+        return None
+    return f
+
+
+def _parse_earnings_date_fuzzy(earnings_date: str) -> datetime | None:
+    """Parse a human-style earnings date string (``Mon May 11 2026``) into a UTC datetime.
+
+    ``dateutil.parser`` is used in fuzzy mode so leading weekday abbreviations and stray
+    punctuation are tolerated. Returns ``None`` on failure rather than raising.
+    """
+    try:
+        from dateutil.parser import parse as _parse_date  # type: ignore[import-untyped]
+    except ImportError:  # pragma: no cover - dateutil is a hard dep but stay defensive
+        logger.warning(
+            "auto_fetch: python-dateutil not installed; cannot parse earnings_date=%r",
+            earnings_date,
+        )
+        return None
+    try:
+        dt_raw: Any = _parse_date(earnings_date, fuzzy=True)
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "auto_fetch: could not parse earnings_date=%r error=%r",
+            earnings_date,
+            exc,
+        )
+        return None
+    if not isinstance(dt_raw, datetime):
+        return None
+    dt: datetime = dt_raw if dt_raw.tzinfo is not None else dt_raw.replace(tzinfo=UTC)
+    return dt
+
+
+def auto_fetch_outcome(
+    symbol: str,
+    earnings_date: str,
+    baseline_close: float | None = None,
+) -> dict[str, Any]:
+    """Fetch earnings-day OHLC + next trading day OHLC + close ~5 trading days later.
+
+    Returns a dict with keys matching the ``outcome.json`` schema
+    (``earnings_day_open``/``_high``/``_low``/``_close``,
+    ``next_trading_day_open``/``_close``, ``one_week_later_close``,
+    ``direction_vs_prior_close``). Any field that could not be determined is set
+    to ``None`` — the function never raises on partial data so it can be wired into
+    a best-effort CLI flow.
+    """
+    result: dict[str, Any] = {f: None for f in _AUTO_FETCH_FIELDS}
+    result["direction_vs_prior_close"] = None
+
+    parsed = _parse_earnings_date_fuzzy(earnings_date)
+    if parsed is None:
+        return result
+    start_date = parsed.date()
+    # 15 calendar days is enough to cover the earnings bar + ~10 trading days.
+    end_date = start_date + timedelta(days=15)
+
+    try:
+        import yfinance as yf  # type: ignore[import-untyped]
+    except ImportError as exc:  # pragma: no cover - yfinance is a hard dep
+        logger.warning("auto_fetch: yfinance not installed: %r", exc)
+        return result
+
+    df = None
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            auto_adjust=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "auto_fetch: yfinance.history call failed symbol=%s start=%s error=%r",
+            symbol,
+            start_date,
+            exc,
+        )
+        return result
+
+    if df is None or getattr(df, "empty", True):
+        logger.warning(
+            "auto_fetch: empty bars returned for symbol=%s start=%s (ADR/recent-IPO?)",
+            symbol,
+            start_date,
+        )
+        return result
+
+    try:
+        df_sorted = df.sort_index()
+        bars = list(df_sorted.itertuples())
+    except Exception as exc:
+        logger.warning(
+            "auto_fetch: could not iterate yfinance frame symbol=%s error=%r",
+            symbol,
+            exc,
+        )
+        return result
+
+    if not bars:
+        logger.warning("auto_fetch: zero bars after sort symbol=%s", symbol)
+        return result
+
+    earnings_bar = bars[0]
+    result["earnings_day_open"] = _coerce_float_safe(getattr(earnings_bar, "Open", None))
+    result["earnings_day_high"] = _coerce_float_safe(getattr(earnings_bar, "High", None))
+    result["earnings_day_low"] = _coerce_float_safe(getattr(earnings_bar, "Low", None))
+    result["earnings_day_close"] = _coerce_float_safe(
+        getattr(earnings_bar, "Close", None)
+    )
+
+    if len(bars) >= 2:
+        nb = bars[1]
+        result["next_trading_day_open"] = _coerce_float_safe(getattr(nb, "Open", None))
+        result["next_trading_day_close"] = _coerce_float_safe(getattr(nb, "Close", None))
+    else:
+        logger.warning(
+            "auto_fetch: missing next-trading-day bar symbol=%s (only %d bars returned)",
+            symbol,
+            len(bars),
+        )
+
+    # 5 trading days after the earnings bar = the 6th bar (index 5).
+    if len(bars) >= 6:
+        result["one_week_later_close"] = _coerce_float_safe(getattr(bars[5], "Close", None))
+    elif len(bars) >= 2:
+        result["one_week_later_close"] = _coerce_float_safe(getattr(bars[-1], "Close", None))
+        logger.warning(
+            "auto_fetch: only %d bars after earnings symbol=%s; using last bar close as one_week_later_close",
+            len(bars),
+            symbol,
+        )
+    else:
+        logger.warning(
+            "auto_fetch: insufficient bars for one_week_later_close symbol=%s (len=%d)",
+            symbol,
+            len(bars),
+        )
+
+    if baseline_close is not None and result["earnings_day_close"] is not None:
+        base = float(baseline_close)
+        close = float(result["earnings_day_close"])
+        if base > 0:
+            rel = (close - base) / base
+            if rel > _DIRECTION_FLAT_TOLERANCE:
+                result["direction_vs_prior_close"] = "up"
+            elif rel < -_DIRECTION_FLAT_TOLERANCE:
+                result["direction_vs_prior_close"] = "down"
+            else:
+                result["direction_vs_prior_close"] = "flat"
+
+    fetched = {k: result[k] for k in _AUTO_FETCH_FIELDS if result[k] is not None}
+    missing = sorted(k for k in _AUTO_FETCH_FIELDS if result[k] is None)
+    logger.info(
+        "auto_fetch: symbol=%s earnings_date=%s fetched=%s missing=%s direction=%s",
+        symbol,
+        start_date,
+        {k: round(v, 4) for k, v in fetched.items()},
+        missing,
+        result["direction_vs_prior_close"],
+    )
+    return result
+
+
+_LAST_CLOSE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"last\s+verified\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
+    re.compile(r"last\s+regular[- ]session\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
+    re.compile(r"last\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
+    re.compile(r"closing\s+price[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
+)
+
+
+def _baseline_close_from_synthesis(run_dir: Path, *, max_chars: int = 8000) -> float | None:
+    synthesis = _pick_synthesis_path(run_dir)
+    if not synthesis.is_file():
+        return None
+    try:
+        text = synthesis.read_text(encoding="utf-8")[:max_chars]
+    except OSError:
+        return None
+    for pat in _LAST_CLOSE_PATTERNS:
+        m = pat.search(text)
+        if not m:
+            continue
+        try:
+            return float(m.group(1))
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_baseline_close_for_auto_fetch(run_dir: Path) -> float | None:
+    """Best-effort baseline close for auto-fetch direction computation.
+
+    Order of precedence: ``RunConfig.current_price`` from ``run.json`` (the same
+    hint surfaced by ``RunOutcome.baseline_close_hint``), then a regex-extracted
+    figure from the first ~8000 characters of ``synthesis.md`` (e.g. "last
+    verified close" / "last regular-session close" / "closing price"). Returns
+    ``None`` when neither source yields a positive number.
+    """
+    primary = _parse_baseline_close_hint(run_dir)
+    if primary is not None and primary > 0:
+        return primary
+    fallback = _baseline_close_from_synthesis(run_dir)
+    if fallback is not None and fallback > 0:
+        return fallback
+    return None
+
+
+def read_run_metadata(run_dir: Path) -> tuple[str, str]:
+    """Return ``(symbol, earnings_date)`` from ``run.json``; raises on missing fields."""
+    run_json = run_dir / "run.json"
+    if not run_json.is_file():
+        raise FileNotFoundError(f"Missing run.json at {run_json!s}")
+    data = json.loads(run_json.read_text(encoding="utf-8"))
+    cfg = data.get("config")
+    if not isinstance(cfg, dict):
+        raise ValueError("run.json missing config snapshot")
+    symbol = cfg.get("symbol")
+    earnings_date = cfg.get("earnings_date")
+    if not isinstance(symbol, str) or not symbol:
+        raise ValueError("run.json config snapshot missing symbol")
+    if not isinstance(earnings_date, str) or not earnings_date:
+        raise ValueError("run.json config snapshot missing earnings_date")
+    return symbol, earnings_date
+
+
+_BATCH_OUTPUT_DIR_RE = re.compile(r"output_dir=(\S+)")
+
+
+def parse_output_dirs_from_batch_summary(batch_summary_path: Path) -> list[Path]:
+    """Parse ``batch_summary.txt`` lines for ``output_dir=<path>`` (runner / batch script)."""
+    if not batch_summary_path.is_file():
+        raise FileNotFoundError(f"missing batch summary file: {batch_summary_path}")
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for line in batch_summary_path.read_text(encoding="utf-8").splitlines():
+        m = _BATCH_OUTPUT_DIR_RE.search(line)
+        if not m:
+            continue
+        p = Path(m.group(1)).expanduser()
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(p)
+    return ordered
+
+
+def plan_shape_b_run_directories(
+    outputs_dir: Path,
+    symbols: list[str],
+    since: datetime,
+    *,
+    newest_only: bool = True,
+) -> list[tuple[str, Path | None]]:
+    """Resolve ``outputs/<SYM>_<TS>/`` with ``run.json`` at or after ``since`` (UTC day boundary).
+
+    Returns rows ``(symbol_upper, run_dir_or_none)`` in input order. ``None`` means no matching
+    run directory. When ``newest_only`` is true, at most one directory per symbol; otherwise
+    every matching directory is returned as separate rows.
+    """
+    from equity_analyst.db_backfill import iter_run_directories
+
+    out: list[tuple[str, Path | None]] = []
+    for raw in symbols:
+        sym = raw.strip().upper()
+        if not sym:
+            continue
+        dirs = iter_run_directories(
+            outputs_dir,
+            symbol=sym,
+            since=since,
+            oldest_first=False,
+        )
+        if not dirs:
+            out.append((sym, None))
+        elif newest_only:
+            out.append((sym, dirs[0]))
+        else:
+            out.extend((sym, d) for d in dirs)
+    return out
 

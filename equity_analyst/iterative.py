@@ -21,6 +21,7 @@ from equity_analyst.config import ProviderConfig, RunConfig, RunEnvironment, Syn
 from equity_analyst.drive_uploader import DriveAuthMode, maybe_upload_run_to_drive_raw
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
+from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.provider_runtime import (
@@ -45,6 +46,42 @@ from equity_analyst.synthesizer import (
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
+
+_CHECKPOINT_BASENAMES: tuple[str, ...] = (
+    "checkpoint.sqlite",
+    "checkpoint.sqlite-wal",
+    "checkpoint.sqlite-shm",
+    "checkpoint.sqlite-journal",
+)
+
+
+def _delete_checkpoint_files(run_output_dir: Path, log: logging.Logger) -> None:
+    """Best-effort removal of LangGraph SQLite checkpoint files under ``run_output_dir``."""
+    for name in _CHECKPOINT_BASENAMES:
+        path = run_output_dir / name
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError as exc:
+            log.warning(
+                "Failed to remove checkpoint artifact %s (%s: %s)",
+                path,
+                type(exc).__name__,
+                exc,
+                exc_info=False,
+            )
+
+
+def maybe_delete_iterative_checkpoint(
+    run_output_dir: Path,
+    *,
+    delete_checkpoint_after_success: bool,
+    log: logging.Logger | None = None,
+) -> None:
+    if not delete_checkpoint_after_success:
+        return
+    _delete_checkpoint_files(run_output_dir, log or logger)
+
 
 VERIFIER_INSTRUCTION_PREFIX = """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
 numerical and factual claims about an equity/options thesis (and lines mentioning low confidence).
@@ -462,6 +499,7 @@ class RefinementState(TypedDict, total=False):
     output_dir: str
     provider_responses: Annotated[list[dict[str, Any]], operator.add]
     synthesis_history: Annotated[list[str], operator.add]
+    synthesis_meta: Annotated[list[dict[str, Any]], operator.add]
     verification_history: Annotated[list[dict[str, Any]], operator.add]
     followup_questions: Annotated[list[str], operator.add]
     timing_events: Annotated[list[dict[str, Any]], operator.add]
@@ -474,6 +512,7 @@ class RefinementState(TypedDict, total=False):
     drive_auth_mode: NotRequired[str]
     drive_oauth_token_path: NotRequired[str | None]
     pdf_output_enabled: NotRequired[bool]
+    delete_checkpoint_after_success: NotRequired[bool]
 
 
 def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
@@ -729,6 +768,14 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         )
         out_update: dict[str, Any] = {
             "synthesis_history": [result.response.text],
+            "synthesis_meta": [
+                {
+                    "provider": result.response.provider_name,
+                    "model": result.response.model,
+                    "usage": asdict(result.response.usage),
+                    "latency_s": result.response.latency_s,
+                }
+            ],
             "timing_events": [{"iteration": it_no, "synthesis_wall_s": syn_wall}],
         }
         if err_ev:
@@ -930,6 +977,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             else {}
         )
         meta["timing"] = timing_summary
+        meta["iterations_completed"] = len(state.get("provider_responses", []))
+        meta["verification_history"] = state.get("verification_history", [])
+        syn_meta = state.get("synthesis_meta") or []
+        if syn_meta and isinstance(syn_meta[-1], dict):
+            meta["synthesis"] = syn_meta[-1]
         prior_errs = meta.get("errors")
         if not isinstance(prior_errs, list):
             prior_errs = []
@@ -937,6 +989,17 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         meta["errors"] = merged_errs
         run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         logger.info("Iterative wall-clock timing summary: %s", timing_summary)
+
+        cfg_for_extract: RunConfig | None = None
+        try:
+            cfg_raw = meta.get("config")
+            if isinstance(cfg_raw, dict):
+                cfg_for_extract = RunConfig.model_validate(cfg_raw)
+        except Exception:
+            logger.warning("finalize: invalid config snapshot; skipping prediction_extract")
+            cfg_for_extract = None
+        if cfg_for_extract is not None and cfg_for_extract.prediction_extract_enabled:
+            await run_prediction_extract_for_run_dir(run_dir=out, cfg=cfg_for_extract)
 
         if bool(state.get("drive_upload_enabled", False)):
             cred_raw = state.get("drive_credentials_path")
@@ -963,6 +1026,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 drive_oauth_token_path=oauth_tok_raw if isinstance(oauth_tok_raw, str) else None,
                 run_environment=run_env,
             )
+
+        maybe_delete_iterative_checkpoint(
+            out,
+            delete_checkpoint_after_success=bool(state.get("delete_checkpoint_after_success", True)),
+        )
 
         return {"final_report": report}
 
@@ -1042,6 +1110,7 @@ def build_initial_refinement_state(
         "drive_auth_mode": cfg.drive_auth_mode,
         "drive_oauth_token_path": cfg.drive_oauth_token_path,
         "pdf_output_enabled": cfg.pdf_output_enabled,
+        "delete_checkpoint_after_success": cfg.delete_checkpoint_after_success,
     }
 
 
