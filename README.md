@@ -166,6 +166,7 @@ The 2026-05-10 batch ships ten standard configs that all mirror **CRCL**’s pro
 
 ```bash
 # Sequential (default): one symbol at a time, --iterative --max-iterations 3 --log-level INFO.
+# Live Python logs stream to your terminal and are also copied to outputs/batch_<ts>/<symbol>.log.
 scripts/run_all_symbols.sh
 
 # Common overrides:
@@ -180,7 +181,7 @@ scripts/run_all_symbols.sh --log-level DEBUG
 scripts/run_all_symbols.sh --parallel
 ```
 
-Each run writes one combined log per symbol plus a `batch_summary.txt` under `outputs/batch_<UTC-timestamp>/`. Successful symbols append `[OK]   <SYM>  duration=<sec>s  output_dir=<abs path>` lines; failures append `[FAIL] <SYM>  duration=...  exit=...  log=...`. The script exits non-zero if any symbol failed.
+Each run writes one combined log per symbol plus a `batch_summary.txt` under `outputs/batch_<UTC-timestamp>/`. In **sequential** mode (default), output is **tee’d**: you see each symbol’s run live in the terminal while the same lines are saved to that symbol’s log file. In **`--parallel`** mode, per-symbol output goes to the log files only (no interleaved live streams); follow one job with `tail -f outputs/batch_*/<SYMBOL>.log` (symbol names are lowercased in filenames, e.g. `asts.log`). Successful symbols append `[OK]   <SYM>  duration=<sec>s  output_dir=<abs path>` lines; failures append `[FAIL] <SYM>  duration=...  exit=...  log=...`. The script exits non-zero if any symbol failed.
 
 **Wall-clock expectations.** Sequential iterative runs typically take several minutes per symbol — for ten symbols with `--max-iterations 3` and grounded web search on every provider, plan on **multiple hours** end-to-end (often **4–10+ hours** depending on provider latency, web-search retries, and Drive upload). Use `--max-iterations 2` or `--no-iterative` for faster passes, and let the batch run unattended overnight. `--parallel` reduces overall wall time only if your provider rate limits permit four concurrent grounded searches across 10 jobs; otherwise per-symbol time grows while the total still pays for ten runs.
 

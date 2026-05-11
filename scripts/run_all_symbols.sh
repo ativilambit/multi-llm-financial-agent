@@ -2,7 +2,8 @@
 # Batch runner for the 10 symbol configs created on 2026-05-10.
 #
 # Sequential by default (one symbol at a time) so provider rate limits and
-# long web-search runs do not stack. Use --parallel to launch every symbol as
+# long web-search runs do not stack; each symbol’s Python output is tee’d to
+# the terminal and its log file. Use --parallel to launch every symbol as
 # a background job; that warning is intentional — every provider key is shared
 # across symbols, and Anthropic/Gemini/OpenAI/Grok will rate-limit aggressive
 # fan-out. See the README "Running multiple symbols" subsection.
@@ -151,11 +152,19 @@ run_one() {
   started_epoch="$(date +%s)"
   echo "[START] $symbol  config=$config  $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
 
+  local rc
   set +e
   # word-split EXTRA_ARGS intentionally — they are space-separated flags we control.
   # shellcheck disable=SC2086
-  "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS >"$log_file" 2>&1
-  local rc=$?
+  if [ "$MODE" = "sequential" ]; then
+    echo "[STREAM] $symbol  log=$log_file" >&2
+    "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS 2>&1 | tee "$log_file"
+    # Do not use `local rc=$PIPESTATUS[0]` — `local` resets PIPESTATUS before the assignment reads it.
+    rc="${PIPESTATUS[0]}"
+  else
+    "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS >"$log_file" 2>&1
+    rc=$?
+  fi
   set -e
 
   local ended_epoch
@@ -192,6 +201,7 @@ if [ "$MODE" = "sequential" ]; then
 else
   echo "WARNING: --parallel mode shares one API key per provider across $(echo "$SYMBOLS" | wc -w | tr -d ' ') symbols." >&2
   echo "         Expect rate-limit pushback on Anthropic/OpenAI/Gemini/Grok and longer per-symbol wall time." >&2
+  echo "[INFO] --parallel: per-symbol output goes to log files only; tail ${BATCH_DIR}/<SYMBOL>.log to follow a specific run" >&2
 
   PIDS=""
   for sym in $SYMBOLS; do
