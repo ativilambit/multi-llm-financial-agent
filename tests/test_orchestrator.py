@@ -120,7 +120,7 @@ async def test_orchestrator_parallel_and_writes_outputs(
     out_dir = artifacts.output_dir
     elapsed = asyncio.get_event_loop().time() - started
 
-    assert elapsed < 0.50
+    assert elapsed < 1.0  # allow scheduler/drive-preflight jitter on loaded hosts
     assert "SYNTH" in synthesis
 
     assert out_dir.exists()

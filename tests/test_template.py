@@ -35,10 +35,10 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     rendered = render_prompt(cfg, prompt_path)
     text = rendered.text
 
-    for i in range(1, 12):
+    for i in range(1, 13):
         assert f"{i}." in text
-    assert "12." not in text
     assert "13." not in text
+    assert "14." not in text
     assert "Evaluate other prompts" not in text
     assert "Suggest additional prompts" not in text
     assert "\n5. Also, what were all the relevant short interest" in text
@@ -63,6 +63,10 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     assert "next trading day" in text
     assert "end of that earnings week" in text
     assert "one trading week after" in text
+    assert "Bottom-up qualitative overlay" in text
+    assert "directional bias" in text
+    assert "source URL and timestamp" in text
+    assert "sections 1, 9, and 11" in text or "(sections 1, 9, 11)" in text
 
 
 def test_template_uses_config_earnings_timing_when_provided() -> None:

@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 VERIFIER_INSTRUCTION_PREFIX = """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
 numerical and factual claims about an equity/options thesis (and lines mentioning low confidence).
 
+The underlying equity prompt is structured in 12 numbered sections (including a mandatory bottom-up qualitative overlay in section 8 before prediction sections); the excerpt may omit section headers—still treat cited numbers and ratios as the verification target.
+
 Use web search only when needed to check those claims. Do not spend effort re-verifying narrative sections
 that are not represented in the excerpt.
 
