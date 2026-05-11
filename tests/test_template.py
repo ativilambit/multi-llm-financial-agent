@@ -54,11 +54,15 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     assert "Earnings call timing (mandatory verification):" in text
     assert "NOT provided in this brief" in text
     assert "Yahoo Finance Earnings Calendar" in text
-    assert "Date anchors:" in text
-    assert "earnings_date=Mon May 11 2026" in text
-    assert "day of the earnings call" in text
+    assert "Date anchors" in text
+    assert "Earnings date: Mon May 11 2026" in text
+    assert "Next trading day after earnings: Tues May 12" in text
+    assert "Target dates (open/close anchors): Mon May 11, Fri May 15, Fri May 22, Fri May 29, Fri Jun 5" in text
+    assert "Follow-up open date (~1 week after earnings): Mon May 18" in text
+    assert "on the day of the earnings call" in text
     assert "next trading day" in text
     assert "end of that earnings week" in text
+    assert "one trading week after" in text
 
 
 def test_template_uses_config_earnings_timing_when_provided() -> None:
@@ -82,8 +86,8 @@ def test_template_uses_config_earnings_timing_when_provided() -> None:
     assert "{{" not in text
     assert "Earnings timing (from this brief): after market close (legacy hint)" in text
     assert "Earnings call timing (mandatory verification):" not in text
-    assert "Date anchors:" in text
-    assert "earnings_date=e" in text
+    assert "Date anchors" in text
+    assert "Earnings date: e" in text
     assert "day of the earnings call" in text
 
 
@@ -108,8 +112,8 @@ def test_template_renders_when_reference_prices_omitted() -> None:
     assert "{{" not in text
     assert "User session labels (not prices):" in text
     assert "ABCD" in text
-    assert "Date anchors:" in text
-    assert "earnings_date=Wed Jan 15 2026" in text
+    assert "Date anchors" in text
+    assert "Earnings date: Wed Jan 15 2026" in text
     assert "next trading day" in text
     assert "end of that earnings week" in text
 
@@ -146,7 +150,7 @@ def test_template_generalizes_to_other_symbol() -> None:
     assert "~$105.5" in text
     assert "web_search" in text
     assert "Wed Feb 18 2026" in text
-    assert "Date anchors:" in text
+    assert "Date anchors" in text
     assert "day of the earnings call" in text
     assert "next trading day" in text
     assert "end of that earnings week" in text
