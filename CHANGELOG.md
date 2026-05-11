@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- **Outcomes** When `outcome-record --auto-fetch` (and batch) has no usable baseline in `run.json` or `synthesis.md` (`current_price` null, etc.), `direction_vs_prior_close` now falls back to the prior regular-session close from Yahoo Finance (`yfinance`) for the last trading day strictly before `earnings_date`. (`feat(outcome): yfinance prior-session close as baseline when config price null`)
 - **Predictions** Added LLM-based extraction of five calibration horizons from final `synthesis.md` into Postgres (`predictions`, `source=llm_extracted`) with idempotent DELETE+INSERT; CLI `predictions-extract` / `predictions-extract-batch`; optional auto-run after standard or iterative completion via `prediction_extract_enabled` (default false) or `run --extract-predictions`; fallback artifact `predictions_extract.json` when DB writes are skipped or fail. (`feat(predictions): LLM extraction of synthesis horizons into Postgres`)
 - **Iterative / Drive** Google Drive directory upload now skips `checkpoint.sqlite`, `checkpoint.sqlite-wal`, `checkpoint.sqlite-shm`, and `checkpoint.sqlite-journal` (exact basename match; INFO log per skipped path).
 - **Iterative** After a successful `finalize`, checkpoint artifacts under the run directory are removed by default (`delete_checkpoint_after_success`, overridable with `DELETE_CHECKPOINT_AFTER_SUCCESS=false` or **`--keep-checkpoint`**); failed or aborted runs keep the DB for **`--resume`**.

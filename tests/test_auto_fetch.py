@@ -5,9 +5,11 @@ import sys
 import types
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 # yfinance is a real dep in requirements.txt; we monkeypatch it for tests so
@@ -199,7 +201,9 @@ def test_auto_fetch_yfinance_exception_logs_and_returns_none(
     assert any("yfinance.history call failed" in rec.getMessage() for rec in caplog.records)
 
 
-def test_resolve_baseline_close_prefers_config_then_synthesis(tmp_path: Path) -> None:
+def test_resolve_baseline_close_prefers_config_then_synthesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import json as _json
 
     from equity_analyst.outcome_tracker import resolve_baseline_close_for_auto_fetch
@@ -224,6 +228,93 @@ def test_resolve_baseline_close_prefers_config_then_synthesis(tmp_path: Path) ->
     )
     assert resolve_baseline_close_for_auto_fetch(run_dir) == pytest.approx(999.0)
 
-    # Case 3: neither available → None.
+    # Case 3: neither YAML nor synthesis hint → yfinance prior close (stub empty → None).
     (run_dir / "synthesis.md").write_text("no price phrase here", encoding="utf-8")
+
+    class _EmptyPriorTicker:
+        def history(self, **_kw: Any) -> pd.DataFrame:
+            return pd.DataFrame()
+
+    mod_empty = types.ModuleType("yfinance")
+    mod_empty.Ticker = lambda _sym: _EmptyPriorTicker()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yfinance", mod_empty)
     assert resolve_baseline_close_for_auto_fetch(run_dir) is None
+
+
+def test_fetch_prior_session_close_ignores_earnings_day_bar(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Last bar strictly before earnings_date wins (not same calendar day as earnings)."""
+    from equity_analyst.outcome_tracker import fetch_prior_session_close_yfinance
+
+    ny = "America/New_York"
+    idx = pd.to_datetime(
+        ["2026-05-06", "2026-05-07", "2026-05-08"],
+    ).tz_localize(ny)
+    frame = pd.DataFrame(
+        {"Close": [70.0, 75.0, 78.42]},
+        index=idx,
+    )
+
+    class _Ticker:
+        def history(self, **_kw: Any) -> pd.DataFrame:
+            return frame
+
+    mod = types.ModuleType("yfinance")
+    mod.Ticker = lambda _sym: _Ticker()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yfinance", mod)
+
+    caplog.set_level(logging.INFO, logger="equity_analyst.outcome_tracker")
+    out = fetch_prior_session_close_yfinance("CRCL", date(2026, 5, 11))
+    assert out == pytest.approx(78.42)
+    assert any(
+        "baseline_close from prior session yfinance: 78.42 (date 2026-05-08)" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_fetch_prior_session_close_monday_earnings_prior_is_friday(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from equity_analyst.outcome_tracker import fetch_prior_session_close_yfinance
+
+    ny = "America/New_York"
+    idx = pd.to_datetime(["2026-05-07", "2026-05-08"]).tz_localize(ny)
+    frame = pd.DataFrame({"Close": [74.0, 80.0]}, index=idx)
+
+    class _Ticker:
+        def history(self, **_kw: Any) -> pd.DataFrame:
+            return frame
+
+    mod = types.ModuleType("yfinance")
+    mod.Ticker = lambda _sym: _Ticker()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yfinance", mod)
+
+    # Monday 2026-05-11: last session before is Friday 2026-05-08.
+    assert fetch_prior_session_close_yfinance("X", date(2026, 5, 11)) == pytest.approx(80.0)
+
+
+def test_resolve_baseline_explicit_current_price_skips_yfinance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import json as _json
+
+    from equity_analyst.outcome_tracker import resolve_baseline_close_for_auto_fetch
+
+    def _boom_ticker(_symbol: str) -> Any:
+        raise AssertionError("yfinance.Ticker should not be used when baseline comes from run.json")
+
+    mod = types.ModuleType("yfinance")
+    mod.Ticker = _boom_ticker  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yfinance", mod)
+
+    run_dir = tmp_path / "RUN1"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        _json.dumps(
+            {"config": {"current_price": 50.0, "symbol": "ZZZ", "earnings_date": "Mon May 11 2026"}},
+        ),
+        encoding="utf-8",
+    )
+    assert resolve_baseline_close_for_auto_fetch(run_dir) == pytest.approx(50.0)

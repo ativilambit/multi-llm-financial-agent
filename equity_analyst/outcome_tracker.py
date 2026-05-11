@@ -6,9 +6,9 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -538,6 +538,86 @@ _LAST_CLOSE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+def fetch_prior_session_close_yfinance(symbol: str, earnings_date: date) -> float | None:
+    """Return the regular-session close of the last trading day strictly before earnings_date."""
+    start = earnings_date - timedelta(days=30)
+    end = earnings_date
+    try:
+        import pandas as pd  # type: ignore[import-untyped]
+        import yfinance as yf
+    except ImportError as exc:  # pragma: no cover - yfinance is a hard dep
+        logger.warning(
+            "prior_session_baseline: yfinance/pandas not available symbol=%s error=%r",
+            symbol,
+            exc,
+        )
+        return None
+
+    df = None
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(
+            start=start.isoformat(),
+            end=end.isoformat(),
+            auto_adjust=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "prior_session_baseline: yfinance.history failed symbol=%s earnings_date=%s error=%r",
+            symbol,
+            earnings_date,
+            exc,
+        )
+        return None
+
+    if df is None or getattr(df, "empty", True):
+        return None
+
+    def _bar_calendar_date_us(ts: object) -> date:
+        t = pd.Timestamp(ts)
+        if t.tzinfo is not None:
+            return cast(date, t.tz_convert("America/New_York").date())
+        return cast(date, t.date())
+
+    try:
+        df_sorted = df.sort_index()
+    except Exception as exc:
+        logger.warning(
+            "prior_session_baseline: could not sort yfinance frame symbol=%s error=%r",
+            symbol,
+            exc,
+        )
+        return None
+
+    last_bar_date: date | None = None
+    last_close: float | None = None
+    try:
+        for ts, row in df_sorted.iterrows():
+            bar_d = _bar_calendar_date_us(ts)
+            if bar_d < earnings_date:
+                c = _coerce_float_safe(row["Close"])
+                if c is not None and c > 0:
+                    last_bar_date = bar_d
+                    last_close = c
+    except Exception as exc:
+        logger.warning(
+            "prior_session_baseline: could not scan yfinance frame symbol=%s error=%r",
+            symbol,
+            exc,
+        )
+        return None
+
+    if last_close is None or last_bar_date is None:
+        return None
+
+    logger.info(
+        "baseline_close from prior session yfinance: %.2f (date %s)",
+        last_close,
+        last_bar_date.isoformat(),
+    )
+    return last_close
+
+
 def _baseline_close_from_synthesis(run_dir: Path, *, max_chars: int = 8000) -> float | None:
     synthesis = _pick_synthesis_path(run_dir)
     if not synthesis.is_file():
@@ -563,8 +643,10 @@ def resolve_baseline_close_for_auto_fetch(run_dir: Path) -> float | None:
     Order of precedence: ``RunConfig.current_price`` from ``run.json`` (the same
     hint surfaced by ``RunOutcome.baseline_close_hint``), then a regex-extracted
     figure from the first ~8000 characters of ``synthesis.md`` (e.g. "last
-    verified close" / "last regular-session close" / "closing price"). Returns
-    ``None`` when neither source yields a positive number.
+    verified close" / "last regular-session close" / "closing price"), then the
+    regular-session close of the last Yahoo daily bar strictly before the parsed
+    ``earnings_date`` (see :func:`fetch_prior_session_close_yfinance`). Returns
+    ``None`` when no source yields a positive number.
     """
     primary = _parse_baseline_close_hint(run_dir)
     if primary is not None and primary > 0:
@@ -572,6 +654,17 @@ def resolve_baseline_close_for_auto_fetch(run_dir: Path) -> float | None:
     fallback = _baseline_close_from_synthesis(run_dir)
     if fallback is not None and fallback > 0:
         return fallback
+    try:
+        symbol, earnings_date_str = read_run_metadata(run_dir)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    parsed_dt = _parse_earnings_date_fuzzy(earnings_date_str)
+    if parsed_dt is None:
+        return None
+    earnings_d = parsed_dt.date()
+    yf_baseline = fetch_prior_session_close_yfinance(symbol, earnings_d)
+    if yf_baseline is not None and yf_baseline > 0:
+        return yf_baseline
     return None
 
 
