@@ -145,6 +145,45 @@ Stock-specific YAML lives under `configs/`. **Workflow:** pick the **MNDY** or *
 | `configs/crcl_2026_05_08.yaml` | Same layout as the MNDY standard config for **CRCL** (Circle Internet Group, NYSE: **CRCL**), aligned to the **May 11, 2026** earnings cycle. |
 | `configs/crcl_2026_05_08_fast.yaml` | **CRCL** hybrid fast config (mirrors MNDY `_fast`: one grounded **OpenAI** search, fast fan-out otherwise). |
 
+### Running multiple symbols
+
+The 2026-05-10 batch ships ten standard configs that all mirror **CRCL**’s provider structure (Anthropic Opus → OpenAI → Grok → Gemini Flash fan-out, Gemini Pro synthesizer, Gemini verifier, 600 s timeouts, `historical_quarters: 6`). Price fields are `null` on purpose — every provider must source the last regular-session close via `web_search`.
+
+| Symbol | Company | Config |
+|--------|---------|--------|
+| ASTS | AST SpaceMobile, Inc. (Nasdaq: ASTS) | `configs/asts_2026_05_10.yaml` |
+| FIGR | Figure Technology Solutions, Inc. (Nasdaq: FIGR) | `configs/figr_2026_05_10.yaml` |
+| HIMS | Hims & Hers Health, Inc. (NYSE: HIMS) | `configs/hims_2026_05_10.yaml` |
+| RGTI | Rigetti Computing, Inc. (Nasdaq: RGTI) | `configs/rgti_2026_05_10.yaml` |
+| GTM | ZoomInfo Technologies Inc. (Nasdaq: GTM, formerly ZI) | `configs/gtm_2026_05_10.yaml` |
+| PLUG | Plug Power Inc. (Nasdaq: PLUG) | `configs/plug_2026_05_10.yaml` |
+| STE | STERIS plc (NYSE: STE) | `configs/ste_2026_05_10.yaml` |
+| ACHR | Archer Aviation Inc. (NYSE: ACHR) | `configs/achr_2026_05_10.yaml` |
+| IX | ORIX Corporation (NYSE ADR: IX) | `configs/ix_2026_05_10.yaml` |
+| QUBT | Quantum Computing Inc. (Nasdaq: QUBT) | `configs/qubt_2026_05_10.yaml` |
+
+`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` for the ten symbols above and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`:
+
+```bash
+# Sequential (default): one symbol at a time, --iterative --max-iterations 3 --log-level INFO.
+scripts/run_all_symbols.sh
+
+# Common overrides:
+scripts/run_all_symbols.sh --max-iterations 2
+scripts/run_all_symbols.sh --no-iterative
+scripts/run_all_symbols.sh --log-level DEBUG
+
+# Optional parallel mode (all 10 background jobs + `wait`).
+# WARNING: every symbol shares one API key per provider. Anthropic/OpenAI/Gemini/Grok
+# will rate-limit aggressive fan-out, so the wall-clock win over sequential is small
+# unless you have elevated tier limits. Sequential is safer for production runs.
+scripts/run_all_symbols.sh --parallel
+```
+
+Each run writes one combined log per symbol plus a `batch_summary.txt` under `outputs/batch_<UTC-timestamp>/`. Successful symbols append `[OK]   <SYM>  duration=<sec>s  output_dir=<abs path>` lines; failures append `[FAIL] <SYM>  duration=...  exit=...  log=...`. The script exits non-zero if any symbol failed.
+
+**Wall-clock expectations.** Sequential iterative runs typically take several minutes per symbol — for ten symbols with `--max-iterations 3` and grounded web search on every provider, plan on **multiple hours** end-to-end (often **4–10+ hours** depending on provider latency, web-search retries, and Drive upload). Use `--max-iterations 2` or `--no-iterative` for faster passes, and let the batch run unattended overnight. `--parallel` reduces overall wall time only if your provider rate limits permit four concurrent grounded searches across 10 jobs; otherwise per-symbol time grows while the total still pays for ten runs.
+
 ## Standard mode
 
 ```bash
