@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -9,6 +10,25 @@ import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
+
+logger = logging.getLogger(__name__)
+
+_FACTS_PACKET_MAX_OUT_MIN = 256
+_FACTS_PACKET_MAX_OUT_MAX = 128_000
+
+
+def _parse_facts_packet_max_output_tokens_env(raw: str) -> int | None:
+    """Parse ``FACTS_PACKET_MAX_OUTPUT_TOKENS``; return ``None`` if missing or invalid."""
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        n = int(s, 10)
+    except ValueError:
+        return None
+    if _FACTS_PACKET_MAX_OUT_MIN <= n <= _FACTS_PACKET_MAX_OUT_MAX:
+        return n
+    return None
 
 DriveAuthMode = Literal["service_account", "oauth_user"]
 RunEnvironment = Literal["production", "test"]
@@ -184,7 +204,7 @@ class RunConfig(BaseModel):
         description="Model id for facts-packet extraction.",
     )
     facts_packet_max_output_tokens: int = Field(
-        default=2048,
+        default=4096,
         ge=256,
         le=128_000,
         description="Completion budget for facts-packet extraction markdown.",
@@ -449,13 +469,40 @@ class RunConfig(BaseModel):
 
     @model_validator(mode="after")
     def _facts_packet_and_conditional_fanout_env_fallback(self) -> Self:
+        """Env overrides only when the field was not set explicitly in YAML (YAML > env > default)."""
         updates: dict[str, Any] = {}
         fp = os.environ.get("FACTS_PACKET_ENABLED")
-        if fp is not None and str(fp).strip():
+        if (
+            fp is not None
+            and str(fp).strip()
+            and "facts_packet_enabled" not in self.model_fields_set
+        ):
             updates["facts_packet_enabled"] = str(fp).strip().lower() in ("1", "true", "yes", "on")
         cf = os.environ.get("CONDITIONAL_FANOUT_ENABLED")
-        if cf is not None and str(cf).strip():
+        if (
+            cf is not None
+            and str(cf).strip()
+            and "conditional_fanout_enabled" not in self.model_fields_set
+        ):
             updates["conditional_fanout_enabled"] = str(cf).strip().lower() in ("1", "true", "yes", "on")
+        raw_m = os.environ.get("FACTS_PACKET_MAX_OUTPUT_TOKENS")
+        if (
+            raw_m is not None
+            and str(raw_m).strip()
+            and "facts_packet_max_output_tokens" not in self.model_fields_set
+        ):
+            n = _parse_facts_packet_max_output_tokens_env(str(raw_m))
+            if n is not None:
+                updates["facts_packet_max_output_tokens"] = n
+            else:
+                logger.warning(
+                    "Invalid FACTS_PACKET_MAX_OUTPUT_TOKENS=%r (expected integer in %s-%s); "
+                    "using default %s.",
+                    raw_m,
+                    _FACTS_PACKET_MAX_OUT_MIN,
+                    _FACTS_PACKET_MAX_OUT_MAX,
+                    self.facts_packet_max_output_tokens,
+                )
         return self.model_copy(update=updates) if updates else self
 
     def provider_names(self) -> list[str]:

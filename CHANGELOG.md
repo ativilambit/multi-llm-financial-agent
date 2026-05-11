@@ -8,6 +8,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- Facts packet default raised from 2048 to 4096 tokens to fit the richer 1σ/2σ/3σ prompt.
+- Facts packet extractor now validates output and retries once on truncation; falls back to a minimal template if both attempts truncate.
+- **Config / iterative** Wire `FACTS_PACKET_MAX_OUTPUT_TOKENS` (and `FACTS_PACKET_ENABLED` / `CONDITIONAL_FANOUT_ENABLED` if not already env-bound) for `.env`-based tuning; default `facts_packet_max_output_tokens` raised from 2048 to **4096** to accommodate the richer 1σ/2σ/3σ prompt; facts extractor validates output, **retries once** with doubled budget (cap 16k) when `MAX_TOKENS` or truncation heuristics fire, then falls back to the minimal template if both attempts fail.
 - **Iterative** Facts packet now includes 2σ and 3σ implied moves alongside 1σ.
 - **Prompt template** Require all three standard deviation ranges (1σ / 2σ / 3σ) explicitly in section 1, 9, 11; synthesizer instructed to preserve all SD levels rather than collapsing to 1σ.
 - **Iterative / Cost** Added optional frozen **facts packet** (`facts_packet.md`, extractor LLM) after round-1 synthesis and **conditional fan-out** (synthesizer-only on iteration 2+ unless the verifier requests `refan_out_providers` / `refan_out_all`); verifier JSON gains `refresh_facts`, `refan_out_providers`, `refan_out_all`. Defaults on; CLI `--no-facts-packet` / `--no-conditional-fanout` restores prior behavior. (`feat(iterative): facts packet + conditional fan-out for cost reduction`)

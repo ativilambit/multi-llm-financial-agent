@@ -451,7 +451,7 @@ Two defaults-on behaviors reduce token and tool use on **iteration 2+** (see `Ru
 
 **YAML / `RunConfig`:** `facts_packet_enabled` (default `true`), `conditional_fanout_enabled` (default `true`), plus extractor fields above.
 
-**Env:** `FACTS_PACKET_ENABLED`, `CONDITIONAL_FANOUT_ENABLED` (`1` / `true` / `yes` / `on` vs anything else treated as off when set).
+**Env:** `FACTS_PACKET_ENABLED`, `CONDITIONAL_FANOUT_ENABLED` (`1` / `true` / `yes` / `on` vs anything else treated as off when set), and `FACTS_PACKET_MAX_OUTPUT_TOKENS` (invalid values log a warning and keep the default). When a key is omitted from YAML, env applies; explicit YAML wins over env. Override via env: `FACTS_PACKET_MAX_OUTPUT_TOKENS=8192` in `.env` (default 4096, range 256–128000).
 
 **CLI:** `--facts-packet` / `--no-facts-packet`, `--conditional-fanout` / `--no-conditional-fanout` (Boolean optional actions; omit to keep YAML/env defaults).
 

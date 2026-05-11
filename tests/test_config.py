@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -576,6 +577,63 @@ def test_pdf_output_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert cfg.pdf_output_enabled is False
     monkeypatch.delenv("PDF_OUTPUT_ENABLED", raising=False)
+
+
+def _minimal_run_config_dict() -> dict[str, Any]:
+    return {
+        "symbol": "X",
+        "today_date": "d",
+        "today_session": "s",
+        "earnings_date": "e",
+        "target_dates": [],
+        "next_trading_day": "n",
+        "followup_open_date": "f",
+        "providers": ["openai"],
+    }
+
+
+def test_facts_packet_max_output_tokens_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", "4096")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.facts_packet_max_output_tokens == 4096
+    monkeypatch.delenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", raising=False)
+
+
+def test_facts_packet_max_output_tokens_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", "8192")
+    d = _minimal_run_config_dict()
+    d["facts_packet_max_output_tokens"] = 512
+    cfg = RunConfig.model_validate(d)
+    assert cfg.facts_packet_max_output_tokens == 512
+    monkeypatch.delenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", raising=False)
+
+
+@pytest.mark.parametrize("bad", ("abc", "0", "255", "1000000"))
+def test_facts_packet_max_output_tokens_invalid_env_warns_and_keeps_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad: str
+) -> None:
+    monkeypatch.setenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", bad)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.config"):
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.facts_packet_max_output_tokens == 4096
+    assert "Invalid FACTS_PACKET_MAX_OUTPUT_TOKENS" in caplog.text
+    monkeypatch.delenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", raising=False)
+
+
+def test_facts_packet_enabled_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FACTS_PACKET_ENABLED", "true")
+    d = _minimal_run_config_dict()
+    d["facts_packet_enabled"] = False
+    cfg = RunConfig.model_validate(d)
+    assert cfg.facts_packet_enabled is False
+    monkeypatch.delenv("FACTS_PACKET_ENABLED", raising=False)
+
+
+def test_facts_packet_enabled_env_when_omitted_from_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FACTS_PACKET_ENABLED", "0")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.facts_packet_enabled is False
+    monkeypatch.delenv("FACTS_PACKET_ENABLED", raising=False)
 
 
 def test_drive_settings_loaded_from_dotenv_file(
