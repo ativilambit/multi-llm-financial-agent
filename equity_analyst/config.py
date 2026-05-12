@@ -395,6 +395,12 @@ class RunConfig(BaseModel):
         description="When True, remove iterative checkpoint.sqlite (+ WAL/SHM/journal) from the run directory "
         "after a successful finalize. Set DELETE_CHECKPOINT_AFTER_SUCCESS=false or use --keep-checkpoint to retain.",
     )
+    per_provider_sigma_variance_check: bool = Field(
+        default=True,
+        description="When True (default), iterative fan-out runs deterministic per-provider sigma-band "
+        "variance checks (sigma_summary JSON with legacy markdown fallback). Set False to skip checks "
+        "and log once per run.",
+    )
 
     drive_upload_enabled: bool = Field(
         default=False,

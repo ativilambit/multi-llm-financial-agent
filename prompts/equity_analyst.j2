@@ -86,6 +86,23 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
      iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day
      ```
 
+   - **MANDATORY machine-readable σ session table (downstream verifier):** Immediately after the `event_jump=` / `daily_vol=` fenced block(s), output a **second** fenced block tagged **`json`** whose JSON root contains **`sigma_summary`** (exact key). The verifier reads the **last** such block in your answer. Schema (numeric fields must match the **±% half-width** you show on each session’s **1σ** line — one side of the band as **% of the anchor price**, not full width; if you accidentally computed full width, **halve** before emitting):
+
+     ```json
+     {
+       "sigma_summary": {
+         "anchor_price": 179.11,
+         "anchor_type": "prior_close",
+         "sessions": [
+           {"date": "2026-05-13", "label": "T0 BMO", "N": 0, "one_sigma_half_width_pct": 11.31, "three_sigma_half_width_pct": 33.93},
+           {"date": "2026-05-14", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 12.51, "three_sigma_half_width_pct": 37.53}
+         ]
+       }
+     }
+     ```
+
+     Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings calendar and BMO/AMC anchor (same rule as bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** post–T+1 horizon row (so the check can compare `σ²(T+N)−σ²(T+1)` vs `(N−1)·daily_vol²`). Use **strict JSON** (double quotes; no trailing commas).
+
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by `√(target_DTE / chosen_expiry_DTE)` from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 
 4. **Sanity check (state in output, variance-additive form).** After computing all post-event σ bands, output one line: `σ-scaling check (variance): σ²(T+N) − σ²(T+1) = X.XX (expected (N−1)·daily_vol² = Y.YY); within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`.

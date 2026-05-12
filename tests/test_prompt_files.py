@@ -183,6 +183,15 @@ def test_mandatory_sigma_literal_format_block_in_equity_j2_and_synthesizer_md() 
     )
 
 
+def test_sigma_summary_json_contract_in_equity_and_synthesizer_prompts() -> None:
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "MANDATORY machine-readable" in j2 and "sigma_summary" in j2
+    assert "one_sigma_half_width_pct" in j2 and "three_sigma_half_width_pct" in j2
+    assert "anchor_type" in j2
+    assert "Mandatory `sigma_summary` JSON" in synth
+
+
 def test_synthesizer_system_prompt_includes_per_provider_sigma_checks_paragraph() -> None:
     sigma = "\N{GREEK SMALL LETTER SIGMA}"
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
