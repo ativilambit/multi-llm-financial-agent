@@ -55,6 +55,11 @@ from equity_analyst.providers.gemini_provider import (
 from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
+from equity_analyst.sigma_summary import (
+    SigmaSummaryFileModel,
+    parse_sigma_summary_json,
+    sigma_summary_json_present_but_invalid,
+)
 from equity_analyst.synthesizer import (
     SynthesisResult,
     Synthesizer,
@@ -313,13 +318,24 @@ _SESSION_HEAD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Month + day with optional weekday and optional 4-digit year (Gemini / compact headings).
+# Month + day with optional weekday (incl. abbreviations) and optional 4-digit year.
+_WDAY_HEAD = (
+    r"(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)"
+)
 _SESSION_HEAD_RELAXED_RE = re.compile(
-    r"\b((?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*,?\s+)?"
+    rf"\b((?:(?:{_WDAY_HEAD})\s*,?\s+)?"
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
     r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
     r"(\d{1,2})(?:\s*,\s*((?:19|20)\d{2}))?)\b",
     re.IGNORECASE,
+)
+
+# Month-first dated headings (Grok bold lines like ``**May 13 2026 (earnings day, BMO …)**``).
+_SESSION_HEAD_MONTH_FIRST_RE = re.compile(
+    r"(?i)^(?:[\-\*]+\s*)?(?:#{1,6}\s+)?(?:\*\*)?\s*"
+    r"(January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
+    r"(\d{1,2})(?:\s*,?\s*((?:19|20)\d{2}))?",
 )
 
 _THREE_SIG_PCT_RE = re.compile(
@@ -354,58 +370,162 @@ def _parse_month_day_label(label: str, *, year: int) -> date | None:
     return None
 
 
+def _normalize_sigma_session_tag(tag: str) -> str:
+    t = re.sub(r"\s+", " ", tag.strip().lower())
+    return t[:220]
+
+
+def _dedupe_duplicate_date_session_blocks(
+    rows: list[tuple[date, float, float, str]],
+) -> list[tuple[date, float, float, str]]:
+    """Drop only duplicate ``(calendar date, session header)`` blocks; keep distinct sessions."""
+    seen: set[tuple[date, str]] = set()
+    out: list[tuple[date, float, float, str]] = []
+    for d, w3, s1, lbl in rows:
+        key = (d, _normalize_sigma_session_tag(lbl))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((d, w3, s1, lbl))
+    return out
+
+
+def _line_opens_sigma_horizon_block(line: str, *, year: int) -> bool:
+    """True when ``line`` starts a dated sigma-horizon block (distinct from incidental calendar mentions)."""
+    s = line.strip()
+    if not s or len(s) > 360:
+        return False
+    if s.startswith("|"):
+        return False
+    if _parse_month_day_label(s, year=year) is None:
+        return False
+    if re.match(r"^#{1,6}\s+", s):
+        return True
+    head_window = s[:180]
+    if _SESSION_HEAD_RE.search(head_window) is not None:
+        return True
+    if _SESSION_HEAD_RELAXED_RE.search(head_window) is not None:
+        return True
+    if re.search(r"(?i)\bT\s*\+\s*\d+\b|\bT0\b", head_window) and _SESSION_HEAD_RELAXED_RE.search(s) is not None:
+        return True
+    if s.startswith("**") and len(s) < 260:
+        if _SESSION_HEAD_MONTH_FIRST_RE.match(s) is None:
+            return False
+        low = s.lower()
+        if any(
+            k in low
+            for k in (
+                "earnings",
+                "eod",
+                "bmo",
+                "amc",
+                "post-earnings",
+                "post print",
+                "open",
+                "close",
+                "horizon",
+                "t+",
+                "t0",
+                "trading day",
+                "next trading",
+                "one trading week",
+            )
+        ):
+            return True
+        if f"3{_GS}" in s or f"1{_GS}" in s:
+            return True
+    return False
+
+
+def _bind_sigma_widths_in_block(block_text: str) -> tuple[float, float] | None:
+    """Pick paired 3-sigma / 1-sigma half-width percents inside one horizon block.
+
+    Returns ``(three_sigma_half_width_pct, one_sigma_half_width_pct)``, preferring the **last**
+    3-sigma row in the block paired with the closest 1-sigma line (handles out-of-order lines).
+    """
+    lines = block_text.splitlines()
+    ones: list[tuple[int, float]] = []
+    threes: list[tuple[int, float]] = []
+    for i, line in enumerate(lines):
+        m1 = _ONE_SIG_PCT_RE.search(line)
+        if m1:
+            with contextlib.suppress(ValueError):
+                ones.append((i, float(m1.group("pct"))))
+        m3 = _THREE_SIG_PCT_RE.search(line)
+        if m3:
+            with contextlib.suppress(ValueError):
+                threes.append((i, float(m3.group("pct"))))
+    if not threes and not ones:
+        return None
+    if threes and not ones:
+        w3 = threes[-1][1]
+        return (w3, w3 / 3.0)
+    if ones and not threes:
+        sig = ones[-1][1]
+        return (3.0 * sig, sig)
+    ti, tw = threes[-1]
+    _, ow = min(ones, key=lambda x: abs(x[0] - ti))
+    return (tw, ow)
+
+
+def _iter_sigma_horizon_blocks(synthesis: str, *, year: int) -> list[tuple[str, str]]:
+    """Split ``synthesis`` into ``(header_line, body_text)`` horizons in document order."""
+    lines = synthesis.splitlines()
+    out: list[tuple[str, str]] = []
+    header_for_next: str | None = None
+    buf: list[str] = []
+    for line in lines:
+        if _line_opens_sigma_horizon_block(line, year=year):
+            if header_for_next is None and buf:
+                out.append(("", "\n".join(buf)))
+                buf = []
+            elif header_for_next is not None:
+                out.append((header_for_next, "\n".join(buf)))
+                buf = []
+            header_for_next = line.strip()
+        else:
+            buf.append(line)
+    if header_for_next is not None:
+        out.append((header_for_next, "\n".join(buf)))
+    elif buf:
+        out.append(("", "\n".join(buf)))
+    return out
+
+
 def extract_dated_three_sigma_half_widths(
     synthesis: str,
     *,
     year: int = 2026,
 ) -> list[tuple[date, float, float, str]]:
-    """Pair dated 3-sigma (plus-minus pct) lines with headers.
+    """Pair dated 3-sigma (plus-minus pct) lines with session headers.
 
-    Returns ``(session_date, three_sigma_half_width_pct, one_sigma_half_width_pct, label)``.
-    ``three_sigma_half_width_pct`` preserves the literal 3-sigma half-width percent for sqrt(t)
-    checks; ``one_sigma_half_width_pct`` prefers an explicit preceding 1-sigma line when present,
-    else ``three_sigma_half_width_pct / 3`` for variance-additive math.
+    Splits the text into **horizon blocks** (nearest preceding dated header such as
+    ``### T0 — Wed May 13, 2026 (BMO)`` or ``**May 13 2026 (earnings day, BMO — open & close)**``),
+    then binds 1-sigma / 3-sigma lines **within** each block so rows from different sessions on the
+    same calendar day do not cross-contaminate.
+
+    Returns ``(session_date, three_sigma_half_width_pct, one_sigma_half_width_pct, label)`` in block
+    order. Adjacent duplicate ``(date, header)`` blocks are dropped. Downstream
+    :func:`_merge_dated_sigma_rows_first_wins` keeps the first block per **calendar date** for the
+    variance-additive identity (canonical row per date).
     """
-    lines = synthesis.splitlines()
-    current_label: str | None = None
-    pending_1s_half: float | None = None
-    out: list[tuple[date, float, float, str]] = []
-    for line in lines:
-        relaxed = None
-        mh = _SESSION_HEAD_RE.search(line)
-        if mh:
-            current_label = mh.group(1)
-            pending_1s_half = None
-        else:
-            relaxed = _SESSION_HEAD_RELAXED_RE.search(line)
-            if relaxed:
-                current_label = relaxed.group(1).strip()
-                pending_1s_half = None
-        m1 = _ONE_SIG_PCT_RE.search(line)
-        if m1:
-            try:
-                pending_1s_half = float(m1.group("pct"))
-            except ValueError:
-                pending_1s_half = None
-        m3 = _THREE_SIG_PCT_RE.search(line)
-        if not m3:
+    rows: list[tuple[date, float, float, str]] = []
+    for header, body in _iter_sigma_horizon_blocks(synthesis, year=year):
+        block_text = f"{header}\n{body}" if body else header
+        bind = _bind_sigma_widths_in_block(block_text)
+        if bind is None:
             continue
-        try:
-            w3_half = float(m3.group("pct"))
-        except ValueError:
+        w3_half, s1_half = bind
+        block_date = _parse_month_day_label(header, year=year)
+        if block_date is None:
+            block_date = _parse_month_day_label(block_text[:1200], year=year)
+        if block_date is None:
             continue
-        anchor = _parse_month_day_label(current_label or "", year=year)
-        if anchor is None and relaxed:
-            anchor = _parse_month_day_label(relaxed.group(1), year=year)
-        if anchor is None:
-            anchor = _parse_month_day_label(line, year=year)
-        if anchor is None:
-            continue
-        sigma_half = pending_1s_half if pending_1s_half is not None else w3_half / 3.0
-        pending_1s_half = None
-        lbl_src = (current_label or "").strip() or line.strip()[:120]
-        out.append((anchor, w3_half, sigma_half, lbl_src))
-    return out
+        lbl = header.strip() if header else "(preamble)"
+        if not lbl:
+            lbl = "(preamble)"
+        rows.append((block_date, w3_half, s1_half, lbl))
+    return _dedupe_duplicate_date_session_blocks(rows)
 
 
 def sigma_band_sqrt_ratio_followups(
@@ -621,6 +741,84 @@ def followups_from_unsourced_options_chain_numeric_claims(
     return out
 
 
+def sigma_sessions_payload_from_sigma_summary_model(
+    parsed: SigmaSummaryFileModel,
+    *,
+    earn_cal: date | None,
+    earnings_timing: str | None,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """Build ``verify_variance_additive_sigma_band_sessions`` rows from structured ``sigma_summary`` JSON."""
+    by_date: dict[date, tuple[float, str]] = {}
+    for row in parsed.sigma_summary.sessions:
+        d = row.date
+        if d in by_date:
+            continue
+        by_date[d] = (float(row.one_sigma_half_width_pct), row.label.strip())
+
+    if not by_date:
+        return [], 0, "missing_sigma_summary_sessions"
+
+    anchor = anchor_session_date_for_variance_check(earn_cal, (earnings_timing or "").strip() or None)
+    by_rows = _dated_rows_for_variance_additive_check(by_date, anchor if earn_cal is not None else None)
+
+    if earn_cal is not None and anchor is not None and not by_rows and by_date:
+        return [], 0, "missing_post_anchor_rows"
+
+    if not by_rows:
+        return [], 0, "missing_dated_rows"
+
+    keys_sorted = sorted(by_rows)
+    anchor_eff = anchor if anchor is not None else keys_sorted[0]
+    sessions_payload: list[dict[str, Any]] = []
+    for d in keys_sorted:
+        sig_half, lbl = by_rows[d]
+        n_inc = trading_sessions_inclusive(anchor_eff, d)
+        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
+
+    return sessions_payload, len(sessions_payload), None
+
+
+def _legacy_sigma_variance_sessions(
+    provider_text: str,
+    *,
+    anchor_year: int,
+    earn_cal: date | None,
+    earnings_timing: str | None,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """Legacy markdown extraction for per-provider sigma variance rows (regex on 1-sigma/3-sigma lines)."""
+    dated = extract_dated_three_sigma_half_widths(provider_text, year=anchor_year)
+    if logger.isEnabledFor(logging.DEBUG) and dated:
+        preview = ", ".join(
+            f"({d.isoformat()}, {lbl[:44]!r}, 1{_GS}={s1:.2f}%, 3{_GS}={w3:.2f}%)"
+            for d, w3, s1, lbl in dated[:24]
+        )
+        tail = " ..." if len(dated) > 24 else ""
+        logger.debug("parsed %d sigma blocks: [%s]%s", len(dated), preview, tail)
+    _by_w3, by_s1 = _merge_dated_sigma_rows_first_wins(dated)
+
+    if not by_s1:
+        return [], 0, "missing_dated_rows"
+
+    anchor = anchor_session_date_for_variance_check(earn_cal, (earnings_timing or "").strip() or None)
+
+    by_rows = _dated_rows_for_variance_additive_check(by_s1, anchor if earn_cal is not None else None)
+    if earn_cal is not None and anchor is not None and not by_rows and by_s1:
+        return [], 0, "missing_post_anchor_rows"
+
+    if not by_rows:
+        return [], 0, "missing_dated_rows"
+
+    keys_sorted = sorted(by_rows)
+    anchor_eff = anchor if anchor is not None else keys_sorted[0]
+    sessions_payload: list[dict[str, Any]] = []
+    for d in keys_sorted:
+        sig_half, lbl = by_rows[d]
+        n_inc = trading_sessions_inclusive(anchor_eff, d)
+        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
+
+    return sessions_payload, len(sessions_payload), None
+
+
 def per_provider_sigma_variance_check(
     provider_text: str,
     tolerance: float = 0.25,
@@ -628,6 +826,7 @@ def per_provider_sigma_variance_check(
     anchor_year: int = 2026,
     earnings_date: str | None = None,
     earnings_timing: str | None = None,
+    enabled: bool = True,
 ) -> dict[str, Any]:
     """Parse one provider's text for variance-additive sigma literals and verify the identity.
 
@@ -639,9 +838,24 @@ def per_provider_sigma_variance_check(
     - ``followups`` (list[str]): per-row follow-up strings — empty when ``passed`` is not ``False``.
     - ``event_jump`` / ``daily_vol``: parsed literals when present.
     - ``sessions`` (int): dated rows used in the check.
-    - ``applicable`` (bool): ``False`` only when literals are missing.
+    - ``applicable`` (bool): ``False`` only when literals are missing (or checks disabled).
     - ``reason`` (str): machine tag or first follow-up line.
+    - ``sigma_check_source`` (``\"sigma_summary_json\"`` / ``\"legacy_regex\"`` / ``None``): which
+      input path supplied session half-widths for the variance identity.
     """
+    if not enabled:
+        logger.info("sigma_variance_check disabled per config")
+        return {
+            "passed": None,
+            "followups": [],
+            "event_jump": None,
+            "daily_vol": None,
+            "sessions": 0,
+            "applicable": False,
+            "reason": "disabled_per_config",
+            "sigma_check_source": None,
+        }
+
     ej_lit, dv_lit = _parse_variance_additive_literals(provider_text)
     if ej_lit is None or dv_lit is None:
         return {
@@ -652,58 +866,55 @@ def per_provider_sigma_variance_check(
             "sessions": 0,
             "applicable": False,
             "reason": "missing_literals",
-        }
-
-    dated = extract_dated_three_sigma_half_widths(provider_text, year=anchor_year)
-    _by_w3, by_s1 = _merge_dated_sigma_rows_first_wins(dated)
-
-    if not by_s1:
-        return {
-            "passed": None,
-            "followups": [],
-            "event_jump": ej_lit,
-            "daily_vol": dv_lit,
-            "sessions": 0,
-            "applicable": True,
-            "reason": "missing_dated_rows",
+            "sigma_check_source": None,
         }
 
     earn_cal: date | None = None
     ed_raw = (earnings_date or "").strip()
     if ed_raw:
         earn_cal = _parse_earnings_calendar_date(ed_raw)
-    anchor = anchor_session_date_for_variance_check(earn_cal, (earnings_timing or "").strip() or None)
 
-    by_rows = _dated_rows_for_variance_additive_check(by_s1, anchor if earn_cal is not None else None)
-    if earn_cal is not None and anchor is not None and not by_rows and by_s1:
-        return {
-            "passed": None,
-            "followups": [],
-            "event_jump": ej_lit,
-            "daily_vol": dv_lit,
-            "sessions": 0,
-            "applicable": True,
-            "reason": "missing_post_anchor_rows",
-        }
-
-    if not by_rows:
-        return {
-            "passed": None,
-            "followups": [],
-            "event_jump": ej_lit,
-            "daily_vol": dv_lit,
-            "sessions": 0,
-            "applicable": True,
-            "reason": "missing_dated_rows",
-        }
-
-    keys_sorted = sorted(by_rows)
-    anchor_eff = anchor if anchor is not None else keys_sorted[0]
-    sessions_payload: list[dict[str, Any]] = []
-    for d in keys_sorted:
-        sig_half, lbl = by_rows[d]
-        n_inc = trading_sessions_inclusive(anchor_eff, d)
-        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
+    parsed = parse_sigma_summary_json(provider_text)
+    if parsed is not None:
+        sessions_payload, n_sessions, err = sigma_sessions_payload_from_sigma_summary_model(
+            parsed,
+            earn_cal=earn_cal,
+            earnings_timing=earnings_timing,
+        )
+        if err is not None:
+            return {
+                "passed": None,
+                "followups": [],
+                "event_jump": ej_lit,
+                "daily_vol": dv_lit,
+                "sessions": 0,
+                "applicable": True,
+                "reason": err,
+                "sigma_check_source": "sigma_summary_json",
+            }
+        source = "sigma_summary_json"
+    else:
+        sessions_payload, n_sessions, err = _legacy_sigma_variance_sessions(
+            provider_text,
+            anchor_year=anchor_year,
+            earn_cal=earn_cal,
+            earnings_timing=earnings_timing,
+        )
+        if err is not None:
+            reason_out = err
+            if err == "missing_dated_rows" and sigma_summary_json_present_but_invalid(provider_text):
+                reason_out = "missing_sigma_summary_json"
+            return {
+                "passed": None,
+                "followups": [],
+                "event_jump": ej_lit,
+                "daily_vol": dv_lit,
+                "sessions": 0,
+                "applicable": True,
+                "reason": reason_out,
+                "sigma_check_source": "legacy_regex",
+            }
+        source = "legacy_regex"
 
     followups = verify_variance_additive_sigma_band_sessions(
         sessions_payload,
@@ -718,9 +929,10 @@ def per_provider_sigma_variance_check(
         "followups": followups,
         "event_jump": ej_lit,
         "daily_vol": dv_lit,
-        "sessions": len(sessions_payload),
+        "sessions": n_sessions,
         "applicable": True,
         "reason": reason,
+        "sigma_check_source": source,
     }
 
 
@@ -2011,12 +2223,16 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         if isinstance(et_ctx, str) and et_ctx.strip():
             earn_timing_fan = et_ctx.strip()
 
+        snap_fan = state.get("iterative_config_snapshot") or {}
+        sigma_check_enabled = bool(snap_fan.get("per_provider_sigma_variance_check", True))
+
         per_provider_checks: list[dict[str, Any]] = []
         for name, resp in responses.items():
             check = per_provider_sigma_variance_check(
                 resp.text,
                 earnings_date=earn_date_s,
                 earnings_timing=earn_timing_fan,
+                enabled=sigma_check_enabled,
             )
             rec: dict[str, Any] = {"provider": name, "model": resp.model}
             rec.update(check)

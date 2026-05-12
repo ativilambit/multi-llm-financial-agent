@@ -28,6 +28,7 @@ from equity_analyst.iterative import (
     should_apply_sqrt_t_three_sigma_ratio,
     sigma_band_sqrt_ratio_followups,
     sigma_missing_literal_router_followups,
+    sigma_sessions_payload_from_sigma_summary_model,
     verify_iv_crush_daily_vol_followups,
     verify_variance_additive_sigma_band_sessions,
 )
@@ -36,6 +37,10 @@ from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
+from equity_analyst.sigma_summary import (
+    parse_sigma_summary_json,
+    sigma_summary_json_present_but_invalid,
+)
 from equity_analyst.types import ProviderResponse, ProviderUsage
 from tests.test_providers import _FakeOpenAIClient
 
@@ -313,6 +318,117 @@ def test_per_provider_sigma_variance_gemini_style_month_day_year_header() -> Non
     assert r["sessions"] == 2
 
 
+def test_per_provider_variance_check_handles_multi_row_per_date_openai_style() -> None:
+    """OpenAI-style duplicate calendar dates: only the first May 13 horizon feeds the identity."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "### Wednesday, May 13, 2026 — post-print open and close\n"
+        f"- 1{sg}: **$158 – $199 ({pm}10.0%)**\n"
+        f"- 3{sg}: **$118 – $239 ({pm}30.0%)**\n"
+        "### Wednesday, May 13, 2026 — narrative reprise (same calendar date)\n"
+        f"- 1{sg}: **$0 – $999 ({pm}50.0%)**\n"
+        f"- 3{sg}: **$0 – $999 ({pm}99.0%)**\n"
+        "### Tuesday, May 19, 2026 — ~1 week\n"
+        f"- 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13")
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_per_provider_variance_check_handles_multi_row_per_date_openai_style_broken_math() -> None:
+    """Deliberately wrong May 19 band while duplicate May 13 noise is ignored → variance fails."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "### Wednesday, May 13, 2026 — post-print open and close\n"
+        f"- 1{sg}: **$158 – $199 ({pm}10.0%)**\n"
+        f"- 3{sg}: **$118 – $239 ({pm}30.0%)**\n"
+        "### Wednesday, May 13, 2026 — narrative reprise (same calendar date)\n"
+        f"- 1{sg}: **$0 – $999 ({pm}50.0%)**\n"
+        f"- 3{sg}: **$0 – $999 ({pm}99.0%)**\n"
+        "### Tuesday, May 19, 2026 — ~1 week\n"
+        f"  - 3{sg}: $30 - $170 ({pm}40.0%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13")
+    assert r["passed"] is False
+    assert any("variance" in f.lower() for f in r["followups"])
+
+
+def test_per_provider_variance_check_handles_anthropic_style_section_headers() -> None:
+    """Anthropic ``T0 — Wed May 13`` headings must bind σ rows (abbreviated weekday)."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_may20 = 3.0 * (36.0 + 6.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "### T0 — Wed May 13, 2026 (earnings day, BMO release ≈ 06:00 ET, call 08:00 ET)\n"
+        f"- 1{sg}: **$154 – $193 ({pm}10.0%)**\n"
+        f"- 3{sg}: **$114 – $232 ({pm}30.0%)**\n"
+        "### T+5 — Wed May 20, 2026 (~1 trading week after print, open & close)\n"
+        f"- 3{sg}: $40 - $160 ({pm}{w3_may20:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", anchor_year=2026)
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_per_provider_variance_check_handles_anthropic_style_section_headers_broken() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_may20 = 3.0 * (36.0 + 6.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "### T0 — Wed May 13, 2026 (earnings day, BMO release ≈ 06:00 ET, call 08:00 ET)\n"
+        f"- 1{sg}: **$154 – $193 ({pm}10.0%)**\n"
+        f"- 3{sg}: **$114 – $232 ({pm}30.0%)**\n"
+        "### T+5 — Wed May 20, 2026 (~1 trading week after print, open & close)\n"
+        f"- 3{sg}: $40 - $160 ({pm}{w3_may20 * 1.5:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", anchor_year=2026)
+    assert r["passed"] is False
+
+
+def test_per_provider_variance_check_handles_grok_style_out_of_order_sigma_lines() -> None:
+    """Grok-style bold month-first header with ``3σ`` line above ``1σ`` in the same block."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "**May 13 2026 (earnings day, BMO — open & close)**\n"
+        f"3{sg}: $118 – $239 ({pm}30.0%)\n"
+        f"2{sg}: filler line ({pm}20.0%)\n"
+        f"1{sg}: $158 – $199 ({pm}10.0%)\n"
+        "**May 19, 2026 (Tuesday — open & close)**\n"
+        f"3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", anchor_year=2026)
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_per_provider_variance_check_handles_grok_style_out_of_order_sigma_lines_broken() -> None:
+    """Inflated 3σ on the May 19 horizon fails the additive-variance check."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "**May 13 2026 (earnings day, BMO — open & close)**\n"
+        f"3{sg}: $118 – $239 ({pm}30.0%)\n"
+        f"1{sg}: $158 – $199 ({pm}10.0%)\n"
+        "**May 19, 2026 (Tuesday — open & close)**\n"
+        f"3{sg}: $40 - $160 ({pm}{w3_late * 1.12:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", anchor_year=2026)
+    assert r["passed"] is False
+
+
 def test_per_provider_sigma_variance_missing_dated_rows_is_na_not_false() -> None:
     r = per_provider_sigma_variance_check(
         "event_jump=6% daily_vol=8%\nHeader day only, no sigma lines.\n",
@@ -355,6 +471,121 @@ def test_per_provider_sigma_variance_amc_shifts_anchor_to_next_session() -> None
     )
     assert r["passed"] is None
     assert r["reason"] == "missing_post_anchor_rows"
+
+
+def test_parse_sigma_summary_json_valid() -> None:
+    text = """
+```json
+{"sigma_summary": {"anchor_price": 1.0, "anchor_type": "x", "sessions": []}}
+```
+
+```json
+{
+  "sigma_summary": {
+    "anchor_price": 179.11,
+    "anchor_type": "prior_close",
+    "sessions": [
+      {"date": "2026-05-13", "label": "T0 BMO", "N": 0, "one_sigma_half_width_pct": 11.31, "three_sigma_half_width_pct": 33.93},
+      {"date": "2026-05-14", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 12.51, "three_sigma_half_width_pct": 37.53}
+    ]
+  }
+}
+```
+"""
+    m = parse_sigma_summary_json(text)
+    assert m is not None
+    assert m.sigma_summary.anchor_price == 179.11
+    assert m.sigma_summary.anchor_type == "prior_close"
+    assert len(m.sigma_summary.sessions) == 2
+    assert m.sigma_summary.sessions[1].date.isoformat() == "2026-05-14"
+
+
+def test_parse_sigma_summary_json_invalid_returns_none() -> None:
+    assert parse_sigma_summary_json("") is None
+    assert parse_sigma_summary_json("no fences") is None
+    bad = '```json\n{"sigma_summary": {"anchor_price": -1, "anchor_type": "x", "sessions": [{"date": "2026-05-13", "label": "a", "N": 0, "one_sigma_half_width_pct": 1.0, "three_sigma_half_width_pct": 3.0}]}}\n```'
+    assert parse_sigma_summary_json(bad) is None
+    assert sigma_summary_json_present_but_invalid(bad) is True
+
+
+def test_per_provider_sigma_check_uses_json_not_regex() -> None:
+    """When valid sigma_summary JSON is present, verifier uses JSON half-widths, not markdown ±%%."""
+    sg = chr(0x03C3)
+    w_json = 10.0
+    w_json_late = (36.0 + 5.0 * 8.0**2) ** 0.5
+    json_block = {
+        "sigma_summary": {
+            "anchor_price": 100.0,
+            "anchor_type": "prior_close",
+            "sessions": [
+                {
+                    "date": "2026-05-13",
+                    "label": "T+1",
+                    "N": 1,
+                    "one_sigma_half_width_pct": w_json,
+                    "three_sigma_half_width_pct": 30.0,
+                },
+                {
+                    "date": "2026-05-19",
+                    "label": "week",
+                    "N": 5,
+                    "one_sigma_half_width_pct": w_json_late,
+                    "three_sigma_half_width_pct": 99.0,
+                },
+            ],
+        }
+    }
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        f"```json\n{json.dumps(json_block, indent=2)}\n```\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 (±99.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 (±99.0%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13")
+    assert r["sigma_check_source"] == "sigma_summary_json"
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_variance_identity_from_json_sessions() -> None:
+    """Parsed sigma_summary rows + recomputed N satisfy the variance-additive identity."""
+    raw = """
+```json
+{
+  "sigma_summary": {
+    "anchor_price": 100.0,
+    "anchor_type": "prior_close",
+    "sessions": [
+      {"date": "2026-05-13", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 10.0, "three_sigma_half_width_pct": 30.0},
+      {"date": "2026-05-19", "label": "T+5", "N": 5, "one_sigma_half_width_pct": 18.868, "three_sigma_half_width_pct": 56.604}
+    ]
+  }
+}
+```
+"""
+    parsed = parse_sigma_summary_json(raw)
+    assert parsed is not None
+    earn = date.fromisoformat("2026-05-13")
+    sess, n, err = sigma_sessions_payload_from_sigma_summary_model(
+        parsed,
+        earn_cal=earn,
+        earnings_timing=None,
+    )
+    assert err is None
+    assert n == 2
+    assert verify_variance_additive_sigma_band_sessions(sess, 8.0, 6.0, tolerance=0.25) == []
+
+
+def test_per_provider_sigma_variance_check_disabled_per_config() -> None:
+    r = per_provider_sigma_variance_check(
+        "event_jump=6% daily_vol=8%\n",
+        enabled=False,
+    )
+    assert r["applicable"] is False
+    assert r["reason"] == "disabled_per_config"
+    assert r["sigma_check_source"] is None
 
 
 def test_sigma_missing_literal_router_followups_requires_two_providers() -> None:
