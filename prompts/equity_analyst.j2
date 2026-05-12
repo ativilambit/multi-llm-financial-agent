@@ -37,6 +37,18 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 
 {% endif %}
 
+{% if iv_crush_multiplier is not none %}
+**Pre-computed IV crush + HV30 (for σ-band Rule 2):**
+- `iv_crush_multiplier` = {{ "%.4f"|format(iv_crush_multiplier) }} (post-event weekly ATM IV ÷ event-week ATM IV; values outside [0.4, 1.2] are suppressed server-side).
+{% if hv30_annualized_pct is not none %}
+- `hv30_annualized_pct` = {{ "%.2f"|format(hv30_annualized_pct) }}% annualized (30 trading days of Yahoo daily closes).
+{% endif %}
+{% if daily_vol_iv_adjusted is not none %}
+- `daily_vol_iv_adjusted` = {{ "%.2f"|format(daily_vol_iv_adjusted) }}%/day = (`hv30_annualized_pct` / √252) × `iv_crush_multiplier` — when you use **HV30** as the diffusion baseline for **post-earnings** horizons, treat this as the **canonical daily_vol** (unless this block is absent or `daily_vol_iv_adjusted` is `None`).
+{% endif %}
+
+{% endif %}
+
 **σ band construction — sanity rules (mandatory):**
 
 1. **No fake same-day implied move.** If **no options contract expires on the target session** for this ticker, you must **not** report an "implied-move" σ figure for that session. Instead:
@@ -51,10 +63,11 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
    applied to the anchor (same-day intraday `[min−1, max+1]` if available, else prior-session close per the SD anchoring rule).
 
    - `event_jump` = ATM straddle-implied move (%) from the **front weekly expiry covering the earnings session** in `options_chain_data` (or, if unavailable, from a cited public chain).
+   - **IV-crush adjustment (apply when an event sits inside the horizon and both pre- and post-event weekly expiries are listed in `options_chain_data`):** If `iv_crush_multiplier` is provided (see the pre-computed block above when present), your `daily_vol` for **post-event** horizons when using the **HV30** baseline is **`(HV30 / √252) × iv_crush_multiplier`**. This scales realized HV30 by the implied IV crush between the event-week and the next listed weekly expiry. **State both** the raw HV30/√252 figure and the adjusted value in your output, for example: `daily_vol_raw=5.35%/day (HV30 84.9% ann / √252), iv_crush_multiplier=0.59 (post/event weekly IV), daily_vol=3.16%/day`.
    - **Canonical `daily_vol` source order (use the first that is computable from the provided context):**
      1. **HV30** = annualized 30-day historical volatility / √252. Compute from the daily history already injected via `outcome_tracker`. Always available unless the ticker has < 30 trading days of history (rare).
      2. **Realized post-earnings daily vol** — average of |close-to-close return| over the first 5 trading days after the **last 4** earnings windows. Use this only when HV30 is missing.
-     3. **Forward IV calendar-spread** — only when both event-week and post-event weekly expiries exist in `options_chain_data`. Computation: `daily_vol_post = √((IV_far² × T_far − IV_event² × T_event) / (T_far − T_event)) / √252`. Use only when both (1) and (2) are unavailable.
+     3. **Forward IV calendar-spread** — only when both event-week and post-event weekly expiries exist in `options_chain_data`. Computation: `daily_vol_post = √((IV_far² × T_far − IV_event² × T_event) / (T_far − T_event)) / √252`. Use only when both (1) and (2) are unavailable, **and** when `iv_crush_multiplier` / `daily_vol_iv_adjusted` are **not** provided above.
 
      **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
    - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from equity_analyst.config import RunConfig
+from equity_analyst.options_chain import iv_crush_multiplier
+from equity_analyst.outcome_tracker import fetch_hv30_annualized_percent
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 
 log = logging.getLogger(__name__)
@@ -56,7 +59,7 @@ def _resolve_options_chain(cfg: RunConfig) -> tuple[dict[str, Any], str]:
         snap = options_chain_snapshot_from_prompt_dict(cfg.options_chain_snapshot)
         if snap is not None:
             data = snap.to_prompt_dict()
-            return data, snap.to_markdown_table()
+            return data, snap.to_markdown_table(earnings_date=cfg.earnings_date)
         log.warning("options_chain: manual options_chain_snapshot invalid; falling back to fetch/off")
 
     if cfg.options_chain_auto_fetch:
@@ -69,7 +72,7 @@ def _resolve_options_chain(cfg: RunConfig) -> tuple[dict[str, Any], str]:
         if data.get("options_chain_available"):
             snap = options_chain_snapshot_from_prompt_dict(data)
             if snap is not None:
-                return data, snap.to_markdown_table()
+                return data, snap.to_markdown_table(earnings_date=cfg.earnings_date)
         return data, ""
 
     empty = empty_options_prompt_dict(cfg.symbol)
@@ -165,6 +168,19 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
             "options_chain: auto_fetch enabled but verified chain unavailable (%s)",
             oc_data.get("fetch_error") or "no fetch_error on payload",
         )
+
+    iv_m = (
+        iv_crush_multiplier(oc_data, earnings_date=cfg.earnings_date)
+        if oc_data.get("options_chain_available")
+        else None
+    )
+    hv30_pct = fetch_hv30_annualized_percent(cfg.symbol)
+    daily_iv_adj: float | None = None
+    if iv_m is not None and hv30_pct is not None:
+        daily_iv_adj = (hv30_pct / math.sqrt(252.0)) * iv_m
+    context["iv_crush_multiplier"] = iv_m
+    context["hv30_annualized_pct"] = hv30_pct
+    context["daily_vol_iv_adjusted"] = daily_iv_adj
 
     user_message_text = template.render(**context)
     text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"

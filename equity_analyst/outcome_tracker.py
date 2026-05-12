@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
+import statistics
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -528,6 +530,55 @@ def auto_fetch_outcome(
         result["direction_vs_prior_close"],
     )
     return result
+
+
+def fetch_hv30_annualized_percent(symbol: str) -> float | None:
+    """Return **annualized** 30-trading-day historical volatility as a **percentage** (e.g. ``50.0`` = 50% ann).
+
+    Uses Yahoo Finance daily closes via yfinance: sample standard deviation of the last 30
+    log returns, annualized with ``* √252``. Returns ``None`` on missing data or soft errors.
+    """
+    sym = symbol.strip().upper()
+    if not sym:
+        return None
+    try:
+        import yfinance as yf
+    except ImportError as exc:  # pragma: no cover
+        logger.warning("fetch_hv30: yfinance not installed: %r", exc)
+        return None
+    try:
+        ticker = yf.Ticker(sym)
+        hist = ticker.history(period="6mo", auto_adjust=False)
+    except Exception as exc:
+        logger.warning("fetch_hv30: yfinance.history failed symbol=%s err=%r", sym, exc)
+        return None
+    if hist is None or getattr(hist, "empty", True):
+        logger.warning("fetch_hv30: empty history symbol=%s", sym)
+        return None
+    try:
+        closes = [float(x) for x in hist["Close"].dropna().tolist() if float(x) > 0]
+    except Exception as exc:
+        logger.warning("fetch_hv30: could not read closes symbol=%s err=%r", sym, exc)
+        return None
+    if len(closes) < 32:
+        logger.warning("fetch_hv30: insufficient closes symbol=%s n=%d", sym, len(closes))
+        return None
+    tail = closes[-31:]
+    log_rets: list[float] = []
+    for i in range(1, len(tail)):
+        a, b = tail[i - 1], tail[i]
+        if a > 0 and b > 0:
+            log_rets.append(math.log(b / a))
+    if len(log_rets) < 30:
+        return None
+    window = log_rets[-30:]
+    try:
+        sd = statistics.stdev(window)
+    except statistics.StatisticsError:
+        return None
+    if sd <= 0 or math.isnan(sd):
+        return None
+    return float(sd * math.sqrt(252) * 100.0)
 
 
 def fetch_earnings_day_intraday_high_low_yfinance(

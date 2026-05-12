@@ -333,7 +333,7 @@ class OptionsChainSnapshot:
             "fetch_error": self.fetch_error,
         }
 
-    def to_markdown_table(self) -> str:
+    def to_markdown_table(self, earnings_date: str | None = None) -> str:
         if not self.selected_expiries and not self.available_expiries:
             return "_No option expiries in snapshot._\n"
         lines: list[str] = []
@@ -369,7 +369,16 @@ class OptionsChainSnapshot:
         if len(self.available_expiries) > 24:
             avail += ", ..."
         lines.append(f"\n**Listed expiries (Yahoo/yfinance):** {avail or '_(none)_'}\n")
-        return "".join(lines)
+        out = "".join(lines)
+        if earnings_date:
+            mult = iv_crush_multiplier(self, earnings_date=earnings_date)
+            if mult is not None:
+                out += (
+                    f"\n**IV crush ratio (post/event):** `{mult:.4f}` "
+                    "(post-event weekly ATM IV ÷ event-week ATM IV; apply per Rule 2 when using HV30 "
+                    "for post-print diffusion).\n"
+                )
+        return out
 
 
 def _resolve_spot(ticker: Any) -> float | None:
@@ -482,6 +491,96 @@ def _expiry_snapshot_from_row_dict(r: dict[str, Any]) -> ExpirySnapshot:
     d["total_put_oi"] = _coerce_int(d.get("total_put_oi"))
     d["dte"] = _coerce_int(d.get("dte"))
     return ExpirySnapshot(**d)
+
+
+def _atm_iv_proxy_ex(ex: ExpirySnapshot | dict[str, Any]) -> float | None:
+    """ATM implied vol: average of call and put when both present; else first available side."""
+    if isinstance(ex, ExpirySnapshot):
+        c, p = ex.atm_call_iv, ex.atm_put_iv
+    else:
+        c = _coerce_float(ex.get("atm_call_iv"))
+        p = _coerce_float(ex.get("atm_put_iv"))
+    if c is not None and p is not None and c > 0 and p > 0:
+        return (c + p) / 2.0
+    if c is not None and c > 0:
+        return c
+    if p is not None and p > 0:
+        return p
+    return None
+
+
+def _selected_expiry_rows(snapshot: OptionsChainSnapshot | dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(snapshot, OptionsChainSnapshot):
+        return [asdict(x) for x in snapshot.selected_expiries]
+    rows = snapshot.get("selected_expiries") or []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if isinstance(r, dict):
+            out.append(dict(r))
+    return out
+
+
+def iv_crush_multiplier(
+    snapshot: OptionsChainSnapshot | dict[str, Any] | None,
+    *,
+    earnings_date: str,
+) -> float | None:
+    """Post/event IV ratio for HV30 diffusion adjustment (``IV_post / IV_event``).
+
+    Uses ``selected_expiries`` only: **event-week** = first listed expiry on/after ``earnings_date``;
+    **post-event** = the next listed expiry strictly after that. ATM IV is the average of ATM call
+    and put IV when both exist, else the available side.
+
+    Returns ``None`` when expiries or IVs are missing, or when the raw ratio falls outside
+    ``[0.4, 1.2]`` (logged as suspicious chain data).
+    """
+    if snapshot is None:
+        return None
+    earn = _parse_earnings_calendar_date(earnings_date)
+    if earn is None:
+        logger.warning("iv_crush_multiplier: could not parse earnings_date=%r", earnings_date)
+        return None
+
+    rows = _selected_expiry_rows(snapshot)
+    dated: list[tuple[date, dict[str, Any]]] = []
+    for row in rows:
+        ds = str(row.get("expiry_date") or "")[:10]
+        try:
+            dated.append((date.fromisoformat(ds), row))
+        except ValueError:
+            continue
+    dated.sort(key=lambda t: t[0])
+    if len(dated) < 2:
+        return None
+
+    event_i: int | None = None
+    for i, (d, _) in enumerate(dated):
+        if d >= earn:
+            event_i = i
+            break
+    if event_i is None or event_i + 1 >= len(dated):
+        return None
+
+    _, row_ev = dated[event_i]
+    _, row_post = dated[event_i + 1]
+    iv_ev = _atm_iv_proxy_ex(row_ev)
+    iv_post = _atm_iv_proxy_ex(row_post)
+    if iv_ev is None or iv_post is None or iv_ev <= 0.0 or iv_post <= 0.0:
+        return None
+
+    ratio = iv_post / iv_ev
+    lo, hi = 0.4, 1.2
+    if ratio < lo or ratio > hi:
+        logger.warning(
+            "iv_crush_multiplier: ratio %.4f outside [%.1f, %.1f] (event=%s post=%s); ignoring",
+            ratio,
+            lo,
+            hi,
+            str(row_ev.get("expiry_date")),
+            str(row_post.get("expiry_date")),
+        )
+        return None
+    return float(ratio)
 
 
 def _failed_options_prompt_dict(symbol_u: str, fetch_error: str) -> dict[str, Any]:

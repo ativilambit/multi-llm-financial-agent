@@ -367,6 +367,37 @@ def verify_variance_additive_sigma_band_sessions(
     return followups
 
 
+def verify_iv_crush_daily_vol_followups(
+    synthesis_text: str,
+    *,
+    iv_crush_multiplier: float | None,
+    hv30_annualized_pct: float | None,
+    symbol: str = "",
+    tolerance: float = 0.10,
+) -> list[str]:
+    """When chain + history supply an IV crush multiplier, flag ``daily_vol=`` that ignores it."""
+    if iv_crush_multiplier is None or hv30_annualized_pct is None:
+        return []
+    dv_m = _DAILY_VOL_PCT_RE.search(synthesis_text)
+    if dv_m is None:
+        return []
+    try:
+        claimed = float(dv_m.group(1))
+    except ValueError:
+        return []
+    expected = (float(hv30_annualized_pct) / math.sqrt(252.0)) * float(iv_crush_multiplier)
+    if expected <= 0.0:
+        return []
+    rel = abs(claimed - expected) / expected
+    if rel <= tolerance:
+        return []
+    sym = symbol.strip().upper() or "TICKER"
+    return [
+        f"Cite or verify: {sym} daily_vol claimed={claimed:.2f}%/day; expected={expected:.2f}%/day "
+        f"after IV crush (multiplier={iv_crush_multiplier:.2f} from chain).",
+    ]
+
+
 def _parse_variance_additive_literals(synthesis: str) -> tuple[float | None, float | None]:
     ej_m = _EVENT_JUMP_PCT_RE.search(synthesis)
     dv_m = _DAILY_VOL_PCT_RE.search(synthesis)
@@ -511,6 +542,8 @@ def augment_verifier_result_with_sigma_structural_checks(
     sqrt_tolerance: float = 0.25,
     options_chain_data: dict[str, Any] | None = None,
     symbol: str = "",
+    iv_crush_multiplier: float | None = None,
+    hv30_annualized_pct: float | None = None,
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     out = dict(result)
@@ -588,6 +621,15 @@ def augment_verifier_result_with_sigma_structural_checks(
             synthesis_text,
             out,
             options_chain_data=options_chain_data,
+            symbol=symbol,
+        ),
+    )
+
+    extras.extend(
+        verify_iv_crush_daily_vol_followups(
+            synthesis_text,
+            iv_crush_multiplier=iv_crush_multiplier,
+            hv30_annualized_pct=hv30_annualized_pct,
             symbol=symbol,
         ),
     )
@@ -1990,11 +2032,23 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             provider_finish_reason=provider_finish_reason_label(resp.raw),
             provider_raw=resp.raw,
         )
+        eq_ctx_raw = state.get("equity_prompt_render_context")
+        iv_c: float | None = None
+        hv_p: float | None = None
+        if isinstance(eq_ctx_raw, dict):
+            raw_iv = eq_ctx_raw.get("iv_crush_multiplier")
+            if isinstance(raw_iv, (int, float)) and not isinstance(raw_iv, bool):
+                iv_c = float(raw_iv)
+            raw_hv = eq_ctx_raw.get("hv30_annualized_pct")
+            if isinstance(raw_hv, (int, float)) and not isinstance(raw_hv, bool):
+                hv_p = float(raw_hv)
         data = augment_verifier_result_with_sigma_structural_checks(
             syn,
             data,
             options_chain_data=state.get("options_chain_data"),
             symbol=str(state.get("symbol", "")),
+            iv_crush_multiplier=iv_c,
+            hv30_annualized_pct=hv_p,
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"

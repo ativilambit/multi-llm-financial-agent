@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import pandas as pd
@@ -12,6 +13,7 @@ from equity_analyst.options_chain import (
     clear_options_chain_cache,
     fetch_options_chain_prompt_dict,
     fetch_options_chain_snapshot,
+    iv_crush_multiplier,
     options_chain_expiry_audit_messages,
     options_chain_snapshot_from_prompt_dict,
 )
@@ -211,3 +213,96 @@ def test_options_chain_expiry_audit_messages_flags_unknown_expiry() -> None:
     assert msgs
     assert "2026-05-20" in msgs[0]
     assert "verified chain" in msgs[0].lower()
+
+
+def _sample_expiry(
+    *,
+    expiry_date: str,
+    call_iv: float,
+    put_iv: float,
+) -> ExpirySnapshot:
+    return ExpirySnapshot(
+        expiry_date=expiry_date,
+        dte=1,
+        atm_strike=100.0,
+        atm_call_bid=1.0,
+        atm_call_ask=1.0,
+        atm_call_mid=1.0,
+        atm_call_last=1.0,
+        atm_call_iv=call_iv,
+        atm_put_bid=1.0,
+        atm_put_ask=1.0,
+        atm_put_mid=1.0,
+        atm_put_last=1.0,
+        atm_put_iv=put_iv,
+        atm_straddle_mid=2.0,
+        implied_move_pct=0.02,
+        expected_move_dollar=2.0,
+        skew_25d_call_minus_put_iv=0.0,
+        skew_25d_note="test",
+        total_call_volume=1,
+        total_put_volume=1,
+        put_call_ratio=1.0,
+        total_call_oi=1,
+        total_put_oi=1,
+        put_call_ratio_oi=1.0,
+    )
+
+
+def test_iv_crush_multiplier_returns_ratio_when_both_expiries_present() -> None:
+    snap = OptionsChainSnapshot(
+        as_of="z",
+        symbol="NBIS",
+        spot=100.0,
+        available_expiries=["2026-05-15", "2026-05-22"],
+        selected_expiries=[
+            _sample_expiry(expiry_date="2026-05-15", call_iv=1.03, put_iv=1.03),
+            _sample_expiry(expiry_date="2026-05-22", call_iv=0.61, put_iv=0.61),
+        ],
+    )
+    m = iv_crush_multiplier(snap, earnings_date="2026-05-13")
+    assert m is not None
+    assert m == pytest.approx(0.61 / 1.03, rel=1e-6)
+
+
+def test_iv_crush_multiplier_returns_none_when_only_one_expiry() -> None:
+    snap = OptionsChainSnapshot(
+        as_of="z",
+        symbol="NBIS",
+        spot=100.0,
+        available_expiries=["2026-05-15"],
+        selected_expiries=[_sample_expiry(expiry_date="2026-05-15", call_iv=1.0, put_iv=1.0)],
+    )
+    assert iv_crush_multiplier(snap, earnings_date="2026-05-13") is None
+
+
+def test_iv_crush_multiplier_clamps_out_of_range(caplog: pytest.LogCaptureFixture) -> None:
+    snap = OptionsChainSnapshot(
+        as_of="z",
+        symbol="NBIS",
+        spot=100.0,
+        available_expiries=["2026-05-15", "2026-05-22"],
+        selected_expiries=[
+            _sample_expiry(expiry_date="2026-05-15", call_iv=0.2, put_iv=0.2),
+            _sample_expiry(expiry_date="2026-05-22", call_iv=0.9, put_iv=0.9),
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.options_chain"):
+        assert iv_crush_multiplier(snap, earnings_date="2026-05-13") is None
+    assert "outside" in caplog.text.lower()
+
+
+def test_to_markdown_table_includes_iv_crush_line_when_earnings_date() -> None:
+    snap = OptionsChainSnapshot(
+        as_of="z",
+        symbol="NBIS",
+        spot=100.0,
+        available_expiries=["2026-05-15", "2026-05-22"],
+        selected_expiries=[
+            _sample_expiry(expiry_date="2026-05-15", call_iv=1.03, put_iv=1.03),
+            _sample_expiry(expiry_date="2026-05-22", call_iv=0.61, put_iv=0.61),
+        ],
+    )
+    md = snap.to_markdown_table(earnings_date="2026-05-13")
+    assert "IV crush ratio (post/event)" in md
+    assert "0.5922" in md or "0.592" in md

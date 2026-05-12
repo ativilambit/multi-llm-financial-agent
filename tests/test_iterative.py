@@ -24,6 +24,7 @@ from equity_analyst.iterative import (
     render_per_provider_sigma_checks_markdown,
     round_summary_for_changelog,
     sigma_band_sqrt_ratio_followups,
+    verify_iv_crush_daily_vol_followups,
     verify_variance_additive_sigma_band_sessions,
 )
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
@@ -303,6 +304,47 @@ def test_augment_verifier_flags_expiry_not_in_verified_chain() -> None:
     assert out["sigma_band_sessions"][0]["session"] == "May 13"
     assert out["sigma_band_sessions"][0]["sigma_scaling_check_passed"] is False
     assert out["sigma_scaling_aggregate_passed"] is False
+
+
+def test_verifier_flags_provider_not_applying_iv_crush_multiplier() -> None:
+    syn = "event_jump=6% daily_vol=5.35% (HV30 84.9% ann / sqrt(252))\n"
+    qs = verify_iv_crush_daily_vol_followups(
+        syn,
+        iv_crush_multiplier=0.59,
+        hv30_annualized_pct=84.9,
+        symbol="NBIS",
+    )
+    assert qs
+    assert "NBIS" in qs[0]
+    assert "after IV crush" in qs[0]
+
+
+def test_verify_iv_crush_daily_vol_followups_within_tolerance_empty() -> None:
+    syn = "event_jump=6% daily_vol=3.15%\n"
+    assert (
+        verify_iv_crush_daily_vol_followups(
+            syn,
+            iv_crush_multiplier=0.59,
+            hv30_annualized_pct=84.9,
+        )
+        == []
+    )
+
+
+def test_augment_verifier_appends_iv_crush_followup() -> None:
+    syn = "event_jump=6% daily_vol=5.35%\n"
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    out = augment_verifier_result_with_sigma_structural_checks(
+        syn,
+        base,
+        iv_crush_multiplier=0.59,
+        hv30_annualized_pct=84.9,
+        symbol="NBIS",
+    )
+    assert any("after IV crush" in u for u in out["unverifiable"])
 
 
 def _base_cfg(**kwargs: Any) -> RunConfig:

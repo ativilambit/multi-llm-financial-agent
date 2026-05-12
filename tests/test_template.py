@@ -232,6 +232,8 @@ def test_template_generalizes_to_other_symbol() -> None:
     assert "{{" not in text
     assert "NVDA" in text
     assert "$100.0\u2013$110.0" in text
+
+
 def test_template_options_chain_markdown_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     md = "| test table |\n|--|\n| x |"
 
@@ -416,3 +418,167 @@ def test_render_prompt_warns_when_options_chain_auto_fetch_but_unavailable(
     with caplog.at_level(logging.WARNING, logger="equity_analyst.prompting"):
         render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2")
     assert "unit-test log reason" in caplog.text
+
+
+def test_template_includes_iv_crush_multiplier_and_adjusted_daily_vol_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        return (
+            {
+                "options_chain_available": True,
+                "symbol": cfg.symbol,
+                "spot": 100.0,
+                "available_expiries": ["2026-05-15", "2026-05-22"],
+                "selected_expiries": [
+                    {
+                        "expiry_date": "2026-05-15",
+                        "dte": 2,
+                        "atm_strike": 100.0,
+                        "atm_call_iv": 1.03,
+                        "atm_put_iv": 1.03,
+                        "atm_straddle_mid": 11.0,
+                        "implied_move_pct": 0.11,
+                        "expected_move_dollar": 11.0,
+                        "skew_25d_call_minus_put_iv": 0.0,
+                        "skew_25d_note": "n/a",
+                        "total_call_volume": 1,
+                        "total_put_volume": 1,
+                        "put_call_ratio": 1.0,
+                        "total_call_oi": 1,
+                        "total_put_oi": 1,
+                        "put_call_ratio_oi": 1.0,
+                        "atm_call_bid": 1.0,
+                        "atm_call_ask": 1.0,
+                        "atm_call_mid": 1.0,
+                        "atm_call_last": 1.0,
+                        "atm_put_bid": 1.0,
+                        "atm_put_ask": 1.0,
+                        "atm_put_mid": 1.0,
+                        "atm_put_last": 1.0,
+                    },
+                    {
+                        "expiry_date": "2026-05-22",
+                        "dte": 7,
+                        "atm_strike": 100.0,
+                        "atm_call_iv": 0.61,
+                        "atm_put_iv": 0.61,
+                        "atm_straddle_mid": 8.0,
+                        "implied_move_pct": 0.08,
+                        "expected_move_dollar": 8.0,
+                        "skew_25d_call_minus_put_iv": 0.0,
+                        "skew_25d_note": "n/a",
+                        "total_call_volume": 1,
+                        "total_put_volume": 1,
+                        "put_call_ratio": 1.0,
+                        "total_call_oi": 1,
+                        "total_put_oi": 1,
+                        "put_call_ratio_oi": 1.0,
+                        "atm_call_bid": 1.0,
+                        "atm_call_ask": 1.0,
+                        "atm_call_mid": 1.0,
+                        "atm_call_last": 1.0,
+                        "atm_put_bid": 1.0,
+                        "atm_put_ask": 1.0,
+                        "atm_put_mid": 1.0,
+                        "atm_put_last": 1.0,
+                    },
+                ],
+                "as_of": "z",
+                "fetch_error": None,
+            },
+            "|stub chain md|\n",
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    monkeypatch.setattr("equity_analyst.prompting.fetch_hv30_annualized_percent", lambda _sym: 84.9)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "NBIS",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "2026-05-13",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    rendered = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2")
+    text = rendered.text
+    assert "Pre-computed IV crush" in text
+    assert "iv_crush_multiplier" in text
+    mult = 0.61 / 1.03
+    assert f"{mult:.4f}" in text
+    assert rendered.context["iv_crush_multiplier"] == pytest.approx(mult)
+    assert rendered.context["hv30_annualized_pct"] == pytest.approx(84.9)
+    assert rendered.context["daily_vol_iv_adjusted"] == pytest.approx((84.9 / (252**0.5)) * mult)
+    assert "IV-crush adjustment" in text
+
+
+def test_template_falls_back_when_multiplier_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        return (
+            {
+                "options_chain_available": True,
+                "symbol": cfg.symbol,
+                "spot": 100.0,
+                "available_expiries": ["2026-05-15"],
+                "selected_expiries": [
+                    {
+                        "expiry_date": "2026-05-15",
+                        "dte": 2,
+                        "atm_strike": 100.0,
+                        "atm_call_iv": 1.03,
+                        "atm_put_iv": 1.03,
+                        "atm_straddle_mid": 11.0,
+                        "implied_move_pct": 0.11,
+                        "expected_move_dollar": 11.0,
+                        "skew_25d_call_minus_put_iv": 0.0,
+                        "skew_25d_note": "n/a",
+                        "total_call_volume": 1,
+                        "total_put_volume": 1,
+                        "put_call_ratio": 1.0,
+                        "total_call_oi": 1,
+                        "total_put_oi": 1,
+                        "put_call_ratio_oi": 1.0,
+                        "atm_call_bid": 1.0,
+                        "atm_call_ask": 1.0,
+                        "atm_call_mid": 1.0,
+                        "atm_call_last": 1.0,
+                        "atm_put_bid": 1.0,
+                        "atm_put_ask": 1.0,
+                        "atm_put_mid": 1.0,
+                        "atm_put_last": 1.0,
+                    },
+                ],
+                "as_of": "z",
+                "fetch_error": None,
+            },
+            "|stub|",
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    monkeypatch.setattr("equity_analyst.prompting.fetch_hv30_annualized_percent", lambda _sym: 84.9)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "NBIS",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "2026-05-13",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    rendered = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2")
+    assert rendered.context["iv_crush_multiplier"] is None
+    assert rendered.context["daily_vol_iv_adjusted"] is None
+    assert "Pre-computed IV crush" not in rendered.text
