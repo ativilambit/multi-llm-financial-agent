@@ -265,17 +265,25 @@ The **2026-05-13 earnings batch** adds six configs keyed to **Wed May 13, 2026**
 | VSH | Vishay Intertechnology, Inc. (NYSE: VSH) | `configs/vsh_2026_05_13.yaml` |
 | BIRK | Birkenstock Holding plc (NYSE: BIRK) | `configs/birk_2026_05_13.yaml` |
 
-`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above. Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`, and **`--symbols A,B,C`** or **`--symbols-file path`** to override the ticker list (`--symbols` wins if both are passed).
+`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above. Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`. If you set **`--date`** (or pass a leading **`DATE`** positional) and omit **`--symbols`** / **`--symbols-file`**, the script **auto-discovers** every matching `configs/*_<suffix>.yaml` and runs those tickers in **sorted** order. Use **`--symbols A,B,C`** or **`--symbols-file path`** to pin a subset; with either, every expected config must exist **before** the batch starts (missing files are listed and the script exits non-zero). **`--symbols` wins** if both `--symbols` and `--symbols-file` are passed.
 
 ```bash
 # Sequential (default): one symbol at a time, --iterative --max-iterations 3 --log-level INFO.
 # Live Python logs stream to your terminal and are also copied to outputs/batch_<ts>/<symbol>.log.
 scripts/run_all_symbols.sh
 
-# May 12, 2026 batch (all ten symbols, sequential):
+# Auto-discover every config for that earnings date (sorted tickers):
+scripts/run_all_symbols.sh 2026_05_12
+scripts/run_all_symbols.sh 2026_05_13
+scripts/run_all_symbols.sh --date 2026-05-12
+
+# Positional date + explicit subset (NBIS and BABA only):
+scripts/run_all_symbols.sh 2026_05_13 NBIS BABA
+
+# May 12, 2026 batch (all configs for that date, explicit comma list — same set as discovery):
 scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY
 
-# May 13, 2026 batch (six symbols, sequential):
+# May 13, 2026 batch (six symbols):
 scripts/run_all_symbols.sh --date 2026-05-13 --symbols NBIS,BABA,WIX,DT,VSH,BIRK
 
 # Same batch in parallel (example: three concurrent symbols):

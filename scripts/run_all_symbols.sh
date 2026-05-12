@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Batch runner: iterates `python -m equity_analyst run` over a symbol list and a
-# shared config date suffix (e.g. configs/asts_2026_05_10.yaml).
+# shared config date suffix (e.g. configs/asts_2026_05_10.yaml). With an explicit
+# --date (or leading positional DATE) and no --symbols/--symbols-file, tickers are
+# auto-discovered from every configs/*_<date>.yaml (sorted).
 #
 # Sequential by default (one symbol at a time) so provider rate limits and
 # long web-search runs do not stack; each symbol’s Python output is tee’d to
@@ -17,6 +19,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+
+# Collapse runs of spaces/tabs to one space and trim ends (portable; avoids xargs).
+squeeze_trim() {
+  printf '%s' "$1" | tr -s '[:blank:]' ' ' | sed 's/^ //;s/ $//'
+}
 
 PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
@@ -54,6 +61,65 @@ normalize_config_date() {
   esac
 }
 
+# True if the token normalizes to configs/*_<token>.yaml style suffix.
+is_config_date_token() {
+  local d="$1"
+  d="$(printf '%s' "$d" | tr '-' '_')"
+  case "$d" in
+    [0-9][0-9][0-9][0-9]_[0-9][0-9]_[0-9][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Uppercase tickers from configs/*_<date_suffix>.yaml, sorted uniquely (deterministic order).
+discover_symbols_for_date() {
+  local d="$1"
+  local f base sym acc
+  acc=""
+  for f in "$REPO_ROOT/configs/"*"_${d}.yaml"; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"
+    sym="${base%_${d}.yaml}"
+    [ -z "$sym" ] && continue
+    sym="$(printf '%s' "$sym" | tr '[:lower:]' '[:upper:]')"
+    acc="$acc $sym"
+  done
+  acc="$(squeeze_trim "$acc")"
+  if [ -z "$acc" ]; then
+    echo "ERROR: no configs matching configs/*_${d}.yaml" >&2
+    return 1
+  fi
+  local sorted line
+  sorted=""
+  for line in $(printf '%s\n' $acc | sort -u); do
+    [ -z "$line" ] && continue
+    sorted="${sorted}${sorted:+ }$line"
+  done
+  printf '%s' "$sorted"
+}
+
+# Fail fast before any run when the user supplied an explicit symbol list.
+validate_explicit_configs() {
+  local d="$1"
+  local syms="$2"
+  local sym lower path had_missing
+  had_missing=0
+  for sym in $syms; do
+    lower="$(printf '%s' "$sym" | tr '[:upper:]' '[:lower:]')"
+    path="configs/${lower}_${d}.yaml"
+    if [ ! -f "$path" ]; then
+      if [ "$had_missing" -eq 0 ]; then
+        echo "ERROR: missing config file(s) for explicit symbol list:" >&2
+        had_missing=1
+      fi
+      echo "  $path" >&2
+    fi
+  done
+  if [ "$had_missing" -eq 1 ]; then
+    exit 2
+  fi
+}
+
 load_symbols_from_file() {
   local path="$1"
   local line acc
@@ -64,11 +130,11 @@ load_symbols_from_file() {
   fi
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"
-    line="$(printf '%s' "$line" | tr ',' ' ' | xargs)"
+    line="$(squeeze_trim "$(printf '%s' "$line" | tr ',' ' ')")"
     [ -z "$line" ] && continue
     acc="$acc $line"
   done <"$path"
-  printf '%s' "$acc" | xargs
+  squeeze_trim "$acc"
 }
 
 validate_jobs() {
@@ -105,15 +171,26 @@ finalize_parallel_jobs() {
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/run_all_symbols.sh [options]
+Usage: scripts/run_all_symbols.sh [positional] [options]
+
+Positional shorthand (optional, must come first):
+  DATE [SYM ...]        Same as --date DATE; if no tickers follow, symbols are
+                        auto-discovered from every configs/*_DATE.yaml (sorted).
+                        Ticker arguments may continue until the first --flag.
 
 Batch options:
   --date YYYY-MM-DD       Config filename suffix (underscores in paths). Default:
                           2026-05-10 → configs/<sym>_2026_05_10.yaml
+                        If you pass --date (or use the positional DATE form) and
+                        do not pass --symbols / --symbols-file, tickers are read
+                        from all matching configs/*_<suffix>.yaml files.
   --symbols A,B,C       Comma-separated tickers (overrides default list and
                           --symbols-file if both are passed).
   --symbols-file PATH   One or more tickers per line (# comments allowed).
                           Ignored if --symbols is also passed.
+                        With --symbols or --symbols-file, every
+                        configs/<sym_lower>_<date>.yaml must exist before the
+                        batch starts (fail fast with a list of missing paths).
 
 Run options:
   --parallel              Run symbols as background jobs with bounded concurrency
@@ -131,10 +208,37 @@ Run options:
 Default symbol order (with default --date 2026-05-10):
   ASTS FIGR HIMS RGTI GTM PLUG STE ACHR IX QUBT
 
+Examples:
+  scripts/run_all_symbols.sh 2026_05_12
+  scripts/run_all_symbols.sh 2026_05_13 NBIS BABA
+  scripts/run_all_symbols.sh --date 2026-05-12 --parallel
+
 A per-batch summary is written to outputs/batch_<timestamp>/batch_summary.txt
 along with one combined log per symbol.
 USAGE
 }
+
+# Optional leading positional: DATE [SYM ...] then flags (Bash 3.2).
+if [ "$#" -gt 0 ] && is_config_date_token "$1"; then
+  HAVE_DATE=1
+  RAW_DATE="$1"
+  shift
+  pos_syms=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --*) break ;;
+      *)
+        pos_syms="$pos_syms $1"
+        shift
+        ;;
+    esac
+  done
+  pos_syms="$(squeeze_trim "$pos_syms")"
+  if [ -n "$pos_syms" ]; then
+    HAVE_SYMBOLS=1
+    SYMBOLS_ARG="$pos_syms"
+  fi
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -244,10 +348,15 @@ else
   CONFIG_DATE="$CONFIG_DATE_DEFAULT"
 fi
 
+EXPLICIT_SYMBOL_SOURCE=0
 if [ "$HAVE_SYMBOLS" -eq 1 ]; then
-  SYMBOLS="$(printf '%s' "$SYMBOLS_ARG" | tr ',' ' ' | xargs)"
+  EXPLICIT_SYMBOL_SOURCE=1
+  SYMBOLS="$(squeeze_trim "$(printf '%s' "$SYMBOLS_ARG" | tr ',' ' ')")"
 elif [ "$HAVE_SYMBOLS_FILE" -eq 1 ]; then
+  EXPLICIT_SYMBOL_SOURCE=1
   SYMBOLS="$(load_symbols_from_file "$SYMBOLS_FILE_PATH")" || exit 2
+elif [ "$HAVE_DATE" -eq 1 ]; then
+  SYMBOLS="$(discover_symbols_for_date "$CONFIG_DATE")" || exit 2
 else
   SYMBOLS="$SYMBOLS_DEFAULT"
 fi
@@ -255,6 +364,10 @@ fi
 if [ -z "$SYMBOLS" ]; then
   echo "ERROR: resolved symbol list is empty (check --symbols / --symbols-file / defaults)" >&2
   exit 2
+fi
+
+if [ "$EXPLICIT_SYMBOL_SOURCE" -eq 1 ]; then
+  validate_explicit_configs "$CONFIG_DATE" "$SYMBOLS"
 fi
 
 BATCH_TS="$(date -u +%Y%m%dT%H%M%SZ)"
