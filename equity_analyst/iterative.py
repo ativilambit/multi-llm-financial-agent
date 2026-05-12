@@ -50,6 +50,7 @@ from equity_analyst.retry import async_retry_call
 from equity_analyst.synthesizer import (
     SynthesisResult,
     Synthesizer,
+    detect_max_tokens_truncation,
     format_synthesis_artifact_markdown,
     provider_finish_reason_label,
 )
@@ -432,6 +433,18 @@ def _coerce_sections_to_revise(raw: Any) -> list[int]:
     return out
 
 
+def _finish_reason_implies_provider_truncation(finish_reason: str | None) -> bool:
+    """True when the provider-reported finish reason indicates output-length truncation."""
+    if not finish_reason:
+        return False
+    u = finish_reason.upper()
+    if "MAX_TOKENS" in u or "MAX_OUTPUT" in u:
+        return True
+    if "MAX" in u and "TOKEN" in u:
+        return True
+    return u in {"LENGTH", "MODEL_LENGTH"}
+
+
 def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) -> dict[str, Any]:
     result: dict[str, Any] = {
         "verified": _values_for_canonical_key(best_data, "verified"),
@@ -461,13 +474,16 @@ def parse_verifier_json(
     text: str,
     *,
     provider_finish_reason: str | None = None,
+    provider_raw: Any = None,
 ) -> dict[str, Any]:
     """Parse verifier model output into verified / contradicted / unverifiable lists (and optional notes).
 
-    ``provider_finish_reason`` is logged when a truncated JSON repair path runs (debugging).
+    ``provider_finish_reason`` / ``provider_raw`` are used to decide whether salvaged JSON should be treated
+    as provider-truncated (``_truncated`` + WARNING) vs a benign salvage path on a normal STOP completion.
     """
     raw = text
     candidates = _candidate_dicts_from_text(text)
+    repair_used = False
     truncated = False
     best_data: dict[str, Any] | None = None
 
@@ -475,7 +491,7 @@ def parse_verifier_json(
         repaired = _attempt_truncated_json_repair(text)
         if repaired is not None:
             best_data = repaired
-            truncated = True
+            repair_used = True
         else:
             logger.warning(
                 "verifier JSON parse failed (no object decoded); verifier_raw=%s",
@@ -500,6 +516,12 @@ def parse_verifier_json(
                 best_data = data
 
     assert best_data is not None
+    max_tokens_hit, _ = detect_max_tokens_truncation(provider_raw)
+    if repair_used:
+        truncated = bool(
+            max_tokens_hit
+            or _finish_reason_implies_provider_truncation(provider_finish_reason),
+        )
     result = _build_verification_result(best_data, truncated=truncated)
     if truncated:
         raw_bytes = len(text.encode("utf-8"))
@@ -594,6 +616,171 @@ class RefinementState(TypedDict, total=False):
     refinement_mode_prompt_enabled: NotRequired[bool]
     facts_packet_md: NotRequired[str]
     last_route_followup_questions: NotRequired[list[str]]
+
+
+def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
+    """Decide next graph node after verification (stop / verify-only / provider fan-out)."""
+    syn = state["synthesis_history"][-1]
+    ver = state["verification_history"][-1]
+    conf = parse_overall_confidence(syn)
+    syn_passes = len(state.get("synthesis_history") or [])
+    n_provider_rounds = len(state.get("provider_responses") or [])
+    contrad = ver.get("contradicted") or []
+    unver = ver.get("unverifiable") or []
+    n_contrad = len(contrad)
+    n_unver = len(unver)
+    max_it = int(state["max_iterations"])
+    threshold = float(state["confidence_threshold"])
+    snap: dict[str, Any] = state.get("iterative_config_snapshot") or {}
+    skip_unver = bool(snap.get("unverifiable_only_skip_fan_out", True))
+    unver_thr = int(snap.get("unverifiable_count_threshold_for_fanout", 3))
+    conf_cut = float(snap.get("unverifiable_fanout_confidence_below", 0.8))
+    force_fan = bool(snap.get("force_fan_out_on_continue", False))
+
+    logger.info(
+        "Node route rounds_completed=%s max_iterations=%s overall_confidence=%s contradicted=%s "
+        "unverifiable=%s synthesis_passes=%s",
+        n_provider_rounds,
+        max_it,
+        f"{conf:.4f}" if conf is not None else "none",
+        n_contrad,
+        n_unver,
+        syn_passes,
+    )
+
+    if syn_passes >= max_it:
+        logger.info("Route decision: finalize (max_iterations reached)")
+        return Command(goto="finalize")
+
+    if conf is not None and conf >= threshold and n_contrad == 0 and n_unver == 0:
+        logger.info(
+            "Route decision: stop confidence=%s contradicted=0 unverifiable=0",
+            f"{conf:.2f}",
+        )
+        return Command(goto="finalize")
+
+    qs: list[str] = []
+    for c in contrad:
+        qs.append(f"Resolve with primary sources: {c}")
+    for u in unver:
+        qs.append(f"Cite or verify: {u}")
+
+    high_unver_fanout = (
+        n_contrad == 0
+        and n_unver >= unver_thr
+        and conf is not None
+        and conf < conf_cut
+    )
+    cite_only_mode = (
+        n_contrad == 0
+        and n_unver > 0
+        and skip_unver
+        and not force_fan
+        and not high_unver_fanout
+    )
+
+    if force_fan:
+        rreason = "force_fan_out_on_continue"
+        if n_contrad > 0:
+            logger.info(
+                "Route decision: continue (fan_out) followups=%s contradicted=%s reason=%s",
+                len(qs),
+                n_contrad,
+                rreason,
+            )
+        elif n_unver > 0:
+            logger.info(
+                "Route decision: continue (fan_out) followups=%s contradicted=0 unverifiable=%s reason=%s",
+                len(qs),
+                n_unver,
+                rreason,
+            )
+        else:
+            logger.info(
+                "Route decision: continue (fan_out) followups=%s contradicted=%s reason=%s",
+                len(qs),
+                n_contrad,
+                rreason,
+            )
+        return Command(
+            goto="fan_out",
+            update={
+                "followup_questions": qs,
+                "last_route_followup_questions": qs,
+            },
+        )
+
+    if cite_only_mode:
+        cite_qs = [f"Cite or verify: {u}" for u in unver]
+        logger.info(
+            "Route decision: continue (verify_only) cite_unverifiable=%s contradicted=0",
+            n_unver,
+        )
+        return Command(
+            goto="synthesize",
+            update={
+                "followup_questions": cite_qs,
+                "last_route_followup_questions": cite_qs,
+            },
+        )
+
+    if n_contrad > 0 and qs:
+        logger.info(
+            "Route decision: continue (fan_out) followups=%s contradicted=%s reason=contradictions",
+            len(qs),
+            n_contrad,
+        )
+        return Command(
+            goto="fan_out",
+            update={
+                "followup_questions": qs,
+                "last_route_followup_questions": qs,
+            },
+        )
+
+    if high_unver_fanout and qs:
+        logger.info(
+            "Route decision: continue (fan_out) followups=%s contradicted=0 unverifiable=%s reason=high_unverifiable_count",
+            len(qs),
+            n_unver,
+        )
+        return Command(
+            goto="fan_out",
+            update={
+                "followup_questions": qs,
+                "last_route_followup_questions": qs,
+            },
+        )
+
+    if qs:
+        if n_unver > 0 and n_contrad == 0:
+            logger.info(
+                "Route decision: continue (fan_out) followups=%s contradicted=0 unverifiable=%s reason=mixed_or_low_confidence",
+                len(qs),
+                n_unver,
+            )
+        else:
+            logger.info(
+                "Route decision: continue (fan_out) followups=%s contradicted=%s",
+                len(qs),
+                n_contrad,
+            )
+        return Command(
+            goto="fan_out",
+            update={
+                "followup_questions": qs,
+                "last_route_followup_questions": qs,
+            },
+        )
+
+    logger.info("Route decision: continue (fan_out) followups=0")
+    return Command(
+        goto="fan_out",
+        update={
+            "followup_questions": [],
+            "last_route_followup_questions": [],
+        },
+    )
 
 
 def _estimate_prompt_tokens(text: str) -> int:
@@ -1262,6 +1449,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         data = parse_verifier_json(
             resp.text,
             provider_finish_reason=provider_finish_reason_label(resp.raw),
+            provider_raw=resp.raw,
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -1280,41 +1468,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         return out_v
 
     def route(state: RefinementState) -> Command[Any]:
-        syn = state["synthesis_history"][-1]
-        ver = state["verification_history"][-1]
-        conf = parse_overall_confidence(syn)
-        n_rounds = len(state["provider_responses"])
-        contrad = ver.get("contradicted") or []
-        max_it = state["max_iterations"]
-        logger.info(
-            "Node route rounds_completed=%s max_iterations=%s overall_confidence=%s contradicted=%s",
-            n_rounds,
-            max_it,
-            f"{conf:.4f}" if conf is not None else "none",
-            len(contrad),
-        )
-        if n_rounds >= state["max_iterations"]:
-            logger.info("Route decision: finalize (max_iterations reached)")
-            return Command(goto="finalize")
-        if conf is not None and conf >= state["confidence_threshold"] and not contrad:
-            logger.info(
-                "Route decision: finalize (confidence >= threshold and no contradictions) threshold=%s",
-                state["confidence_threshold"],
-            )
-            return Command(goto="finalize")
-        qs: list[str] = []
-        for c in contrad:
-            qs.append(f"Resolve with primary sources: {c}")
-        for u in ver.get("unverifiable") or []:
-            qs.append(f"Cite or verify: {u}")
-        logger.info("Route decision: continue (fan_out) followups=%s", len(qs))
-        return Command(
-            goto="fan_out",
-            update={
-                "followup_questions": qs,
-                "last_route_followup_questions": qs,
-            },
-        )
+        return compute_refinement_route_command(state)
 
     async def finalize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])

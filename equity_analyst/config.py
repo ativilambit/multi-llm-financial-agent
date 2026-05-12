@@ -244,6 +244,30 @@ class RunConfig(BaseModel):
         "follow-up questions (from contradictions / unverifiable), even when conditional_fanout_enabled is True "
         "and the verifier left refan_out_* unset. Set False to keep legacy cost behavior (verifier refan only).",
     )
+    unverifiable_only_skip_fan_out: bool = Field(
+        default=True,
+        description="Iterative: when True and the verifier reports contradictions=0 with only unverifiable items, "
+        "route to synthesize+verify again without re-calling fan-out providers (cheaper citation cleanup).",
+    )
+    unverifiable_count_threshold_for_fanout: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        description="Iterative: when unverifiable count is at least this value and overall_confidence is below "
+        "unverifiable_fanout_confidence_below, re-run provider fan-out even if there are no contradictions.",
+    )
+    unverifiable_fanout_confidence_below: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Iterative: paired with unverifiable_count_threshold_for_fanout to trigger a provider re-fan-out "
+        "when many items are unverifiable and confidence is low.",
+    )
+    force_fan_out_on_continue: bool = Field(
+        default=False,
+        description="Iterative: when True, any router 'continue' goes to provider fan-out (overrides "
+        "unverifiable_only_skip_fan_out verify-only routing).",
+    )
     refinement_mode_prompt_enabled: bool = Field(
         default=True,
         description="Iterative: when iteration 2+ actually invokes fan-out providers, prepend REFINEMENT MODE "

@@ -15,6 +15,7 @@ from equity_analyst.iterative import (
     VERIFIER_INSTRUCTION_PREFIX,
     build_initial_refinement_state,
     compile_refinement_workflow,
+    compute_refinement_route_command,
     dry_run_compile_only,
     parse_overall_confidence,
     parse_verifier_json,
@@ -598,7 +599,10 @@ _ITERATION_1_TRUNCATED_VERIFIER_RAW = r"""{
 
 
 def test_parse_verifier_json_repairs_truncated_array() -> None:
-    out = parse_verifier_json(_ITERATION_1_TRUNCATED_VERIFIER_RAW)
+    out = parse_verifier_json(
+        _ITERATION_1_TRUNCATED_VERIFIER_RAW,
+        provider_finish_reason="MAX_TOKENS",
+    )
     assert out.get("_truncated") is True
     assert len(out["verified"]) >= 8
     assert len(out["contradicted"]) == 2
@@ -606,7 +610,10 @@ def test_parse_verifier_json_repairs_truncated_array() -> None:
 
 
 def test_parse_verifier_json_repairs_minimal_truncation() -> None:
-    out = parse_verifier_json('{"verified": ["a", "b",')
+    out = parse_verifier_json(
+        '{"verified": ["a", "b",',
+        provider_finish_reason="MAX_TOKENS",
+    )
     assert out.get("_truncated") is True
     assert out["verified"] == ["a", "b"]
     assert out["contradicted"] == []
@@ -623,6 +630,88 @@ def test_parse_verifier_json_truncation_warning_includes_finish_reason_and_raw_b
     assert "finish_reason=MAX_TOKENS" in joined
     assert "raw_bytes=" in joined
     assert str(len(truncated_in.encode("utf-8"))) in joined
+
+
+def test_parse_verifier_json_finish_stop_valid_json_no_truncation_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="equity_analyst.iterative")
+    payload = '{"verified": ["x"], "contradicted": [], "unverifiable": []}'
+    parse_verifier_json(payload, provider_finish_reason="STOP")
+    assert not any("response was truncated" in r.getMessage() for r in caplog.records)
+
+
+def test_parse_verifier_json_repair_finish_stop_no_truncated_marker() -> None:
+    out = parse_verifier_json(
+        '{"verified": ["a", "b",',
+        provider_finish_reason="STOP",
+    )
+    assert out.get("_truncated") is not True
+    assert out["verified"] == ["a", "b"]
+
+
+def _route_state(
+    *,
+    synthesis_text: str,
+    verification: dict[str, Any],
+    synthesis_passes: int = 1,
+    provider_rounds: int = 1,
+    max_iterations: int = 5,
+    confidence_threshold: float = 0.85,
+    snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "synthesis_history": [synthesis_text] * synthesis_passes,
+        "verification_history": [verification],
+        "provider_responses": [{"responses": {}}] * provider_rounds,
+        "max_iterations": max_iterations,
+        "confidence_threshold": confidence_threshold,
+        "iterative_config_snapshot": snapshot or {},
+    }
+
+
+def test_compute_refinement_route_verify_only_unverifiable_only() -> None:
+    unver = [f"item {i}" for i in range(4)]
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.81\n",
+        verification={"contradicted": [], "unverifiable": unver},
+    )
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "synthesize"
+    upd = cmd.update or {}
+    assert upd.get("last_route_followup_questions") == [f"Cite or verify: {u}" for u in unver]
+
+
+def test_compute_refinement_route_fan_out_on_contradictions() -> None:
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.50\n",
+        verification={"contradicted": ["c1"], "unverifiable": ["u1"]},
+    )
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "fan_out"
+
+
+def test_compute_refinement_route_fan_out_high_unverifiable_low_confidence() -> None:
+    unver = [f"item {i}" for i in range(7)]
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.75\n",
+        verification={"contradicted": [], "unverifiable": unver},
+        snapshot={
+            "unverifiable_count_threshold_for_fanout": 3,
+            "unverifiable_fanout_confidence_below": 0.8,
+        },
+    )
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "fan_out"
+
+
+def test_compute_refinement_route_stop_clean_verification() -> None:
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.92\n",
+        verification={"contradicted": [], "unverifiable": []},
+    )
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "finalize"
 
 
 class _CountingFan(LLMProvider):
