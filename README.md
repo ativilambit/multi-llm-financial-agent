@@ -254,6 +254,17 @@ The **2026-05-12 earnings batch** adds ten configs keyed to **Tue May 12, 2026**
 | TME | Tencent Music Entertainment Group (NYSE ADR: TME) | `configs/tme_2026_05_12.yaml` |
 | RDY | Dr. Reddy's Laboratories Limited (NYSE ADR: RDY) | `configs/rdy_2026_05_12.yaml` |
 
+The **2026-05-13 earnings batch** adds six configs keyed to **Wed May 13, 2026** (same provider stack and options as the May-12 batch above; `earnings_timing` omitted).
+
+| Symbol | Company | Config |
+|--------|---------|--------|
+| NBIS | Nebius Group N.V. (Nasdaq: NBIS) | `configs/nbis_2026_05_13.yaml` |
+| BABA | Alibaba Group Holding Limited (NYSE ADR: BABA) | `configs/baba_2026_05_13.yaml` |
+| WIX | Wix.com Ltd. (Nasdaq: WIX) | `configs/wix_2026_05_13.yaml` |
+| DT | Dynatrace Inc. (NYSE: DT) | `configs/dt_2026_05_13.yaml` |
+| VSH | Vishay Intertechnology, Inc. (NYSE: VSH) | `configs/vsh_2026_05_13.yaml` |
+| BIRK | Birkenstock Holding plc (NYSE: BIRK) | `configs/birk_2026_05_13.yaml` |
+
 `scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above. Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`, and **`--symbols A,B,C`** or **`--symbols-file path`** to override the ticker list (`--symbols` wins if both are passed).
 
 ```bash
@@ -263,6 +274,9 @@ scripts/run_all_symbols.sh
 
 # May 12, 2026 batch (all ten symbols, sequential):
 scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY
+
+# May 13, 2026 batch (six symbols, sequential):
+scripts/run_all_symbols.sh --date 2026-05-13 --symbols NBIS,BABA,WIX,DT,VSH,BIRK
 
 # Same batch in parallel (example: three concurrent symbols):
 scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY --parallel --jobs 3

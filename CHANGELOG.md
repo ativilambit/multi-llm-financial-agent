@@ -8,6 +8,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- **Configs** Added NBIS, BABA, WIX, DT, VSH, BIRK for **Wed May 13, 2026** earnings (`configs/*_2026_05_13.yaml`; issuer IR / calendars indicate **BMO** on that date; `earnings_timing` omitted for web_search verification per project convention).
+- **Configs** Added OKLO and NXT for May 12 AMC earnings batch.
 - Pre-synthesis provider summarizer system prompt targets **~50% retention** (vs. aggressive compression): preserve tables, probabilities, σ-bands, IV/PCR/short interest with labels, disagreements, and top citations/URLs; optional self-check against `len(text)//4`. (`feat(prompt): relax pre-synthesis summarizer to ~50% retention`)
 - **Iterative** Refinement-mode prompt — iter 2+ fan-out providers (when actually invoked) are told not to re-derive market primitives from the facts packet; refine sections flagged by the verifier (`sections_to_revise`) instead. Config: `refinement_mode_prompt_enabled` (default on); env `REFINEMENT_MODE_PROMPT_ENABLED`.
 - Pre-synthesis summarizer log prefix renamed to `pre_synthesis_summarize:` for clarity (was `synthesizer:`).
