@@ -313,6 +313,7 @@ class Orchestrator:
                     symbol=self._config.symbol,
                     summarize_oversized_providers=self._config.summarize_oversized_providers,
                     summarize_threshold_input_tokens=self._config.summarize_threshold_input_tokens,
+                    oversized_summarize_provider=self._config.oversized_summarize_provider,
                     oversized_summarize_model=self._config.oversized_summarize_model,
                     oversized_summarize_max_output_tokens=self._config.oversized_summarize_max_output_tokens,
                     oversized_summarize_max_input_tokens=self._config.oversized_summarize_max_input_tokens,

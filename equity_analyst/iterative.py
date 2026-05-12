@@ -518,6 +518,7 @@ class RefinementState(TypedDict, total=False):
     synthesizer_max_input_tokens: int
     summarize_oversized_providers: bool
     summarize_threshold_input_tokens: int
+    oversized_summarize_provider: str
     oversized_summarize_model: str
     oversized_summarize_max_output_tokens: int
     oversized_summarize_max_input_tokens: int
@@ -877,6 +878,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     summarize_threshold_input_tokens=int(
                         state.get("summarize_threshold_input_tokens", 8000),
                     ),
+                    oversized_summarize_provider=str(state.get("oversized_summarize_provider", "gemini")),
                     oversized_summarize_model=str(
                         state.get("oversized_summarize_model", "gemini-3-flash-preview"),
                     ),
@@ -1283,6 +1285,7 @@ def build_initial_refinement_state(
         "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
         "summarize_oversized_providers": cfg.summarize_oversized_providers,
         "summarize_threshold_input_tokens": cfg.summarize_threshold_input_tokens,
+        "oversized_summarize_provider": cfg.oversized_summarize_provider,
         "oversized_summarize_model": cfg.oversized_summarize_model,
         "oversized_summarize_max_output_tokens": cfg.oversized_summarize_max_output_tokens,
         "oversized_summarize_max_input_tokens": cfg.oversized_summarize_max_input_tokens,

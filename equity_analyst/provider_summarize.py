@@ -114,7 +114,7 @@ async def summarize_provider_body_if_needed(
         )
     except Exception as exc:
         logger.warning(
-            "provider summarization failed provider=%s error=%s; using original body",
+            "pre_synthesis_summarize: summarization failed provider=%s error=%s; using original body",
             provider_name,
             type(exc).__name__,
             exc_info=True,
@@ -122,7 +122,7 @@ async def summarize_provider_body_if_needed(
         return text
     if not out:
         logger.warning(
-            "provider summarization returned empty provider=%s; using original body",
+            "pre_synthesis_summarize: summarization returned empty provider=%s; using original body",
             provider_name,
         )
         return text
@@ -135,6 +135,7 @@ async def maybe_summarize_healthy_for_synthesis(
     summarize_oversized_providers: bool,
     summarize_threshold_input_tokens: int,
     target_total_tokens: int | None,
+    oversized_summarize_provider: str,
     oversized_summarize_model: str,
     oversized_summarize_max_output_tokens: int,
     oversized_summarize_max_input_tokens: int,
@@ -205,10 +206,12 @@ async def maybe_summarize_healthy_for_synthesis(
                 break
             after = _estimate_tokens(new_text)
             logger.info(
-                "synthesizer: summarized provider=%s est_tokens=%s → %s",
+                "pre_synthesis_summarize: condensed provider=%s est_tokens=%s → %s summarizer=%s model=%s",
                 name,
                 before,
                 after,
+                oversized_summarize_provider,
+                oversized_summarize_model,
             )
             out[name] = replace(resp, text=new_text)
             summarized_any = True

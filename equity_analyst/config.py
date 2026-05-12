@@ -235,9 +235,13 @@ class RunConfig(BaseModel):
         "summarization also runs when the sum of healthy bodies exceeds "
         "max(8000, synthesizer_max_input_tokens - 3000).",
     )
+    oversized_summarize_provider: str = Field(
+        default="gemini",
+        description="Registry key for the pre-synthesis oversized-body summarizer (default Gemini Flash API).",
+    )
     oversized_summarize_model: str = Field(
         default="gemini-3-flash-preview",
-        description="Gemini model id for compressing oversized provider outputs (no web search).",
+        description="Gemini Flash model id for compressing oversized provider outputs (no web search).",
     )
     oversized_summarize_max_output_tokens: int = Field(
         default=8192,
@@ -354,6 +358,16 @@ class RunConfig(BaseModel):
         if v not in KNOWN_PROVIDER_NAMES:
             raise ValueError(
                 f"Unknown facts_packet_extractor_provider {v!r}. Expected one of: "
+                f"{', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
+
+    @field_validator("oversized_summarize_provider")
+    @classmethod
+    def _known_oversized_summarize_provider(cls, v: str) -> str:
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown oversized_summarize_provider {v!r}. Expected one of: "
                 f"{', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
             )
         return v
@@ -503,6 +517,26 @@ class RunConfig(BaseModel):
                     _FACTS_PACKET_MAX_OUT_MAX,
                     self.facts_packet_max_output_tokens,
                 )
+        return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _oversized_summarize_env_fallback(self) -> Self:
+        """Env overrides when the field was not set explicitly in YAML (YAML > env > default)."""
+        updates: dict[str, Any] = {}
+        raw_p = os.environ.get("OVERSIZED_SUMMARIZE_PROVIDER")
+        if (
+            raw_p is not None
+            and str(raw_p).strip()
+            and "oversized_summarize_provider" not in self.model_fields_set
+        ):
+            updates["oversized_summarize_provider"] = str(raw_p).strip()
+        raw_m = os.environ.get("OVERSIZED_SUMMARIZE_MODEL")
+        if (
+            raw_m is not None
+            and str(raw_m).strip()
+            and "oversized_summarize_model" not in self.model_fields_set
+        ):
+            updates["oversized_summarize_model"] = str(raw_m).strip()
         return self.model_copy(update=updates) if updates else self
 
     def provider_names(self) -> list[str]:

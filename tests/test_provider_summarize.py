@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock
 
 import httpx
@@ -62,7 +63,9 @@ def _resp(*, name: str, text: str) -> ProviderResponse:
 
 
 @pytest.mark.asyncio
-async def test_oversized_body_calls_summarizer_once(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_oversized_body_calls_summarizer_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     from equity_analyst import provider_summarize as ps
 
     calls: list[object] = []
@@ -75,21 +78,25 @@ async def test_oversized_body_calls_summarizer_once(monkeypatch: pytest.MonkeyPa
 
     big = "word " * 9000  # len//4 >> 8000
     healthy = {"openai": _resp(name="openai", text=big)}
-    out, did = await maybe_summarize_healthy_for_synthesis(
-        healthy=healthy,
-        summarize_oversized_providers=True,
-        summarize_threshold_input_tokens=8000,
-        target_total_tokens=None,
-        oversized_summarize_model="gemini-3-flash-preview",
-        oversized_summarize_max_output_tokens=8192,
-        oversized_summarize_max_input_tokens=100_000,
-        symbol="MNDY",
-        client=_DummyGeminiClient(),
-    )
+    with caplog.at_level(logging.INFO, logger="equity_analyst.provider_summarize"):
+        out, did = await maybe_summarize_healthy_for_synthesis(
+            healthy=healthy,
+            summarize_oversized_providers=True,
+            summarize_threshold_input_tokens=8000,
+            target_total_tokens=None,
+            oversized_summarize_provider="gemini",
+            oversized_summarize_model="gemini-3-flash-preview",
+            oversized_summarize_max_output_tokens=8192,
+            oversized_summarize_max_input_tokens=100_000,
+            symbol="MNDY",
+            client=_DummyGeminiClient(),
+        )
     assert did is True
     assert len(calls) == 1
     assert out["openai"].text == "[compressed]\n\nshort"
     assert out["openai"].model == "m"
+    assert "pre_synthesis_summarize: condensed provider=openai" in caplog.text
+    assert "summarizer=gemini model=gemini-3-flash-preview" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -105,6 +112,7 @@ async def test_under_threshold_skips_api(monkeypatch: pytest.MonkeyPatch) -> Non
         summarize_oversized_providers=True,
         summarize_threshold_input_tokens=8000,
         target_total_tokens=None,
+        oversized_summarize_provider="gemini",
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,
@@ -130,6 +138,7 @@ async def test_summarize_disabled_skips_api(monkeypatch: pytest.MonkeyPatch) -> 
         summarize_oversized_providers=False,
         summarize_threshold_input_tokens=8000,
         target_total_tokens=None,
+        oversized_summarize_provider="gemini",
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,
@@ -226,6 +235,7 @@ async def test_summarize_exception_preserves_original(monkeypatch: pytest.Monkey
         summarize_oversized_providers=True,
         summarize_threshold_input_tokens=8000,
         target_total_tokens=None,
+        oversized_summarize_provider="gemini",
         oversized_summarize_model="gemini-3-flash-preview",
         oversized_summarize_max_output_tokens=8192,
         oversized_summarize_max_input_tokens=100_000,

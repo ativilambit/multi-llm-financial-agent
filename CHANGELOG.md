@@ -8,6 +8,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- Pre-synthesis summarizer log prefix renamed to `pre_synthesis_summarize:` for clarity (was `synthesizer:`).
+- Pre-synthesis summarizer defaults to Gemini Flash (configurable via `OVERSIZED_SUMMARIZE_PROVIDER` / `OVERSIZED_SUMMARIZE_MODEL`).
 - Facts packet validator loosened - accepts well-formed packets even when tail heuristic flags them; only falls back to "unknown" template when output is genuinely broken.
 - Facts packet default raised from 2048 to 4096 tokens to fit the richer 1σ/2σ/3σ prompt.
 - Facts packet extractor now validates output and retries once on truncation; falls back to a minimal template if both attempts truncate.

@@ -270,9 +270,33 @@ def test_oversized_summarize_defaults() -> None:
     assert cfg.summarize_oversized_providers is True
     assert cfg.summarize_threshold_input_tokens == 8000
     assert cfg.synthesizer_max_input_tokens == 100_000
+    assert cfg.oversized_summarize_provider == "gemini"
     assert cfg.oversized_summarize_model == "gemini-3-flash-preview"
     assert cfg.oversized_summarize_max_output_tokens == 8192
     assert cfg.oversized_summarize_max_input_tokens == 100_000
+
+
+def test_oversized_summarize_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OVERSIZED_SUMMARIZE_PROVIDER", "openai")
+    monkeypatch.setenv("OVERSIZED_SUMMARIZE_MODEL", "gpt-4o-mini")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.oversized_summarize_provider == "openai"
+    assert cfg.oversized_summarize_model == "gpt-4o-mini"
+    monkeypatch.delenv("OVERSIZED_SUMMARIZE_PROVIDER", raising=False)
+    monkeypatch.delenv("OVERSIZED_SUMMARIZE_MODEL", raising=False)
+
+
+def test_oversized_summarize_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OVERSIZED_SUMMARIZE_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OVERSIZED_SUMMARIZE_PROVIDER", "openai")
+    d = _minimal_run_config_dict()
+    d["oversized_summarize_model"] = "gemini-3-flash-preview"
+    d["oversized_summarize_provider"] = "gemini"
+    cfg = RunConfig.model_validate(d)
+    assert cfg.oversized_summarize_model == "gemini-3-flash-preview"
+    assert cfg.oversized_summarize_provider == "gemini"
+    monkeypatch.delenv("OVERSIZED_SUMMARIZE_MODEL", raising=False)
+    monkeypatch.delenv("OVERSIZED_SUMMARIZE_PROVIDER", raising=False)
 
 
 def test_default_synthesizer_is_gemini() -> None:
