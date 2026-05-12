@@ -22,6 +22,19 @@ Date anchors (use only to map relational phrasing in sections below to concrete 
 **Pure-quant rule (mandatory) — option pricing and σ band widths:** When computing **option-implied prices**, **expected-move** ranges, **IV skew**, **premium estimates**, straddles / butterflies / breakevens, or **any chain-derived dollar level** (**option pricing** and related math), use **only quantitative inputs**: current chain IV, historical IV, observed bid/ask and mid, prior realized moves (including post-earnings windows), recent ATR, beta, risk-free rate, and days-to-expiry. **Do not** widen, tighten, or skew those figures based on qualitative narrative, management tone, or sentiment. If qualitative factors warrant different **probabilities** across paths, express that in **scenario weighting** (this overlay and prediction sections), **not** by adjusting implied prices or premiums.
 
 When computing **1σ / 2σ / 3σ** **σ band widths** around the anchor (same-day **`[intraday_min − 1.00, intraday_max + 1.00]`** or prior-close per the **SD / range anchoring rule** above), derive σ magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings move statistics (with sources). **Do not** widen or tighten **σ band widths** for qualitative reasons — the bands are a **statistical confidence interval**, not a directional view. The **horizon-aware qual:quant blend** in section 8 governs **directional tilt** (where the most-likely close sits **within** the band) and **scenario probability weighting**, **not** **σ band widths** and **not** **option pricing**. State each band's anchor and σ-source explicitly.
+
+**σ band construction — sanity rules (mandatory):**
+
+1. **No fake same-day implied move.** If **no options contract expires on the target session** for this ticker, you must **not** report an "implied-move" σ figure for that session. Instead:
+   - Use the **nearest weekly expiry that exists**, label the σ width as `"derived from <YYYY-MM-DD> weekly expiry"`, and **scale to the target session by √(target_DTE / chosen_expiry_DTE)** under a constant-IV assumption.
+   - If no weekly expiry exists within a reasonable horizon, fall back to **30-day historical volatility (annualized) × √(target_DTE / 252)**, label as `"HV30 √t scaling"`.
+   - **State explicitly** which path you used per session.
+
+2. **√t scaling between horizons.** For multi-horizon σ bands sharing a single vol baseline (e.g. weekly IV around an earnings event), σ widths **must scale by √(Δdays)** relative to the chosen baseline expiry. If the event causes a vol regime change (pre-earnings IV vs. post-earnings IV reset), use **two baselines**: the pre-earnings IV for T−1 horizons and the post-earnings forward IV for T+1 horizons. **Do not** mix.
+
+3. **Sanity check (state in output).** After computing all σ bands, output one line: `σ-scaling check: 3σ(T+N)/3σ(T+1) = X.XX (expected ~√(N) = Y.YY); within tolerance: yes/no`. If "no", **re-derive** the bands or annotate which horizons use distinct vol regimes.
+
+4. **Reject implausible 0-DTE bands.** If 3σ width for any session is **< 5%** for a stock that has implied earnings move ≥ 15% pre-print, flag the calculation as likely missing an event-vol input and re-derive.
 {% if earnings_timing %}
 Earnings timing (from this brief): {{ earnings_timing }}. Anchor sections 1, 9, and 11 to this schedule; cross-check via web_search if it materially affects probabilities and flag any material conflict.
 

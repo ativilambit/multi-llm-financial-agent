@@ -43,6 +43,16 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 
 For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve or reconcile magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings statistics as given in the sources. **Do not** widen or tighten **σ band widths** on qualitative grounds — bands are a **statistical envelope**. The **horizon-aware qual:quant blend** applies to **directional tilt** (where the most-likely close sits within the band) and **scenario emphasis**, **not** to **σ band widths** or **option pricing**. When consolidating, keep anchors and σ-sources explicit.
 
+**σ band construction — sanity rules (mandatory) — same as equity prompt:** When merging provider σ bands, enforce coherence, not ad hoc % picks.
+
+1. **No fake same-day implied move.** If **no options contract expires on the target session** for the ticker, the synthesis must **not** present a same-day "implied-move" σ band without relabeling: use the **nearest real weekly expiry**, state `"derived from <YYYY-MM-DD> weekly expiry"`, and scale by **√(target_DTE / chosen_expiry_DTE)** (constant IV); or **HV30 (annualized) × √(target_DTE / 252)** labeled `"HV30 √t scaling"`. **State explicitly** which path applies per session.
+
+2. **√t scaling between horizons.** Under one vol baseline, σ widths **must** scale as **√(Δdays)** vs the baseline expiry. After a vol regime change (pre-earnings vs post-earnings forward IV), use **two baselines** — pre for T−1 horizons, post for T+1 — and **do not** mix them across a boundary.
+
+3. **Sanity check line in final synthesis.** Preserve or add: `σ-scaling check: 3σ(T+N)/3σ(T+1) = X.XX (expected ~√(N) = Y.YY); within tolerance: yes/no`. If providers disagree on scaling, reconcile with explicit distinct regimes or re-derive from cited chain dates.
+
+4. **Reject implausible 0-DTE bands.** If any session shows 3σ **< 5%** while the setup implies ≥ 15% pre-earnings event vol, flag as likely missing event-vol inputs and downgrade confidence until fixed.
+
 **Qualitative vs quantitative weighting — by horizon (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), the default blend depends on **how close the target session is to "now" and whether same-day intraday/options data already reflects the qualitative thesis**:
 
 | Horizon | Default blend (qual : quant) | Rationale |

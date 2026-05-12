@@ -13,6 +13,7 @@ from equity_analyst.config import RunConfig
 from equity_analyst.iterative import (
     CHANGELOG_ROUND_SUMMARY_MAX_CHARS,
     VERIFIER_INSTRUCTION_PREFIX,
+    augment_verifier_result_with_sigma_structural_checks,
     build_initial_refinement_state,
     compile_refinement_workflow,
     compute_refinement_route_command,
@@ -20,6 +21,7 @@ from equity_analyst.iterative import (
     parse_overall_confidence,
     parse_verifier_json,
     round_summary_for_changelog,
+    sigma_band_sqrt_ratio_followups,
 )
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
@@ -35,6 +37,68 @@ _FANOUT_CALL_COUNTS: defaultdict[str, int] = defaultdict(int)
 def test_verifier_instruction_accepts_dual_sd_anchors() -> None:
     assert "same-day intraday" in VERIFIER_INSTRUCTION_PREFIX
     assert "prior-close" in VERIFIER_INSTRUCTION_PREFIX
+
+
+def test_verifier_instruction_sigma_structural_checks() -> None:
+    assert "band structural checks" in VERIFIER_INSTRUCTION_PREFIX
+    assert "HV30 sqrt(t) scaling" in VERIFIER_INSTRUCTION_PREFIX
+
+
+def test_sigma_band_sqrt_ratio_followups_flags_may13_to_may19_example() -> None:
+    """60% vs 75% over 4 trading sessions implies ratio 1.25 vs √4=2.0 (>25% off)."""
+    qs = sigma_band_sqrt_ratio_followups(
+        width_early=60.0,
+        width_late=75.0,
+        trading_day_span=4,
+        session_early="Wednesday, May 13",
+        session_late="Tuesday, May 19",
+        tolerance=0.25,
+    )
+    assert len(qs) == 1
+    assert "sqrt-t" in qs[0]
+    assert "1.25" in qs[0]
+    assert "2.00" in qs[0]
+
+
+def test_sigma_band_sqrt_ratio_followups_within_tolerance_empty() -> None:
+    assert sigma_band_sqrt_ratio_followups(
+        width_early=60.0,
+        width_late=120.0,
+        trading_day_span=4,
+        tolerance=0.25,
+    ) == []
+
+
+def test_augment_verifier_sigma_structural_checks_from_synthesis_text() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    syn = f"""\
+Wednesday, May 13 (First Post-Earnings Session Open/Close):
+  - 3{sg}: $75.76 - $176.76 ({pm}60.0%)
+
+Tuesday, May 19 (~1 Week Post-Earnings Open/Close):
+  - 3{sg}: $31.57 - $220.95 ({pm}75.0%)
+"""
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    out = augment_verifier_result_with_sigma_structural_checks(syn, base)
+    unver = out["unverifiable"]
+    assert any("scaling check" in u for u in unver)
+    assert any("sqrt-t" in u for u in unver)
+
+
+def test_parse_verifier_json_preserves_sigma_band_sessions() -> None:
+    raw = (
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"sigma_band_sessions":[{"session":"May 13","sigma_baseline":"2026-05-16",'
+        '"sigma_scaling_check_passed":false}],"sigma_scaling_aggregate_passed":false}'
+    )
+    out = parse_verifier_json(raw)
+    assert out["sigma_band_sessions"][0]["session"] == "May 13"
+    assert out["sigma_band_sessions"][0]["sigma_scaling_check_passed"] is False
+    assert out["sigma_scaling_aggregate_passed"] is False
 
 
 def _base_cfg(**kwargs: Any) -> RunConfig:

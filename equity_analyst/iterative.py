@@ -4,12 +4,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import operator
 import re
 import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -94,7 +96,11 @@ def maybe_delete_iterative_checkpoint(
     _delete_checkpoint_files(run_output_dir, log or logger)
 
 
-VERIFIER_INSTRUCTION_PREFIX = """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
+# Greek sigma in prompts / checks (avoid literal U+03C3 in source for RUF001).
+_GS = chr(0x03C3)
+
+VERIFIER_INSTRUCTION_PREFIX = (
+    """You are a financial fact-checker. You receive an excerpt of a synthesis focused on
 numerical and factual claims about an equity/options thesis (and lines mentioning low confidence).
 
 The underlying equity prompt is structured in 12 numbered sections (including a mandatory bottom-up qualitative overlay in section 8 before prediction sections); the excerpt may omit section headers—still treat cited numbers and ratios as the verification target.
@@ -104,17 +110,23 @@ that are not represented in the excerpt.
 
 When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, treat **prior-close anchoring** and **labeled same-day intraday `[low-1.00, high+1.00]` (USD)** as both valid when the synthesis states which anchor it used; do not flag a contradiction solely because two runs used different branches of the equity prompt.
 
-Limit each list to at most 10 items; each item must be 25 words or fewer (short sentences).
+"""
+    + f"""**{_GS} band structural checks (mandatory pass/fail in your JSON, plus cite synthesis gaps):**
+- For every session or horizon in the excerpt that reports **1{_GS} / 2{_GS} / 3{_GS}** bands tied to options-implied width, require an explicit **vol baseline**: a **real listed options expiry (YYYY-MM-DD)** used for implied move, **or** the literal label **HV30 sqrt(t) scaling** (or text clearly equivalent).
+- **No fake 0-DTE implied move:** if the excerpt reports same-day implied-move {_GS} for a session **without** naming a chain expiry that could support that session, add a concise **unverifiable** item naming the session and asking for the nearest weekly expiry + sqrt(target_DTE/chosen_DTE) scaling or HV30 fallback.
+- **sqrt(t) coherence (same vol regime):** if two or more dated horizons share one baseline regime, the ratio of **3{_GS} half-width %** values should track **sqrt(Delta trading_sessions)** within **+/-25%** unless the excerpt explicitly flags a **vol regime change** (pre-earnings vs post-earnings). If the excerpt shows incompatible scaling, add **unverifiable** follow-ups that name the dates, the observed ratio, the expected sqrt(N), and ask the model to re-derive or annotate distinct regimes.
+- If the excerpt is missing the synthesis line **`{_GS}-scaling check:`** while it contains multi-horizon **3{_GS}** % bands, add an **unverifiable** item requesting that mandatory sanity line.
+
+"""
+    + """Limit each list to at most 10 items; each item must be 25 words or fewer (short sentences).
 Prioritize the most material claims (numbers, ratings, P/C ratios) over narrative."""
+)
 
 VERIFIER_JSON_TAIL = """If you cannot perform verification (refusal, missing tools, or no relevant claims in the excerpt), you must
 still respond with valid JSON only: use empty arrays for the three lists and set "notes" to a short reason.
 
 Keep each of "verified", "contradicted", and "unverifiable" to at most 10 items; each string ≤ 25 words.
 Prioritize material claims (figures, ratings, ratios) over narrative.
-
-Example (format only; replace with real claims from the excerpt):
-{"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": "", "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false, "sections_to_revise": []}
 
 CRITICAL — your entire reply must be parseable as a single JSON object. No markdown code fences, no prose
 before or after the object, no commentary outside the JSON. One line or pretty-printed is fine.
@@ -126,6 +138,13 @@ Optional cost-control directives (defaults conservative — leave false/empty un
 - "refan_out_providers" (array of strings): provider names to re-run in parallel fan-out next iteration (e.g. ["anthropic", "openai"]). Empty means do not request extra fan-out.
 - "refan_out_all" (boolean): true only if multiple provider lenses are required again; next iteration re-runs every configured fan-out provider.
 - "sections_to_revise" (array of integers 1-12): optional hint for which numbered equity-report sections the next provider pass should focus on (e.g. [9, 11]). Omit or use [] if unclear.
+
+Optional **sigma_band audit** (include when the excerpt has multi-horizon sigma bands; omit entire block if not applicable):
+- "sigma_band_sessions" (array of objects): one entry per session that reports sigma bands in the excerpt. Each object: "session" (short label), "sigma_baseline" (chain **YYYY-MM-DD** expiry **or** "HV30 sqrt(t) scaling"), "sigma_scaling_check_passed" (boolean, false when baseline missing or sqrt(t) ratio off >25% vs your stated N).
+- "sigma_scaling_aggregate_passed" (boolean): true only if every session entry has a baseline and cross-horizon 3-sigma ratios match sqrt(Delta trading days) within tolerance **or** the excerpt explicitly documents distinct vol regimes.
+
+Example (format only; replace with real claims from the excerpt):
+{"verified": [], "contradicted": [], "unverifiable": ["sigma baseline missing for May 12 session"], "notes": "", "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false, "sections_to_revise": [], "sigma_band_sessions": [{"session": "May 13 post-earnings", "sigma_baseline": "2026-05-16 weekly expiry", "sigma_scaling_check_passed": true}], "sigma_scaling_aggregate_passed": true}
 
 When in doubt, use "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false, "sections_to_revise": [].
 """
@@ -147,6 +166,182 @@ def parse_overall_confidence(text: str) -> float | None:
     if v < 0.0 or v > 1.0:
         return None
     return v
+
+
+def trading_sessions_after_exclusive(start: date, end: date) -> int:
+    """Count Mon-Fri sessions with ``start < session_date <= end`` (NYSE-style weekdays)."""
+    if end <= start:
+        return 0
+    n = 0
+    d = start
+    while d < end:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return n
+
+
+_SESSION_HEAD_RE = re.compile(
+    r"\b((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}))\b",
+    re.IGNORECASE,
+)
+
+_THREE_SIG_PCT_RE = re.compile(
+    rf"3\s*{_GS}\s*:\s*[^\n(]*\(\s*±\s*(?P<pct>[\d.]+)\s*%\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _parse_month_day_label(label: str, *, year: int) -> date | None:
+    m = re.search(
+        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
+        r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})\b",
+        label,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    token = m.group(1)
+    day = int(m.group(2))
+    for fmt in ("%b %d %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(f"{token} {day} {year}", fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def extract_dated_three_sigma_half_widths(synthesis: str, *, year: int = 2026) -> list[tuple[date, float, str]]:
+    """Best-effort: pair 3-sigma (+-pct%) lines with the most recent weekday+month+day header."""
+    lines = synthesis.splitlines()
+    current_label: str | None = None
+    out: list[tuple[date, float, str]] = []
+    for line in lines:
+        mh = _SESSION_HEAD_RE.search(line)
+        if mh:
+            current_label = mh.group(1)
+        m3 = _THREE_SIG_PCT_RE.search(line)
+        if not m3:
+            continue
+        pct = float(m3.group("pct"))
+        anchor = _parse_month_day_label(current_label or "", year=year)
+        if anchor is None:
+            anchor = _parse_month_day_label(line, year=year)
+        lbl = current_label or line.strip()[:120]
+        if anchor is not None:
+            out.append((anchor, pct, lbl))
+    return out
+
+
+def sigma_band_sqrt_ratio_followups(
+    *,
+    width_early: float,
+    width_late: float,
+    trading_day_span: int,
+    session_early: str = "T+1",
+    session_late: str = "T+N",
+    tolerance: float = 0.25,
+) -> list[str]:
+    """Emit follow-up questions when 3-sigma % half-widths violate sqrt(t) vs a 1-session early anchor.
+
+    ``trading_day_span`` is the number of Mon-Fri sessions strictly after the early session date
+    through the late session date (inclusive of the late session), used as N in sqrt(N) scaling.
+    """
+    if width_early <= 0.0 or trading_day_span <= 0:
+        return []
+    expected = math.sqrt(float(trading_day_span))
+    if expected <= 0.0:
+        return []
+    observed = width_late / width_early
+    rel_err = abs(observed - expected) / expected
+    if rel_err <= tolerance:
+        return []
+    tag = f"{session_late[:14]}/{session_early[:14]}"
+    return [
+        f"{_GS} sqrt-t {tag}: ratio {observed:.2f} vs sqrt(N)~{expected:.2f} (N={trading_day_span}); cite expiry or regimes.",
+    ]
+
+
+def _coerce_sigma_band_sessions(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        sess = str(item.get("session", "")).strip()
+        baseline = str(item.get("sigma_baseline", "")).strip()
+        rec: dict[str, Any] = {"session": sess, "sigma_baseline": baseline}
+        passed = item.get("sigma_scaling_check_passed")
+        if isinstance(passed, bool):
+            rec["sigma_scaling_check_passed"] = passed
+        out.append(rec)
+    return out
+
+
+def augment_verifier_result_with_sigma_structural_checks(
+    synthesis_text: str,
+    result: dict[str, Any],
+    *,
+    anchor_year: int = 2026,
+    sqrt_tolerance: float = 0.25,
+) -> dict[str, Any]:
+    """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
+    out = dict(result)
+    prior = [str(x).strip() for x in (out.get("unverifiable") or []) if str(x).strip()]
+    extras: list[str] = []
+
+    sigma_lines = [ln for ln in synthesis_text.splitlines() if f"3{_GS}" in ln and "±" in ln and "%" in ln]
+    if sigma_lines and f"{_GS}-scaling check" not in synthesis_text:
+        extras.append(
+            f"{_GS} bands: add mandatory `{_GS}-scaling check:` line vs sqrt(N) or annotate regimes.",
+        )
+
+    dated = extract_dated_three_sigma_half_widths(synthesis_text, year=anchor_year)
+    by_date: dict[date, tuple[float, str]] = {}
+    for d, pct, lbl in dated:
+        by_date[d] = (pct, lbl)
+    if len(by_date) >= 2:
+        keys = sorted(by_date)
+        early_d, late_d = keys[0], keys[-1]
+        span = trading_sessions_after_exclusive(early_d, late_d)
+        w_early, lbl_e = by_date[early_d]
+        w_late, lbl_l = by_date[late_d]
+        if span >= 2 and w_early > 0.0:
+            extras.extend(
+                sigma_band_sqrt_ratio_followups(
+                    width_early=w_early,
+                    width_late=w_late,
+                    trading_day_span=span,
+                    session_early=lbl_e,
+                    session_late=lbl_l,
+                    tolerance=sqrt_tolerance,
+                ),
+            )
+
+    for row in out.get("sigma_band_sessions") or []:
+        if not isinstance(row, dict):
+            continue
+        sess = str(row.get("session", "")).strip()
+        base = str(row.get("sigma_baseline", "")).strip()
+        if sess and not base:
+            extras.append(f"{_GS} baseline missing for {sess}; name YYYY-MM-DD expiry or HV30 sqrt(t).")
+        passed = row.get("sigma_scaling_check_passed")
+        if passed is False:
+            extras.append(f"{_GS} scaling failed for {sess}; re-derive or document vol regime split.")
+
+    merged = extras + [u for u in prior if u not in extras]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for u in merged:
+        if u in seen:
+            continue
+        seen.add(u)
+        deduped.append(u)
+    out["unverifiable"] = deduped[:10]
+    return out
 
 
 CHANGELOG_ROUND_SUMMARY_MAX_CHARS = 1500
@@ -465,6 +660,11 @@ def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) ->
     result["refan_out_providers"] = refan_list
     result["refan_out_all"] = bool(best_data.get("refan_out_all"))
     result["sections_to_revise"] = _coerce_sections_to_revise(best_data.get("sections_to_revise"))
+    sbs = _coerce_sigma_band_sessions(best_data.get("sigma_band_sessions"))
+    if sbs:
+        result["sigma_band_sessions"] = sbs
+    if "sigma_scaling_aggregate_passed" in best_data:
+        result["sigma_scaling_aggregate_passed"] = bool(best_data.get("sigma_scaling_aggregate_passed"))
     if truncated:
         result["_truncated"] = True
     return result
@@ -1451,6 +1651,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             provider_finish_reason=provider_finish_reason_label(resp.raw),
             provider_raw=resp.raw,
         )
+        data = augment_verifier_result_with_sigma_structural_checks(syn, data)
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
         verify_path.write_text(verify_body, encoding="utf-8")

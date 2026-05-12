@@ -67,6 +67,21 @@ def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
     assert f"{sigma} band widths" in synth
 
 
+def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
+    """Sigma band construction rules: no fake 0-DTE, sqrt(t) scaling, scaling-check line."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    sig = chr(0x03C3)
+    for needle in (
+        "No fake same-day implied move",
+        "√t scaling",
+        f"{sig}-scaling check",
+        "HV30 √t scaling",
+    ):
+        assert needle in j2
+        assert needle in synth
+
+
 def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_export() -> None:
     path = PROMPTS / "provider_summarize_system.md"
     assert path.is_file()
