@@ -318,3 +318,45 @@ def test_resolve_baseline_explicit_current_price_skips_yfinance(
         encoding="utf-8",
     )
     assert resolve_baseline_close_for_auto_fetch(run_dir) == pytest.approx(50.0)
+
+
+def test_fetch_earnings_day_intraday_high_low_yfinance_validates_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from equity_analyst.outcome_tracker import fetch_earnings_day_intraday_high_low_yfinance
+
+    def _bad(_symbol: str, _earnings_date: str) -> dict[str, Any]:
+        return {
+            "earnings_day_open": 1.0,
+            "earnings_day_high": 3.0,
+            "earnings_day_low": 5.0,
+            "earnings_day_close": 2.0,
+            "next_trading_day_open": None,
+            "next_trading_day_close": None,
+            "one_week_later_close": None,
+            "direction_vs_prior_close": None,
+        }
+
+    monkeypatch.setattr(
+        "equity_analyst.outcome_tracker.auto_fetch_outcome",
+        _bad,
+    )
+    assert fetch_earnings_day_intraday_high_low_yfinance("X", "May 1, 2026") == (None, None)
+
+    def _good(_symbol: str, _earnings_date: str) -> dict[str, Any]:
+        return {
+            "earnings_day_open": 1.0,
+            "earnings_day_high": 110.0,
+            "earnings_day_low": 100.0,
+            "earnings_day_close": 105.0,
+            "next_trading_day_open": None,
+            "next_trading_day_close": None,
+            "one_week_later_close": None,
+            "direction_vs_prior_close": None,
+        }
+
+    monkeypatch.setattr(
+        "equity_analyst.outcome_tracker.auto_fetch_outcome",
+        _good,
+    )
+    assert fetch_earnings_day_intraday_high_low_yfinance("X", "May 1, 2026") == (100.0, 110.0)

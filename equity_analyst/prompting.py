@@ -10,6 +10,18 @@ from equity_analyst.config import RunConfig
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 
 
+def _resolve_same_day_intraday(cfg: RunConfig) -> tuple[float | None, float | None]:
+    """Return (low, high) for the earnings session when config or auto-fetch supplies them."""
+    lo, hi = cfg.same_day_intraday_min, cfg.same_day_intraday_max
+    if lo is not None and hi is not None:
+        return lo, hi
+    if not cfg.same_day_intraday_auto_fetch:
+        return None, None
+    from equity_analyst.outcome_tracker import fetch_earnings_day_intraday_high_low_yfinance
+
+    return fetch_earnings_day_intraday_high_low_yfinance(cfg.symbol, cfg.earnings_date)
+
+
 def split_static_dynamic(rendered: RenderedPrompt) -> tuple[str, str]:
     """Split equity prompt into (static persona, dynamic user body) matching Anthropic caching."""
     return EQUITY_ANALYST_SYSTEM_PROMPT, rendered.user_message_text
@@ -76,6 +88,18 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
         "short_interest_lookbacks": cfg.short_interest_lookbacks,
     }
     context.update(_derived_context(cfg))
+
+    sd_lo, sd_hi = _resolve_same_day_intraday(cfg)
+    same_day_intraday_available = sd_lo is not None and sd_hi is not None
+    context["same_day_intraday_min"] = sd_lo
+    context["same_day_intraday_max"] = sd_hi
+    context["same_day_intraday_available"] = same_day_intraday_available
+    if sd_lo is not None and sd_hi is not None:
+        context["same_day_intraday_anchor_band_low"] = sd_lo - 1.0
+        context["same_day_intraday_anchor_band_high"] = sd_hi + 1.0
+    else:
+        context["same_day_intraday_anchor_band_low"] = None
+        context["same_day_intraday_anchor_band_high"] = None
 
     user_message_text = template.render(**context)
     text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"

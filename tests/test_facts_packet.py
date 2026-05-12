@@ -164,6 +164,13 @@ def test_facts_extract_system_prompt_mentions_two_and_three_sigma() -> None:
     assert f"3{_SIGMA}" in text
 
 
+def test_facts_extract_system_prompt_mentions_dual_sd_anchoring() -> None:
+    text = _FACTS_EXTRACT_PROMPT_PATH.read_text(encoding="utf-8")
+    assert "**Anchoring:**" in text
+    assert "previous trading day's official regular-session close" in text
+    assert "±1.00" in text
+
+
 def _facts_cfg(**kwargs: Any) -> RunConfig:
     base: dict[str, Any] = {
         "symbol": "MNDY",

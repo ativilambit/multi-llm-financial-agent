@@ -17,6 +17,12 @@ _FACTS_PACKET_MAX_OUT_MIN = 256
 _FACTS_PACKET_MAX_OUT_MAX = 128_000
 
 
+def _env_flag_truthy(name: str) -> bool:
+    """Return True when ``os.environ[name]`` is a common affirmative string."""
+    v = os.environ.get(name, "")
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _parse_facts_packet_max_output_tokens_env(raw: str) -> int | None:
     """Parse ``FACTS_PACKET_MAX_OUTPUT_TOKENS``; return ``None`` if missing or invalid."""
     s = str(raw).strip()
@@ -152,6 +158,23 @@ class RunConfig(BaseModel):
         default=None,
         description="Optional human-readable earnings call timing (BMO/AMC/etc.). When omitted, the equity "
         "prompt instructs models to verify timing via web_search.",
+    )
+
+    same_day_intraday_min: float | None = Field(
+        default=None,
+        description="Optional same-trading-day session low (USD) for earnings_date; injected into the equity "
+        "template as same_day_intraday_min when paired with same_day_intraday_max.",
+    )
+    same_day_intraday_max: float | None = Field(
+        default=None,
+        description="Optional same-trading-day session high (USD) for earnings_date; injected when paired "
+        "with same_day_intraday_min.",
+    )
+    same_day_intraday_auto_fetch: bool = Field(
+        default_factory=lambda: _env_flag_truthy("SAME_DAY_INTRADAY_AUTO_FETCH"),
+        description="When True and same_day_intraday_min/max are unset, render_prompt attempts Yahoo Finance "
+        "(via fetch_earnings_day_intraday_high_low_yfinance) to populate same-day bounds. Enable with env "
+        "SAME_DAY_INTRADAY_AUTO_FETCH=1 for intraday/post-close runs.",
     )
 
     target_dates: list[str] = Field(default_factory=list)
@@ -439,6 +462,15 @@ class RunConfig(BaseModel):
     def _providers_non_empty(self) -> Self:
         if not self.providers:
             raise ValueError("providers must contain at least one entry")
+        return self
+
+    @model_validator(mode="after")
+    def _same_day_intraday_pair(self) -> Self:
+        lo, hi = self.same_day_intraday_min, self.same_day_intraday_max
+        if (lo is None) ^ (hi is None):
+            raise ValueError(
+                "same_day_intraday_min and same_day_intraday_max must both be set or both omitted"
+            )
         return self
 
     @model_validator(mode="after")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from equity_analyst.config import RunConfig
 from equity_analyst.prompting import render_prompt
 
@@ -77,6 +79,12 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     assert f"  - 2{sigma}: $X.XX {ndash} $X.XX (±Y.Y%)" in text
     assert f"  - 3{sigma}: $X.XX {ndash} $X.XX (±Y.Y%)" in text
 
+    assert "same_day_intraday_available" in text
+    assert "`same_day_intraday_available`=False" in text
+    assert "fall back" in text.lower()
+    assert "prior-close anchored" in text
+    assert "SD / range anchoring rule" in text
+
 
 def test_template_uses_config_earnings_timing_when_provided() -> None:
     cfg = RunConfig.model_validate(
@@ -129,6 +137,68 @@ def test_template_renders_when_reference_prices_omitted() -> None:
     assert "Earnings date: Wed Jan 15 2026" in text
     assert "next trading day" in text
     assert "end of that earnings week" in text
+
+
+def test_template_same_day_intraday_available_injects_bounds() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "TEST",
+            "today_date": "Tue May 12, 2026",
+            "today_session": "regular hours",
+            "earnings_date": "Mon May 11, 2026",
+            "target_dates": ["Mon May 11"],
+            "next_trading_day": "Tue May 12",
+            "followup_open_date": "Mon May 18",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+            "same_day_intraday_min": 100.0,
+            "same_day_intraday_max": 110.0,
+        }
+    )
+    text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
+    assert "`same_day_intraday_available`=True" in text
+    assert "`same_day_intraday_min`=100.0" in text
+    assert "`same_day_intraday_max`=110.0" in text
+    assert "[99.00, 111.00]" in text
+
+
+def test_render_prompt_auto_fetch_fills_intraday_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch(symbol: str, earnings_date: str) -> tuple[float | None, float | None]:
+        assert symbol == "X"
+        assert "2026" in earnings_date
+        return 50.0, 52.5
+
+    monkeypatch.setattr(
+        "equity_analyst.outcome_tracker.fetch_earnings_day_intraday_high_low_yfinance",
+        _fake_fetch,
+    )
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "May 12, 2026",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+            "same_day_intraday_auto_fetch": True,
+        }
+    )
+    rendered = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2")
+    assert rendered.context["same_day_intraday_available"] is True
+    assert rendered.context["same_day_intraday_min"] == 50.0
+    assert rendered.context["same_day_intraday_max"] == 52.5
+    assert rendered.context["same_day_intraday_anchor_band_low"] == 49.0
+    assert rendered.context["same_day_intraday_anchor_band_high"] == 53.5
+    assert "`same_day_intraday_available`=True" in rendered.text
 
 
 def test_template_generalizes_to_other_symbol() -> None:

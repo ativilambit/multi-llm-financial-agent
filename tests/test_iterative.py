@@ -12,6 +12,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from equity_analyst.config import RunConfig
 from equity_analyst.iterative import (
     CHANGELOG_ROUND_SUMMARY_MAX_CHARS,
+    VERIFIER_INSTRUCTION_PREFIX,
     build_initial_refinement_state,
     compile_refinement_workflow,
     dry_run_compile_only,
@@ -28,6 +29,11 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 from tests.test_providers import _FakeOpenAIClient
 
 _FANOUT_CALL_COUNTS: defaultdict[str, int] = defaultdict(int)
+
+
+def test_verifier_instruction_accepts_dual_sd_anchors() -> None:
+    assert "same-day intraday" in VERIFIER_INSTRUCTION_PREFIX
+    assert "prior-close" in VERIFIER_INSTRUCTION_PREFIX
 
 
 def _base_cfg(**kwargs: Any) -> RunConfig:

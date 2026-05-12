@@ -33,6 +33,12 @@ def test_synthesizer_system_prompt_file_exists_nonempty_and_matches_export() -> 
     assert f"3{sigma}" in SYNTHESIS_SYSTEM_PROMPT
 
 
+def test_synthesizer_system_prompt_covers_same_day_sd_anchor() -> None:
+    raw = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "same_day_intraday_available" in raw
+    assert "intraday_min" in raw
+
+
 def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_export() -> None:
     path = PROMPTS / "provider_summarize_system.md"
     assert path.is_file()

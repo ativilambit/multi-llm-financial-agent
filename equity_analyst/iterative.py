@@ -97,6 +97,8 @@ The underlying equity prompt is structured in 12 numbered sections (including a 
 Use web search only when needed to check those claims. Do not spend effort re-verifying narrative sections
 that are not represented in the excerpt.
 
+When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, treat **prior-close anchoring** and **labeled same-day intraday `[low-1.00, high+1.00]` (USD)** as both valid when the synthesis states which anchor it used; do not flag a contradiction solely because two runs used different branches of the equity prompt.
+
 Limit each list to at most 10 items; each item must be 25 words or fewer (short sentences).
 Prioritize the most material claims (numbers, ratings, P/C ratios) over narrative."""
 

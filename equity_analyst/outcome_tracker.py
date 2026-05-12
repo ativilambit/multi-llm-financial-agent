@@ -530,6 +530,32 @@ def auto_fetch_outcome(
     return result
 
 
+def fetch_earnings_day_intraday_high_low_yfinance(
+    symbol: str,
+    earnings_date: str,
+) -> tuple[float | None, float | None]:
+    """Return regular-session **Low** and **High** for the earnings-day bar from Yahoo Finance.
+
+    Reuses :func:`auto_fetch_outcome` (first trading bar on/after the parsed earnings calendar
+    date). Returns ``(None, None)`` when either value is missing or invalid. Never raises.
+    """
+    try:
+        res = auto_fetch_outcome(symbol, earnings_date)
+    except Exception as exc:  # pragma: no cover - auto_fetch is defensive
+        logger.warning(
+            "earnings_day_intraday: auto_fetch failed symbol=%s earnings_date=%r error=%r",
+            symbol,
+            earnings_date,
+            exc,
+        )
+        return None, None
+    lo = _coerce_float_safe(res.get("earnings_day_low"))
+    hi = _coerce_float_safe(res.get("earnings_day_high"))
+    if lo is None or hi is None or lo <= 0 or hi <= 0 or hi < lo:
+        return None, None
+    return lo, hi
+
+
 _LAST_CLOSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"last\s+verified\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
     re.compile(r"last\s+regular[- ]session\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),

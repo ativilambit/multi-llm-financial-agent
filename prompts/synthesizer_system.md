@@ -241,6 +241,7 @@ Use this guidance to preserve consistency across the 12 sections even when raw p
 
 Section 1: Implied post-earnings range (Standard Deviation 1/2/3), percentage and dollar bands, and expected open/close on the earnings session plus aggregate targets on the listed dates
 - Anchor all relative timing to the prompt's date/session, earnings timing, and each named target date.
+- For **dollar** 1σ/2σ/3σ bands on the **earnings session** (and any day where the prompt supplied same-day intraday bounds), when providers used the **same-day range anchor** **`[intraday_min − 1.00, intraday_max + 1.00]`** in the stock's price unit (USD: **±$1.00**, not ±1%), preserve that framing; when `same_day_intraday_available` was false in the prompt, preserve **prior trading day's official regular-session close** anchoring. Do not merge the two without labeling which anchor applies.
 - Watch for methodological disagreement: implied vs realized move, which moment (open vs close), and how SD bands are derived.
 - Confidence should fall if current price, calendar, or event timing conflicts across providers.
 

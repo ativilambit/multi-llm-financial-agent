@@ -73,6 +73,23 @@ def test_optional_price_hints_may_be_omitted() -> None:
     assert cfg.current_price is None
 
 
+def test_same_day_intraday_min_max_must_be_paired() -> None:
+    base: dict[str, Any] = {
+        "symbol": "X",
+        "today_date": "d",
+        "today_session": "s",
+        "earnings_date": "e",
+        "target_dates": [],
+        "next_trading_day": "n",
+        "followup_open_date": "f",
+        "providers": ["openai"],
+    }
+    with pytest.raises(ValueError, match="same_day_intraday_min"):
+        RunConfig.model_validate({**base, "same_day_intraday_min": 1.0})
+    with pytest.raises(ValueError, match="same_day_intraday_min"):
+        RunConfig.model_validate({**base, "same_day_intraday_max": 2.0})
+
+
 def test_earnings_timing_may_be_omitted() -> None:
     cfg = RunConfig.model_validate(
         {
