@@ -178,9 +178,9 @@ class RunConfig(BaseModel):
     )
 
     options_chain_auto_fetch: bool = Field(
-        default_factory=lambda: _env_flag_truthy("OPTIONS_CHAIN_AUTO_FETCH"),
+        default=True,
         description="When True and options_chain_snapshot is unset, render_prompt fetches a Yahoo option chain "
-        "via yfinance (may rate-limit). Enable globally with OPTIONS_CHAIN_AUTO_FETCH=1.",
+        "via yfinance (may rate-limit). Opt out globally with OPTIONS_CHAIN_AUTO_FETCH=0.",
     )
     options_chain_snapshot: dict[str, Any] | None = Field(
         default=None,
@@ -684,7 +684,17 @@ class RunConfig(BaseModel):
             and str(ocf).strip()
             and "options_chain_auto_fetch" not in self.model_fields_set
         ):
-            updates["options_chain_auto_fetch"] = str(ocf).strip().lower() in ("1", "true", "yes", "on")
+            raw = str(ocf).strip().lower()
+            if raw in ("1", "true", "yes", "on"):
+                updates["options_chain_auto_fetch"] = True
+            elif raw in ("0", "false", "no", "off"):
+                updates["options_chain_auto_fetch"] = False
+            else:
+                logger.warning(
+                    "Invalid OPTIONS_CHAIN_AUTO_FETCH=%r (expected 1/true/yes/on or 0/false/no/off); "
+                    "keeping default/config value.",
+                    ocf,
+                )
         raw_m = os.environ.get("FACTS_PACKET_MAX_OUTPUT_TOKENS")
         if (
             raw_m is not None

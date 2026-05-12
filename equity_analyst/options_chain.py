@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 
+class OptionsChainSoftFetchError(Exception):
+    """Raised from the LRU-cached fetch path so soft failures are not cached."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(payload.get("fetch_error") or "options_chain_unavailable")
+        self.payload = payload
+
+
 def options_chain_expiry_audit_messages(
     synthesis_text: str,
     verifier_result: dict[str, Any],
@@ -476,6 +484,18 @@ def _expiry_snapshot_from_row_dict(r: dict[str, Any]) -> ExpirySnapshot:
     return ExpirySnapshot(**d)
 
 
+def _failed_options_prompt_dict(symbol_u: str, fetch_error: str) -> dict[str, Any]:
+    return {
+        "options_chain_available": False,
+        "as_of": _iso_utc_z_now(),
+        "symbol": symbol_u.strip().upper(),
+        "spot": None,
+        "available_expiries": [],
+        "selected_expiries": [],
+        "fetch_error": fetch_error,
+    }
+
+
 @functools.lru_cache(maxsize=64)
 def _fetch_options_chain_snapshot_cached(
     symbol_u: str,
@@ -483,35 +503,60 @@ def _fetch_options_chain_snapshot_cached(
     today_key: str,
     targets_joined: str,
 ) -> str:
-    """JSON-serialized :meth:`OptionsChainSnapshot.to_prompt_dict` or empty string if fetch failed."""
+    """JSON-serialized successful :meth:`OptionsChainSnapshot.to_prompt_dict` (verified chain only).
+
+    Soft failures raise :class:`OptionsChainSoftFetchError` so they are **not** cached.
+    """
     _ = targets_joined  # cache key segment for future busting
-    snap = _fetch_options_chain_snapshot_impl(symbol_u, earnings_key, today_key)
+    data = _fetch_options_chain_snapshot_impl(symbol_u, earnings_key, today_key)
+    if not data.get("options_chain_available"):
+        raise OptionsChainSoftFetchError(data)
     import json
 
-    return json.dumps(snap, sort_keys=True, default=str) if snap is not None else ""
+    return json.dumps(data, sort_keys=True, default=str)
 
 
-def _fetch_options_chain_snapshot_impl(symbol_u: str, earnings_key: str, today_key: str) -> dict[str, Any] | None:
+def _as_of_session_date(today_key: str) -> date:
+    """Map ``today_date`` / cache key to a calendar date for DTE math (best-effort)."""
+    if not today_key:
+        return date.today()
+    parsed = _parse_today_date(today_key)
+    if parsed is not None:
+        return parsed
+    try:
+        return date.fromisoformat(str(today_key)[:10])
+    except ValueError:
+        return date.today()
+
+
+def _fetch_options_chain_snapshot_impl(symbol_u: str, earnings_key: str, today_key: str) -> dict[str, Any]:
+    """Build a ``to_prompt_dict``-shaped mapping; ``options_chain_available`` may be false with ``fetch_error``."""
     earnings = _parse_earnings_calendar_date(earnings_key)
-    as_of = date.fromisoformat(today_key) if today_key else date.today()
     if earnings is None:
         logger.warning("options_chain: could not parse earnings_date=%r", earnings_key)
-        return None
+        return _failed_options_prompt_dict(symbol_u, "could not parse earnings_date from config")
+    as_of = _as_of_session_date(today_key)
     try:
         import yfinance as yf  # type: ignore[import-untyped]
     except ImportError as exc:
         logger.warning("options_chain: yfinance not installed: %r", exc)
-        return None
+        return _failed_options_prompt_dict(symbol_u, f"yfinance not installed: {exc!r}")
     try:
         ticker = yf.Ticker(symbol_u)
         opts = getattr(ticker, "options", None)
         if not opts:
             logger.warning("options_chain: no .options for symbol=%s", symbol_u)
-            return None
+            return _failed_options_prompt_dict(
+                symbol_u,
+                "yfinance returned no option expiries for this ticker",
+            )
         available_dates = _parse_expiry_list(tuple(opts))
         if not available_dates:
             logger.warning("options_chain: empty parsed expiries symbol=%s", symbol_u)
-            return None
+            return _failed_options_prompt_dict(
+                symbol_u,
+                "parsed Yahoo option expiries list empty after fetch",
+            )
         spot = _resolve_spot(ticker)
         selected_d = _select_relevant_expiries(available_dates, earnings)
         ex_snaps: list[dict[str, Any]] = []
@@ -542,10 +587,42 @@ def _fetch_options_chain_snapshot_impl(symbol_u: str, earnings_key: str, today_k
             available_expiries=[d.isoformat() for d in available_dates],
             selected_expiries=[_expiry_snapshot_from_row_dict(x) for x in ex_snaps],
         )
-        return out_snap.to_prompt_dict()
+        data = out_snap.to_prompt_dict()
+        if not data.get("options_chain_available"):
+            return _failed_options_prompt_dict(
+                symbol_u,
+                "listed expiries present but no ATM snapshot rows could be built (spot or chain data missing)",
+            )
+        return data
     except Exception as exc:
         logger.warning("options_chain: yfinance fetch failed symbol=%s err=%r", symbol_u, exc)
-        return None
+        return _failed_options_prompt_dict(symbol_u, f"yfinance error: {exc!r}")
+
+
+def fetch_options_chain_prompt_dict(
+    symbol: str,
+    earnings_date: str,
+    target_dates: list[str],
+    *,
+    today_date: str | None = None,
+) -> dict[str, Any]:
+    """Yahoo option chain as ``to_prompt_dict`` shape, including soft failures with ``fetch_error``."""
+    sym = symbol.strip().upper()
+    if not sym:
+        return _failed_options_prompt_dict("", "empty symbol")
+    td = today_date or date.today().isoformat()
+    if today_date:
+        parsed = _parse_today_date(today_date)
+        if parsed is not None:
+            td = parsed.isoformat()
+    tj = ",".join(target_dates)
+    try:
+        blob = _fetch_options_chain_snapshot_cached(sym, earnings_date.strip(), td, tj)
+    except OptionsChainSoftFetchError as exc:
+        return exc.payload
+    import json
+
+    return cast(dict[str, Any], json.loads(blob))
 
 
 def fetch_options_chain_snapshot(
@@ -556,21 +633,9 @@ def fetch_options_chain_snapshot(
     today_date: str | None = None,
 ) -> OptionsChainSnapshot | None:
     """Pull Yahoo option chains via yfinance; returns ``None`` on soft failure (same spirit as auto_fetch)."""
-    sym = symbol.strip().upper()
-    if not sym:
+    data = fetch_options_chain_prompt_dict(symbol, earnings_date, target_dates, today_date=today_date)
+    if not data.get("options_chain_available"):
         return None
-    td = today_date or date.today().isoformat()
-    if today_date:
-        parsed = _parse_today_date(today_date)
-        if parsed is not None:
-            td = parsed.isoformat()
-    tj = ",".join(target_dates)
-    blob = _fetch_options_chain_snapshot_cached(sym, earnings_date.strip(), td, tj)
-    if not blob:
-        return None
-    import json
-
-    data = json.loads(blob)
     return options_chain_snapshot_from_prompt_dict(data)
 
 

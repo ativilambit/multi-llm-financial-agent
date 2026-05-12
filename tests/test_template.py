@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -268,7 +269,8 @@ def test_template_options_chain_markdown_when_available(monkeypatch: pytest.Monk
     text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
     assert "**Verified options chain (use these numbers, do not fabricate):**" in text
     assert "| test table |" in text
-    assert "Verified options chain not available in this run" not in text
+    assert "Verified options chain not fetched" not in text
+    assert "Verified options chain fetch failed" not in text
 
 
 def test_template_options_chain_fallback_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -303,5 +305,114 @@ def test_template_options_chain_fallback_when_unavailable(monkeypatch: pytest.Mo
         }
     )
     text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
-    assert "Verified options chain not available in this run" in text
+    assert "Verified options chain has no listed expiries" in text
     assert "Yahoo Options" in text
+
+
+def test_template_options_chain_fallback_when_auto_fetch_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        return (
+            {
+                "options_chain_available": False,
+                "symbol": cfg.symbol,
+                "spot": None,
+                "available_expiries": [],
+                "selected_expiries": [],
+                "as_of": "z",
+                "fetch_error": None,
+            },
+            "",
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "OFF",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+            "options_chain_auto_fetch": False,
+        }
+    )
+    text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
+    assert "Verified options chain not fetched (auto-fetch disabled)" in text
+
+
+def test_template_options_chain_fallback_includes_fetch_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        return (
+            {
+                "options_chain_available": False,
+                "symbol": cfg.symbol,
+                "spot": None,
+                "available_expiries": [],
+                "selected_expiries": [],
+                "as_of": "z",
+                "fetch_error": "unit-test synthetic failure",
+            },
+            "",
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "BAD",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
+    assert "Verified options chain fetch failed (unit-test synthetic failure)" in text
+
+
+def test_render_prompt_warns_when_options_chain_auto_fetch_but_unavailable(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        return (
+            {
+                "options_chain_available": False,
+                "symbol": cfg.symbol,
+                "spot": None,
+                "available_expiries": [],
+                "selected_expiries": [],
+                "as_of": "z",
+                "fetch_error": "unit-test log reason",
+            },
+            "",
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "LOG",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.prompting"):
+        render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2")
+    assert "unit-test log reason" in caplog.text

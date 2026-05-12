@@ -30,7 +30,6 @@ short_interest_lookbacks:
 request_timeout_s: 600
 pdf_output_enabled: true
 drive_upload_enabled: true
-options_chain_auto_fetch: true
 
 providers:
   - name: anthropic

@@ -25,11 +25,30 @@ def _resolve_same_day_intraday(cfg: RunConfig) -> tuple[float | None, float | No
     return fetch_earnings_day_intraday_high_low_yfinance(cfg.symbol, cfg.earnings_date)
 
 
+def _options_chain_fallback_message(cfg: RunConfig, oc_data: dict[str, Any]) -> str:
+    """User-facing sentence when ``options_chain_available`` is false (injected into equity template)."""
+    cite = "Use public chain sources (Yahoo Options, CBOE) and label each number with its source."
+    if oc_data.get("options_chain_available"):
+        return ""
+    if not cfg.options_chain_auto_fetch:
+        return f"Verified options chain not fetched (auto-fetch disabled); {cite}"
+    fe = oc_data.get("fetch_error")
+    if isinstance(fe, str) and fe.strip():
+        return f"Verified options chain fetch failed ({fe.strip()}); {cite}"
+    avail = oc_data.get("available_expiries") or []
+    if not avail:
+        return (
+            "Verified options chain has no listed expiries (likely no options trade on this ticker); "
+            f"{cite}"
+        )
+    return f"Verified options chain unavailable for this run; {cite}"
+
+
 def _resolve_options_chain(cfg: RunConfig) -> tuple[dict[str, Any], str]:
     """Return ``(options_chain_data dict, options_chain_markdown)`` for Jinja."""
     from equity_analyst.options_chain import (
         empty_options_prompt_dict,
-        fetch_options_chain_snapshot,
+        fetch_options_chain_prompt_dict,
         options_chain_snapshot_from_prompt_dict,
     )
 
@@ -41,15 +60,17 @@ def _resolve_options_chain(cfg: RunConfig) -> tuple[dict[str, Any], str]:
         log.warning("options_chain: manual options_chain_snapshot invalid; falling back to fetch/off")
 
     if cfg.options_chain_auto_fetch:
-        snap = fetch_options_chain_snapshot(
+        data = fetch_options_chain_prompt_dict(
             cfg.symbol,
             cfg.earnings_date,
             cfg.target_dates,
             today_date=cfg.today_date,
         )
-        if snap is not None:
-            data = snap.to_prompt_dict()
-            return data, snap.to_markdown_table()
+        if data.get("options_chain_available"):
+            snap = options_chain_snapshot_from_prompt_dict(data)
+            if snap is not None:
+                return data, snap.to_markdown_table()
+        return data, ""
 
     empty = empty_options_prompt_dict(cfg.symbol)
     return empty, ""
@@ -138,6 +159,12 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
     context["options_chain_data"] = oc_data
     context["options_chain_markdown"] = oc_md
     context["options_chain_available"] = bool(oc_data.get("options_chain_available"))
+    context["options_chain_fallback_message"] = _options_chain_fallback_message(cfg, oc_data)
+    if cfg.options_chain_auto_fetch and not oc_data.get("options_chain_available"):
+        log.warning(
+            "options_chain: auto_fetch enabled but verified chain unavailable (%s)",
+            oc_data.get("fetch_error") or "no fetch_error on payload",
+        )
 
     user_message_text = template.render(**context)
     text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"

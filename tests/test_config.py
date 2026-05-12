@@ -30,6 +30,66 @@ def test_iterative_cost_optimization_flags_default_on() -> None:
     assert cfg.conditional_fanout_enabled is True
     assert cfg.fan_out_on_continue is True
     assert cfg.refinement_mode_prompt_enabled is True
+    assert cfg.options_chain_auto_fetch is True
+
+
+def test_options_chain_auto_fetch_env_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPTIONS_CHAIN_AUTO_FETCH", "0")
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.options_chain_auto_fetch is False
+    monkeypatch.delenv("OPTIONS_CHAIN_AUTO_FETCH", raising=False)
+
+
+def test_options_chain_auto_fetch_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPTIONS_CHAIN_AUTO_FETCH", "0")
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+            "options_chain_auto_fetch": True,
+        }
+    )
+    assert cfg.options_chain_auto_fetch is True
+    monkeypatch.delenv("OPTIONS_CHAIN_AUTO_FETCH", raising=False)
+
+
+def test_options_chain_auto_fetch_invalid_env_warns_and_keeps_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("OPTIONS_CHAIN_AUTO_FETCH", "maybe")
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.config"):
+        cfg = RunConfig.model_validate(
+            {
+                "symbol": "X",
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+            }
+        )
+    assert cfg.options_chain_auto_fetch is True
+    assert "Invalid OPTIONS_CHAIN_AUTO_FETCH" in caplog.text
+    monkeypatch.delenv("OPTIONS_CHAIN_AUTO_FETCH", raising=False)
 
 
 def test_reference_price_yaml_aliases() -> None:

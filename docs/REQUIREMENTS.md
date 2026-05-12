@@ -157,7 +157,7 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 ### Verified options chain
 
 - **Why:** Without a server-fetched chain, models invent expiries/strikes; that is hard for verifiers to falsify.
-- **Summary:** When `options_chain_auto_fetch=True` (or a valid `options_chain_snapshot`), the prompt injects a **Verified** markdown table—**use verbatim**; verifier/synthesis audits can flag expiries not in Yahoo data.
+- **Summary:** `options_chain_auto_fetch` defaults to **true** (opt out with YAML `false` or `OPTIONS_CHAIN_AUTO_FETCH=0`). When enabled (or a valid `options_chain_snapshot` is set), the prompt injects a **Verified** markdown table—**use verbatim**; verifier/synthesis audits can flag expiries not in Yahoo data.
 - **Pointer:** `equity_analyst/prompting.py` (`_resolve_options_chain`); `equity_analyst/options_chain.py` (fetch + `options_chain_expiry_audit_messages` consumed from `iterative.py`).
 
 ### REFINEMENT MODE (iteration ≥ 2 fan-out)
@@ -224,7 +224,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | --- | --- | --- | --- |
 | `same_day_intraday_min` / `max` | — | `null` | Paired intraday high/low for earnings session (USD anchors). |
 | `same_day_intraday_auto_fetch` | `SAME_DAY_INTRADAY_AUTO_FETCH` | false unless env true | yfinance fetch for same-day bounds when YAML pair unset. |
-| `options_chain_auto_fetch` | `OPTIONS_CHAIN_AUTO_FETCH` | false unless env true | Fetch Yahoo chain into verified table. |
+| `options_chain_auto_fetch` | `OPTIONS_CHAIN_AUTO_FETCH` | **true** (set `0`/`false`/`no`/`off` to opt out when not set in YAML) | Fetch Yahoo chain into verified table. |
 | `options_chain_snapshot` | — | `null` | Frozen chain dict; skips network fetch. |
 | `fan_out_on_continue` | `FAN_OUT_ON_CONTINUE` | true (unless YAML/env override) | Router follow-ups can force refan when conditional fan-out is on. |
 | `unverifiable_only_skip_fan_out` | — | true | Enables verify-only path. |
@@ -267,7 +267,7 @@ python -m equity_analyst run --config configs/<sym>_<date>.yaml --iterative --ma
 
 Use **`--log-level DEBUG`** for provider request shapes; **`--dry-run`** renders prompt without API calls (iterative dry-run does not create `outputs/` — see `README.md`).
 
-Live runs (default) also write **`outputs/<RUN>/prompts/`**: one Markdown file per LLM request (system + user body, metadata such as `max_output_tokens` / `thinking_budget` / web search flags, node name, iteration). Analyst fan-out includes a matching **`.context.json`** sidecar of the resolved Jinja context. Set **`EXPORT_PROMPTS=0`** to skip these files (older run trees do not have a `prompts/` folder).
+Live runs (default) also write **`outputs/<RUN>/prompts/`**: one Markdown file per LLM request (system + user body, metadata such as `max_output_tokens` / `thinking_budget` / web search flags, node name, iteration). Analyst fan-out includes a matching **`.context.json`** sidecar of the resolved Jinja context. Set **`EXPORT_PROMPTS=0`** to skip these files (older run trees do not have a `prompts/` folder). When **`options_chain_auto_fetch`** is enabled but the verified chain is missing, **`equity_analyst.prompting`** logs a **WARNING** with the structured `fetch_error` (if any) to speed up diagnosis versus the user-facing fallback sentence in the equity template.
 
 ### Batch: `scripts/run_all_symbols.sh`
 
@@ -306,7 +306,7 @@ Changing **`prompts/*.j2`**, verifier strings, or routing does **not** retroacti
 | --- | --- |
 | **Options delay** | Yahoo public chain is often **~15 minutes** delayed on free data. |
 | **25Δ skew proxy** | Implemented as **±5% strike IV** proxy; not exchange-reported delta Greeks. |
-| **LLM chain data** | Without **`options_chain_auto_fetch`** (or snapshot), chain numbers are only as good as model browsing—verifier cannot fully ground them. |
+| **LLM chain data** | With **`options_chain_auto_fetch`** off (YAML or `OPTIONS_CHAIN_AUTO_FETCH=0`) and no **`options_chain_snapshot`**, chain numbers are only as good as model browsing—verifier cannot fully ground them. |
 | **Wall-clock** | Full iterative runs with all providers + web search can be **hours per ticker**; **`run_all_symbols.sh --parallel`** reduces elapsed time but increases **429** risk on shared API keys. |
 | **yfinance fragility** | Unofficial endpoints; ADRs / IPOs / outages may return empty frames (outcome auto-fetch handles gracefully with warnings). |
 

@@ -10,6 +10,7 @@ from equity_analyst.options_chain import (
     OptionsChainSnapshot,
     _select_relevant_expiries,
     clear_options_chain_cache,
+    fetch_options_chain_prompt_dict,
     fetch_options_chain_snapshot,
     options_chain_expiry_audit_messages,
     options_chain_snapshot_from_prompt_dict,
@@ -92,6 +93,31 @@ def test_options_chain_snapshot_from_prompt_dict_roundtrip() -> None:
     assert back is not None
     assert back.symbol == "ZZ"
     assert back.available_expiries == ["2026-01-17"]
+
+
+def test_fetch_options_chain_prompt_dict_empty_yfinance_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_options_chain_cache()
+    import equity_analyst.options_chain as oc
+
+    monkeypatch.setattr(oc, "_parse_earnings_calendar_date", lambda s: date(2026, 5, 13))
+    monkeypatch.setattr(oc, "_parse_today_date", lambda s: date(2026, 5, 12))
+
+    class _Ticker:
+        options: tuple[str, ...] = ()
+
+    import yfinance as yf
+
+    monkeypatch.setattr(yf, "Ticker", lambda _sym: _Ticker())
+
+    d = fetch_options_chain_prompt_dict(
+        "NBIS",
+        "Wed May 13 2026",
+        ["2026-05-13", "2026-05-14", "2026-05-16"],
+        today_date="2026-05-12",
+    )
+    assert d["options_chain_available"] is False
+    assert d.get("fetch_error")
+    assert "no option expiries" in str(d["fetch_error"]).lower()
 
 
 def test_fetch_options_chain_snapshot_mocked_ticker(monkeypatch: pytest.MonkeyPatch) -> None:
