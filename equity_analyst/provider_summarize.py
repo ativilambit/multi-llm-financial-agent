@@ -24,6 +24,23 @@ def _estimate_tokens(s: str) -> int:
     return max(1, len(s) // 4)
 
 
+def _target_summary_token_estimate(input_est_tokens: int) -> int:
+    """Roughly half of the input estimate (len//4), matching the system prompt."""
+    return max(1, int(input_est_tokens) // 2)
+
+
+_OVERSIZED_SUMMARIZE_MAX_OUTPUT_CEILING = 128_000
+
+
+def _effective_summarizer_max_output_tokens(*, input_est_tokens: int, configured_max: int) -> int:
+    """Ensure the API cap is not below ~55% of the input heuristic so 50% retention is reachable."""
+    floor_for_retention = (int(input_est_tokens) * 55 + 99) // 100 + 512
+    return min(
+        _OVERSIZED_SUMMARIZE_MAX_OUTPUT_CEILING,
+        max(int(configured_max), floor_for_retention),
+    )
+
+
 def _total_body_tokens(healthy: dict[str, ProviderResponse]) -> int:
     return sum(_estimate_tokens(r.text) for r in healthy.values())
 
@@ -55,6 +72,9 @@ async def _generate_summary(
         config = types.GenerateContentConfig(
             system_instruction=summarize_system_prompt(),
             max_output_tokens=max_output_tokens,
+            # Gemini 3 shares max_output_tokens with internal "thinking"; disable so the
+            # completion budget is available for the visible summary (~50% retention target).
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
 
         async def _call() -> str:
@@ -96,10 +116,19 @@ async def summarize_provider_body_if_needed(
     sym = symbol or "unknown"
     budget_chars = max(256, max_input_tokens * 4 - 512)
     body = _shrink_text(text, budget_chars) if est > max_input_tokens else text
+    target_est = _target_summary_token_estimate(est)
+    effective_max_out = _effective_summarizer_max_output_tokens(
+        input_est_tokens=est,
+        configured_max=max_output_tokens,
+    )
     user_message = (
         f"### Context\n"
         f"- Equity symbol: {sym}\n"
-        f"- Source provider: {provider_name}\n\n"
+        f"- Source provider: {provider_name}\n"
+        f"- Original body token estimate (len(text)//4 on the full provider body): **{est}**\n"
+        f"- **Target summary token estimate: ~{target_est}** (same len(output)//4 heuristic; "
+        f"stay within roughly ±20% unless the system prompt says otherwise)\n"
+        f"- Max completion tokens reserved for this answer: **{effective_max_out}**\n\n"
         f"### Provider report body\n\n"
         f"{body}"
     )
@@ -107,7 +136,7 @@ async def summarize_provider_body_if_needed(
         out = await _generate_summary(
             user_message=user_message,
             model=model,
-            max_output_tokens=max_output_tokens,
+            max_output_tokens=effective_max_out,
             client=client,
             retry_max_attempts=retry_max_attempts,
             retry_base_delay_s=retry_base_delay_s,
@@ -205,11 +234,16 @@ async def maybe_summarize_healthy_for_synthesis(
             if new_text == before_text:
                 break
             after = _estimate_tokens(new_text)
+            target = _target_summary_token_estimate(before)
+            retention_pct = 100.0 * after / before if before else 0.0
             logger.info(
-                "pre_synthesis_summarize: condensed provider=%s est_tokens=%s → %s summarizer=%s model=%s",
+                "pre_synthesis_summarize: condensed provider=%s est_tokens=%s → %s "
+                "(target=~%s, retention=%.1f%%) summarizer=%s model=%s",
                 name,
                 before,
                 after,
+                target,
+                retention_pct,
                 oversized_summarize_provider,
                 oversized_summarize_model,
             )

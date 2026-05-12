@@ -108,7 +108,54 @@ async def test_oversized_body_calls_summarizer_once(
     assert out["openai"].text == "[compressed]\n\nshort"
     assert out["openai"].model == "m"
     assert "pre_synthesis_summarize: condensed provider=openai" in caplog.text
+    assert "target=~" in caplog.text
+    assert "retention=" in caplog.text
     assert "summarizer=gemini model=gemini-3-flash-preview" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_summarizer_raises_output_cap_and_injects_target_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Oversized summarizer must pass a max_output high enough for ~50% retention and echo a numeric target."""
+    from equity_analyst import provider_summarize as ps
+
+    captured: dict[str, object] = {}
+
+    async def fake_gen(
+        *,
+        user_message: str,
+        model: str,
+        max_output_tokens: int,
+        client: object | None = None,
+        retry_max_attempts: int = 3,
+        retry_base_delay_s: float = 2.0,
+    ) -> str:
+        captured["max_output_tokens"] = max_output_tokens
+        captured["user_message"] = user_message
+        # ~50% of input token estimate: 4000 est-tokens → 16_000 chars
+        out_chars = (8000 // 2) * 4
+        return "S" * out_chars
+
+    monkeypatch.setattr(ps, "_generate_summary", fake_gen)
+
+    text = "W" * (8000 * 4)
+    out = await summarize_provider_body_if_needed(
+        text=text,
+        provider_name="openai",
+        symbol="SE",
+        threshold=0,
+        model="gemini-3-flash-preview",
+        max_output_tokens=8192,
+        max_input_tokens=100_000,
+        client=_DummyGeminiClient(),
+    )
+    before_est = 8000
+    assert int(captured["max_output_tokens"]) >= int(before_est * 0.45)
+    assert "Target summary token estimate: ~4000" in str(captured["user_message"])
+    after_est = max(1, len(out) // 4)
+    retention = after_est / before_est
+    assert 0.40 <= retention <= 0.60
 
 
 @pytest.mark.asyncio
