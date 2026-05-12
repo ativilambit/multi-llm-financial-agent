@@ -22,6 +22,7 @@ from equity_analyst.iterative import (
     parse_verifier_json,
     round_summary_for_changelog,
     sigma_band_sqrt_ratio_followups,
+    verify_variance_additive_sigma_band_sessions,
 )
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
@@ -42,6 +43,7 @@ def test_verifier_instruction_accepts_dual_sd_anchors() -> None:
 def test_verifier_instruction_sigma_structural_checks() -> None:
     assert "band structural checks" in VERIFIER_INSTRUCTION_PREFIX
     assert "HV30 sqrt(t) scaling" in VERIFIER_INSTRUCTION_PREFIX
+    assert "Variance-additive" in VERIFIER_INSTRUCTION_PREFIX
 
 
 def test_verifier_instruction_section8_citation_heuristic() -> None:
@@ -73,6 +75,65 @@ def test_sigma_band_sqrt_ratio_followups_within_tolerance_empty() -> None:
         trading_day_span=4,
         tolerance=0.25,
     ) == []
+
+
+def test_verify_variance_additive_sigma_bands_within_tolerance() -> None:
+    """1-sigma widths consistent with (N-1)*daily_vol^2 variance step for ej=6%, dv=8%."""
+    sessions = [
+        {"session": "May 13", "N": 1, "sigma_pct": 10.0},
+        {"session": "May 19", "N": 5, "sigma_pct": (36.0 + 5.0 * 8.0**2) ** 0.5},
+    ]
+    assert verify_variance_additive_sigma_band_sessions(sessions, 8.0, 6.0, tolerance=0.25) == []
+
+
+def test_verify_variance_additive_sigma_bands_flags_inconsistent() -> None:
+    """Wrong daily_vol vs stated 1-sigma levels should emit follow-ups."""
+    sessions = [
+        {"session": "May 13", "N": 1, "sigma_pct": 10.0},
+        {"session": "May 19", "N": 5, "sigma_pct": (36.0 + 5.0 * 8.0**2) ** 0.5},
+    ]
+    bad = verify_variance_additive_sigma_band_sessions(sessions, 2.0, 6.0, tolerance=0.25)
+    assert bad
+
+
+def test_augment_verifier_variance_additive_skips_sqrt_when_literals_present() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    syn = f"""\
+event_jump=6% daily_vol=8%
+Wednesday, May 13 (post-earnings):
+  - 3{sg}: $10 - $20 ({pm}30.0%)
+Tuesday, May 19 (~1 week):
+  - 3{sg}: $10 - $20 ({pm}{w3_late:.3f}%)
+{sg}-scaling check (variance): {sg}2(T+N) - {sg}2(T+1) = ok; within tolerance: yes
+"""
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    out = augment_verifier_result_with_sigma_structural_checks(syn, base)
+    joined = " ".join(out["unverifiable"]).lower()
+    assert "sqrt-t" not in joined
+
+
+def test_augment_verifier_variance_additive_flags_bad_widths() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    syn = f"""\
+event_jump=6% daily_vol=8%
+Wednesday, May 13 (post-earnings):
+  - 3{sg}: $10 - $20 ({pm}30.0%)
+Tuesday, May 19 (~1 week):
+  - 3{sg}: $10 - $20 ({pm}40.0%)
+{sg}-scaling check (variance): {sg}2(T+N) - {sg}2(T+1) = ok; within tolerance: yes
+"""
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    out = augment_verifier_result_with_sigma_structural_checks(syn, base)
+    assert any("variance" in u.lower() for u in out["unverifiable"])
 
 
 def test_augment_verifier_sigma_structural_checks_from_synthesis_text() -> None:

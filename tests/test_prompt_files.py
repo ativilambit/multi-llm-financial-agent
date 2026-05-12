@@ -87,14 +87,24 @@ def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
 
 
 def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
-    """Sigma band construction rules: no fake 0-DTE, sqrt(t) scaling, scaling-check line."""
+    """Sigma band construction rules: variance-additive canonical, sqrt(t) fallback, checks."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     sig = chr(0x03C3)
+    flat_j2 = j2.replace("**", "")
+    flat_synth = synth.replace("**", "")
+    assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_j2
+    assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_synth
+    assert f"{sig}-scaling check (variance):" in j2
+    assert f"{sig}²(T+N)" in j2 and f"{sig}²(T+1)" in j2
+    assert "daily_vol² = Y.YY" in j2
+    assert f"{sig}-scaling check (variance):" in synth
+    assert f"{sig}²(T+N)" in synth and f"{sig}²(T+1)" in synth
+    assert "daily_vol² = Y.YY" in synth
     for needle in (
         "No fake same-day implied move",
-        "√t scaling",
-        f"{sig}-scaling check",
+        "Variance-additive event+diffusion decomposition",
+        "√(target_DTE / chosen_expiry_DTE)",
         "HV30 √t scaling",
     ):
         assert needle in j2

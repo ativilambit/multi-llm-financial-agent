@@ -144,9 +144,9 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 
 ### σ band sanity rules
 
-- **Why:** Prevents hallucinated same-day implied moves and inconsistent multi-horizon scaling.
-- **Summary:** No fake 0-DTE implied move without a real expiry; **√t** scaling across horizons; mandatory output line **`σ-scaling check: ...`**; reject implausible tight 0-DTE bands vs known event vol.
-- **Pointer:** `prompts/equity_analyst.j2` (**σ band construction — sanity rules**); mirrored for the verifier in `iterative.py` (`VERIFIER_INSTRUCTION_PREFIX`).
+- **Why:** Prevents hallucinated same-day implied moves and inconsistent multi-horizon scaling; post-event horizons should treat the earnings jump and diffusion as **variance-additive**, not ad hoc two-baseline **√t** mixing.
+- **Summary:** No fake 0-DTE implied move without a real expiry. **Canonical (horizon crosses the print, target after earnings):** `σ(T+N) = √(event_jump² + N·daily_vol²)` with named `event_jump` / `daily_vol` sources; **cumulative variance** check `σ²(T+N) − σ²(T+1) = (N−1)·daily_vol²` within ±25%. **Fallback (no event in the horizon):** **√t** scaling within one IV baseline from a named expiry, or **HV30 × √t**. Mandatory sanity line: variance form when using the decomposition, legacy **3σ(T+N)/3σ(T+1)** ratio form when using fallback only. Reject implausible tight 0-DTE bands vs known event vol.
+- **Pointer:** `prompts/equity_analyst.j2` and `prompts/synthesizer_system.md` (**σ band construction — sanity rules**); deterministic checks in `iterative.py` (`verify_variance_additive_sigma_band_sessions`, `augment_verifier_result_with_sigma_structural_checks`); verifier brief in `VERIFIER_INSTRUCTION_PREFIX`.
 
 ### Horizon-aware qual:quant blend
 

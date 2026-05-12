@@ -49,11 +49,22 @@ When the equity prompt included a **Verified options chain** table (`options_cha
 
 1. **No fake same-day implied move.** If **no options contract expires on the target session** for the ticker, the synthesis must **not** present a same-day "implied-move" σ band without relabeling: use the **nearest real weekly expiry**, state `"derived from <YYYY-MM-DD> weekly expiry"`, and scale by **√(target_DTE / chosen_expiry_DTE)** (constant IV); or **HV30 (annualized) × √(target_DTE / 252)** labeled `"HV30 √t scaling"`. **State explicitly** which path applies per session.
 
-2. **√t scaling between horizons.** Under one vol baseline, σ widths **must** scale as **√(Δdays)** vs the baseline expiry. After a vol regime change (pre-earnings vs post-earnings forward IV), use **two baselines** — pre for T−1 horizons, post for T+1 — and **do not** mix them across a boundary.
+2. **Variance-additive event+diffusion decomposition (canonical for horizons crossing the earnings event).** When the target session is **after** the earnings print, use:
 
-3. **Sanity check line in final synthesis.** Preserve or add: `σ-scaling check: 3σ(T+N)/3σ(T+1) = X.XX (expected ~√(N) = Y.YY); within tolerance: yes/no`. If providers disagree on scaling, reconcile with explicit distinct regimes or re-derive from cited chain dates.
+   > σ(T+N) = √(**event_jump²** + N · **daily_vol²**)
 
-4. **Reject implausible 0-DTE bands.** If any session shows 3σ **< 5%** while the setup implies ≥ 15% pre-earnings event vol, flag as likely missing event-vol inputs and downgrade confidence until fixed.
+   applied to the anchor (same-day intraday `[min−1, max+1]` if available, else prior-session close per the SD anchoring rule).
+
+   - `event_jump` = ATM straddle-implied move (%) from the **front weekly expiry covering the earnings session** in `options_chain_data` (or, if unavailable, from a cited public chain).
+   - `daily_vol` = post-event daily volatility in this order of preference: (a) forward IV from a post-event weekly expiry, decomposed via calendar-spread vs the event-week expiry — only if both expiries are listed in `options_chain_data`; (b) **HV30 annualized / √252** from prior daily history (`outcome_tracker`); (c) realized post-earnings daily vol from the last 4 earnings windows if available.
+   - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.
+   - **State each input numerically with its source.** Example: `event_jump=10.67% (May 15 expiry ATM straddle, verified chain)`, `daily_vol=3.15%/day (HV30 50% ann / √252)`.
+
+3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by **√(target_DTE / chosen_expiry_DTE)** from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
+
+4. **Sanity check line in final synthesis (variance-additive form).** Preserve or add: `σ-scaling check (variance): σ²(T+N) − σ²(T+1) = X.XX (expected (N−1)·daily_vol² = Y.YY); within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`. When providers used only the **fallback** (no event in the horizon), preserve or add the legacy check: `σ-scaling check: 3σ(T+N)/3σ(T+1) = X.XX (expected ~√(N) = Y.YY); within tolerance: yes/no`.
+
+5. **Reject implausible 0-DTE bands.** If any session shows 3σ **< 5%** while the setup implies ≥ 15% pre-earnings event vol, flag as likely missing event-vol inputs and downgrade confidence until fixed.
 
 **Qualitative vs quantitative weighting — by horizon (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), the default blend depends on **how close the target session is to "now" and whether same-day intraday/options data already reflects the qualitative thesis**:
 

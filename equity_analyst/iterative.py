@@ -119,8 +119,9 @@ When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, trea
     + f"""**{_GS} band structural checks (mandatory pass/fail in your JSON, plus cite synthesis gaps):**
 - For every session or horizon in the excerpt that reports **1{_GS} / 2{_GS} / 3{_GS}** bands tied to options-implied width, require an explicit **vol baseline**: a **real listed options expiry (YYYY-MM-DD)** used for implied move, **or** the literal label **HV30 sqrt(t) scaling** (or text clearly equivalent).
 - **No fake 0-DTE implied move:** if the excerpt reports same-day implied-move {_GS} for a session **without** naming a chain expiry that could support that session, add a concise **unverifiable** item naming the session and asking for the nearest weekly expiry + sqrt(target_DTE/chosen_DTE) scaling or HV30 fallback.
-- **sqrt(t) coherence (same vol regime):** if two or more dated horizons share one baseline regime, the ratio of **3{_GS} half-width %** values should track **sqrt(Delta trading_sessions)** within **+/-25%** unless the excerpt explicitly flags a **vol regime change** (pre-earnings vs post-earnings). If the excerpt shows incompatible scaling, add **unverifiable** follow-ups that name the dates, the observed ratio, the expected sqrt(N), and ask the model to re-derive or annotate distinct regimes.
-- If the excerpt is missing the synthesis line **`{_GS}-scaling check:`** while it contains multi-horizon **3{_GS}** % bands, add an **unverifiable** item requesting that mandatory sanity line.
+- **Variance-additive event+diffusion (canonical when the horizon crosses the earnings print and the target is post-event):** if the excerpt states **event_jump=** ... **%** and **daily_vol=** ... **%** (post-event decomposition), recompute **{_GS}^2(T+N) - {_GS}^2(T+1)** from the stated **1{_GS}** (or **3{_GS}/3**) half-width % for each later post-event horizon vs the first post-event row and verify it equals **(N-1) * daily_vol^2** within **+/-25%** (same N as the model's post-event day count). If it fails, add **unverifiable** items with the concrete observed vs expected numbers and ask for a corrected **daily_vol** or explicit fallback labeling.
+- **sqrt(t) coherence (fallback, single IV baseline only):** when the excerpt does **not** use the variance-additive literals above and two or more horizons share one baseline regime, the ratio of **3{_GS} half-width %** values should track **sqrt(Delta trading_sessions)** within **+/-25%** unless the excerpt explicitly flags a **vol regime change**. If incompatible, add **unverifiable** follow-ups naming dates, observed ratio, expected sqrt(N), and ask to re-derive or label distinct regimes.
+- If the excerpt is missing the mandatory sanity line while it contains multi-horizon **3{_GS}** % bands, add an **unverifiable** item: require **`{_GS}-scaling check (variance):`** when **event_jump=** / **daily_vol=** are present; otherwise require **`{_GS}-scaling check:`** (sqrt-t ratio form).
 
 """
     + """Limit each list to at most 10 items; each item must be 25 words or fewer (short sentences).
@@ -184,6 +185,23 @@ def trading_sessions_after_exclusive(start: date, end: date) -> int:
         if d.weekday() < 5:
             n += 1
     return n
+
+
+def trading_sessions_inclusive(start: date, end: date) -> int:
+    """Count Mon-Fri sessions with ``start <= session_date <= end`` (NYSE-style weekdays)."""
+    if end < start:
+        return 0
+    n = 0
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
+_EVENT_JUMP_PCT_RE = re.compile(r"event_jump\s*=\s*([\d.]+)\s*%", re.IGNORECASE)
+_DAILY_VOL_PCT_RE = re.compile(r"daily_vol\s*=\s*([\d.]+)\s*%", re.IGNORECASE)
 
 
 _SESSION_HEAD_RE = re.compile(
@@ -269,6 +287,97 @@ def sigma_band_sqrt_ratio_followups(
     ]
 
 
+def verify_variance_additive_sigma_band_sessions(
+    sessions: list[Any],
+    daily_vol_pct: float,
+    event_jump_pct: float,
+    tolerance: float = 0.25,
+) -> list[str]:
+    """Return follow-up strings when 1-sigma % half-widths violate variance-additive post-event math.
+
+    Each session entry should be a mapping with ``session`` (str), ``N`` (int trading days from T+1
+    inclusive), and ``sigma_pct`` (float, **1-sigma** +-percent half-width). ``N`` must be >= 1.
+
+    When an ``N == 1`` row exists, later horizons are checked via
+    ``sigma^2(T+N) - sigma^2(T+1)`` vs ``(N-1) * daily_vol^2``. Otherwise each row is checked against
+    ``event_jump^2 + N * daily_vol^2`` on ``sigma^2``.
+    """
+    rows: list[tuple[str, int, float]] = []
+    for raw in sessions:
+        if not isinstance(raw, dict):
+            continue
+        sess = str(raw.get("session", "")).strip()
+        if sess == "":
+            continue
+        n_val = raw.get("N")
+        sig_val = raw.get("sigma_pct")
+        try:
+            n_int = int(n_val)  # type: ignore[arg-type]
+            sig_f = float(sig_val)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if n_int < 1 or sig_f <= 0.0:
+            continue
+        rows.append((sess, n_int, sig_f))
+
+    if not rows:
+        return []
+
+    ref_sq: float | None = None
+    for _s, n_i, sig in rows:
+        if n_i == 1:
+            ref_sq = sig * sig
+            break
+
+    followups: list[str] = []
+    ej2 = float(event_jump_pct) ** 2
+    dv2 = float(daily_vol_pct) ** 2
+
+    for sess, n_i, sig in rows:
+        obs_sq = sig * sig
+        if ref_sq is not None:
+            if n_i == 1:
+                expected_sq = ej2 + dv2
+                if expected_sq <= 0.0:
+                    continue
+                rel = abs(obs_sq - expected_sq) / expected_sq
+                if rel > tolerance:
+                    followups.append(
+                        f"{_GS}^2 variance {sess[:18]}: 1{_GS}^2 obs={obs_sq:.2f} vs ej^2+dv^2={expected_sq:.2f} ({rel:.0%} err); fix daily_vol or inputs.",
+                    )
+            else:
+                expected_delta = float(n_i - 1) * dv2
+                if expected_delta <= 0.0:
+                    continue
+                obs_delta = obs_sq - ref_sq
+                rel = abs(obs_delta - expected_delta) / expected_delta
+                if rel > tolerance:
+                    followups.append(
+                        f"{_GS}^2 variance {sess[:18]}: delta_obs={obs_delta:.2f} vs (N-1)dv^2={expected_delta:.2f} (N={n_i}, {rel:.0%} err); fix daily_vol.",
+                    )
+        else:
+            expected_sq = ej2 + float(n_i) * dv2
+            if expected_sq <= 0.0:
+                continue
+            rel = abs(obs_sq - expected_sq) / expected_sq
+            if rel > tolerance:
+                followups.append(
+                    f"{_GS}^2 variance {sess[:18]}: 1{_GS}^2 obs={obs_sq:.2f} vs ej^2+N*dv^2={expected_sq:.2f} (N={n_i}, {rel:.0%} err); fix inputs.",
+                )
+    return followups
+
+
+def _parse_variance_additive_literals(synthesis: str) -> tuple[float | None, float | None]:
+    ej_m = _EVENT_JUMP_PCT_RE.search(synthesis)
+    dv_m = _DAILY_VOL_PCT_RE.search(synthesis)
+    if not ej_m or not dv_m:
+        return None, None
+    try:
+        return float(ej_m.group(1)), float(dv_m.group(1))
+    except ValueError:
+        return None, None
+
+
 def _coerce_sigma_band_sessions(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
@@ -301,16 +410,43 @@ def augment_verifier_result_with_sigma_structural_checks(
     extras: list[str] = []
 
     sigma_lines = [ln for ln in synthesis_text.splitlines() if f"3{_GS}" in ln and "±" in ln and "%" in ln]
-    if sigma_lines and f"{_GS}-scaling check" not in synthesis_text:
-        extras.append(
-            f"{_GS} bands: add mandatory `{_GS}-scaling check:` line vs sqrt(N) or annotate regimes.",
-        )
+    ej_lit, dv_lit = _parse_variance_additive_literals(synthesis_text)
+    variance_mode = ej_lit is not None and dv_lit is not None
+
+    if sigma_lines:
+        if variance_mode:
+            if f"{_GS}-scaling check (variance):" not in synthesis_text:
+                extras.append(
+                    f"{_GS} bands: add `{_GS}-scaling check (variance):` line (delta {_GS}^2 vs (N-1)*daily_vol^2).",
+                )
+        elif f"{_GS}-scaling check" not in synthesis_text:
+            extras.append(
+                f"{_GS} bands: add mandatory `{_GS}-scaling check:` line vs sqrt(N) or annotate regimes.",
+            )
 
     dated = extract_dated_three_sigma_half_widths(synthesis_text, year=anchor_year)
     by_date: dict[date, tuple[float, str]] = {}
     for d, pct, lbl in dated:
         by_date[d] = (pct, lbl)
-    if len(by_date) >= 2:
+
+    if variance_mode and len(by_date) >= 1:
+        assert ej_lit is not None and dv_lit is not None
+        keys_sorted = sorted(by_date)
+        early_d = keys_sorted[0]
+        session_payload: list[dict[str, Any]] = []
+        for d in keys_sorted:
+            w3, lbl = by_date[d]
+            n_inc = trading_sessions_inclusive(early_d, d)
+            session_payload.append({"session": lbl, "N": n_inc, "sigma_pct": w3 / 3.0})
+        extras.extend(
+            verify_variance_additive_sigma_band_sessions(
+                session_payload,
+                daily_vol_pct=dv_lit,
+                event_jump_pct=ej_lit,
+                tolerance=sqrt_tolerance,
+            ),
+        )
+    elif len(by_date) >= 2:
         keys = sorted(by_date)
         early_d, late_d = keys[0], keys[-1]
         span = trading_sessions_after_exclusive(early_d, late_d)
