@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -18,11 +19,13 @@ from equity_analyst.iterative import (
     compile_refinement_workflow,
     compute_refinement_route_command,
     dry_run_compile_only,
+    followups_from_unsourced_options_chain_numeric_claims,
     parse_overall_confidence,
     parse_verifier_json,
     per_provider_sigma_variance_check,
     render_per_provider_sigma_checks_markdown,
     round_summary_for_changelog,
+    should_apply_sqrt_t_three_sigma_ratio,
     sigma_band_sqrt_ratio_followups,
     sigma_missing_literal_router_followups,
     verify_iv_crush_daily_vol_followups,
@@ -73,6 +76,7 @@ def test_build_initial_refinement_state_sets_fan_out_retry_attempts() -> None:
     st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out)
     assert st["retry_max_attempts_fan_out"] == 5
     assert st["retry_max_attempts"] == 3
+    assert st.get("earnings_date") == "e"
 
 
 def test_verifier_instruction_accepts_dual_sd_anchors() -> None:
@@ -90,6 +94,11 @@ def test_verifier_instruction_section8_citation_heuristic() -> None:
     assert "section 8" in VERIFIER_INSTRUCTION_PREFIX
     assert "800" in VERIFIER_INSTRUCTION_PREFIX
     assert "Source:" in VERIFIER_INSTRUCTION_PREFIX
+
+
+def test_verifier_instruction_unsourced_options_chain_numerics() -> None:
+    assert "Unsourced options-chain numerics" in VERIFIER_INSTRUCTION_PREFIX
+    assert "PCR" in VERIFIER_INSTRUCTION_PREFIX
 
 
 def test_verifier_instruction_mandatory_sigma_literals() -> None:
@@ -112,6 +121,7 @@ def test_sigma_band_sqrt_ratio_followups_flags_may13_to_may19_example() -> None:
     assert "sqrt-t" in qs[0]
     assert "1.25" in qs[0]
     assert "2.00" in qs[0]
+    assert "pre-event" in qs[0].lower()
 
 
 def test_sigma_band_sqrt_ratio_followups_within_tolerance_empty() -> None:
@@ -325,7 +335,7 @@ def test_render_per_provider_sigma_checks_markdown_three_providers() -> None:
     assert "3.15%" in md
 
 
-def test_augment_verifier_variance_additive_skips_sqrt_when_literals_present() -> None:
+def test_verifier_does_not_use_sqrt_t_when_variance_additive_literals_present() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
     w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
@@ -449,6 +459,75 @@ def test_augment_verifier_appends_iv_crush_followup() -> None:
         symbol="NBIS",
     )
     assert any("after IV crush" in u for u in out["unverifiable"])
+
+
+def test_verifier_uses_sqrt_t_only_for_entirely_pre_event_horizons() -> None:
+    """Earnings between dated rows suppresses sqrt-t; unknown earnings_date restores legacy sqrt check."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    syn = f"""Monday, May 11 (pre-earnings):
+  - 3{sg}: $10 - $20 ({pm}60.0%)
+
+Tuesday, May 19 (post-earnings):
+  - 3{sg}: $10 - $20 ({pm}62.0%)
+"""
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    earn = date(2026, 5, 13)
+    out_cross = augment_verifier_result_with_sigma_structural_checks(
+        syn,
+        base,
+        earnings_date=earn,
+        anchor_year=2026,
+    )
+    assert not any("sqrt-t" in u.lower() for u in out_cross["unverifiable"])
+
+    out_none = augment_verifier_result_with_sigma_structural_checks(
+        syn,
+        base,
+        earnings_date=None,
+        anchor_year=2026,
+    )
+    assert any("sqrt-t" in u.lower() for u in out_none["unverifiable"])
+
+
+def test_verifier_flags_unsourced_pcr_claim() -> None:
+    syn = "One week prior, PCR was 0.852 based on flow.\n"
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    out = augment_verifier_result_with_sigma_structural_checks(syn, base)
+    assert any("PCR=0.852" in u for u in out["unverifiable"])
+
+
+def test_followups_from_unsourced_pcr_skips_when_url_in_paragraph() -> None:
+    syn = "Prior PCR was 0.922 (see https://finance.yahoo.com/quote/X/options).\n"
+    assert followups_from_unsourced_options_chain_numeric_claims(syn) == []
+
+
+def test_should_apply_sqrt_t_three_sigma_ratio_unit() -> None:
+    e = date(2026, 5, 13)
+    assert not should_apply_sqrt_t_three_sigma_ratio(
+        variance_literals_present=True,
+        early_d=date(2026, 5, 11),
+        late_d=date(2026, 5, 19),
+        earnings_date=e,
+    )
+    assert not should_apply_sqrt_t_three_sigma_ratio(
+        variance_literals_present=False,
+        early_d=date(2026, 5, 11),
+        late_d=date(2026, 5, 19),
+        earnings_date=e,
+    )
+    assert should_apply_sqrt_t_three_sigma_ratio(
+        variance_literals_present=False,
+        early_d=date(2026, 5, 8),
+        late_d=date(2026, 5, 12),
+        earnings_date=e,
+    )
 
 
 def _base_cfg(**kwargs: Any) -> RunConfig:

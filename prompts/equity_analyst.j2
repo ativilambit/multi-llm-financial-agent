@@ -23,6 +23,8 @@ Date anchors (use only to map relational phrasing in sections below to concrete 
 
 When computing **1σ / 2σ / 3σ** **σ band widths** around the anchor (same-day **`[intraday_min − 1.00, intraday_max + 1.00]`** or prior-close per the **SD / range anchoring rule** above), derive σ magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings move statistics (with sources). **Do not** widen or tighten **σ band widths** for qualitative reasons — the bands are a **statistical confidence interval**, not a directional view. The **horizon-aware qual:quant blend** in section 8 governs **directional tilt** (where the most-likely close sits **within** the band) and **scenario probability weighting**, **not** **σ band widths** and **not** **option pricing**. State each band's anchor and σ-source explicitly.
 
+**Unsourced numbers prohibited (Pure-quant addendum):** For options chain metrics (IV, PCR, OI, volume, premium, breakeven, etc.), every numeric claim must either (a) appear in `options_chain_data` (the verified chain), OR (b) come from a single named, citable source (Yahoo Options snapshot URL, CBOE, brokerage feed), OR (c) be explicitly stated as **"unavailable from primary sources"**. Do **not** estimate or infer historical option metrics (e.g. "1-week-prior PCR", "average IV over the past month") from memory or pattern matching. If `options_chain_data` doesn't include it and you cannot find a citable snapshot, write `unavailable`.
+
 **Verified options chain (use these numbers, do not fabricate):**
 
 {% if options_chain_available %}

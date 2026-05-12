@@ -45,6 +45,8 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 
 For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve or reconcile magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings statistics as given in the sources. **Do not** widen or tighten **σ band widths** on qualitative grounds — bands are a **statistical envelope**. The **horizon-aware qual:quant blend** applies to **directional tilt** (where the most-likely close sits within the band) and **scenario emphasis**, **not** to **σ band widths** or **option pricing**. When consolidating, keep anchors and σ-sources explicit.
 
+**Unsourced numbers — options metrics (Pure-quant addendum):** Same rule as the equity prompt: every PCR / IV / OI / volume / premium / breakeven figure must trace to `options_chain_data`, a citable URL or a `Source:` line in the same passage, or be labeled unavailable. If a provider cites an options metric that fails these checks (especially historical PCR or IV not in the verified chain), **strip it from the synthesis** and briefly note **"historical chain data unavailable"** (or the precise gap) rather than carrying the number forward.
+
 When the equity prompt included a **Verified options chain** table (`options_chain_markdown`), treat those strikes, expiries, IV, and straddle mids as **authoritative** for consolidation: prefer them **verbatim** over conflicting provider chain numbers. If providers disagree on chain inputs, defer to the verified table; still flag stale timestamps or missing fields if the table itself is thin.
 
 **σ band construction — sanity rules (mandatory) — same as equity prompt:** When merging provider σ bands, enforce coherence, not ad hoc % picks.

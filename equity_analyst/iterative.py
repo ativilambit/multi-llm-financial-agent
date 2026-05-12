@@ -28,7 +28,10 @@ from equity_analyst.facts_packet import (
     write_facts_packet,
 )
 from equity_analyst.gemini_cache import GeminiCacheIndex
-from equity_analyst.options_chain import options_chain_expiry_audit_messages
+from equity_analyst.options_chain import (
+    _parse_earnings_calendar_date,
+    options_chain_expiry_audit_messages,
+)
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_export import prompt_call_context
@@ -122,7 +125,8 @@ When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, trea
 - For every session or horizon in the excerpt that reports **1{_GS} / 2{_GS} / 3{_GS}** bands tied to options-implied width, require an explicit **vol baseline**: a **real listed options expiry (YYYY-MM-DD)** used for implied move, **or** the literal label **HV30 sqrt(t) scaling** (or text clearly equivalent).
 - **No fake 0-DTE implied move:** if the excerpt reports same-day implied-move {_GS} for a session **without** naming a chain expiry that could support that session, add a concise **unverifiable** item naming the session and asking for the nearest weekly expiry + sqrt(target_DTE/chosen_DTE) scaling or HV30 fallback.
 - **Variance-additive event+diffusion (canonical when the horizon crosses the earnings print and the target is post-event):** if the excerpt states **event_jump=** ... **%** and **daily_vol=** ... **%** (post-event decomposition), recompute **{_GS}^2(T+N) - {_GS}^2(T+1)** from the stated **1{_GS}** (or **3{_GS}/3**) half-width % for each later post-event horizon vs the first post-event row and verify it equals **(N-1) * daily_vol^2** within **+/-25%** (same N as the model's post-event day count). If it fails, add **unverifiable** items with the concrete observed vs expected numbers and ask for a corrected **daily_vol** or explicit fallback labeling.
-- **sqrt(t) coherence (fallback, single IV baseline only):** when the excerpt does **not** use the variance-additive literals above and two or more horizons share one baseline regime, the ratio of **3{_GS} half-width %** values should track **sqrt(Delta trading_sessions)** within **+/-25%** unless the excerpt explicitly flags a **vol regime change**. If incompatible, add **unverifiable** follow-ups naming dates, observed ratio, expected sqrt(N), and ask to re-derive or label distinct regimes.
+- **sqrt(t) coherence (fallback, single IV baseline only):** apply **only** when the excerpt has **no** ``event_jump=`` / ``daily_vol=`` literals **and** the dated {_GS} rows are **entirely pre-earnings** or **entirely post-earnings** (no earnings session **between** the earliest and latest dated row). When those literals **are** present, use the **variance-additive** check instead — do **not** demand sqrt(t) ratios across an event jump. When sqrt(t) **does** apply (pre-event constant-IV or post-event single-baseline window), the ratio of **3{_GS} half-width %** values should track **sqrt(Delta trading_sessions)** within **+/-25%** unless the excerpt explicitly flags a **vol regime change**. If incompatible, add **unverifiable** follow-ups naming dates, observed ratio, expected sqrt(N), and ask to re-derive or label distinct regimes.
+- **Unsourced options-chain numerics:** Flag any options-chain numeric claim (**PCR**, **IV**, **OI**, **volume**, **premium**, **breakeven** for a **non-current** / historical session, etc.) that lacks an inline ``http(s)://`` URL or a ``Source:`` attribution **in the same paragraph**. Add to **unverifiable** with: ``Cite or verify: <provider/synthesis> claims <metric>=<value> for <date> without a primary source.``
 - If the excerpt is missing the mandatory sanity line while it contains multi-horizon **3{_GS}** % bands, add an **unverifiable** item: require **`{_GS}-scaling check (variance):`** when **event_jump=** / **daily_vol=** are present; otherwise require **`{_GS}-scaling check:`** (sqrt-t ratio form).
 
 """
@@ -291,9 +295,13 @@ def sigma_band_sqrt_ratio_followups(
     rel_err = abs(observed - expected) / expected
     if rel_err <= tolerance:
         return []
-    tag = f"{session_late[:14]}/{session_early[:14]}"
+    d_late = session_late.strip()[:24] if session_late else "T+N"
+    d_early = session_early.strip()[:24] if session_early else "T+1"
+    pct_off = rel_err * 100.0
     return [
-        f"{_GS} sqrt-t {tag}: ratio {observed:.2f} vs sqrt(N)~{expected:.2f} (N={trading_day_span}); cite expiry or regimes.",
+        f"{_GS} pre-event sqrt-t: 3{_GS}({d_late})/3{_GS}({d_early})={observed:.2f} "
+        f"expected ~sqrt(N)={expected:.2f} (N={trading_day_span}; pre-event constant-IV scaling), "
+        f"off by {pct_off:.0f}%.",
     ]
 
 
@@ -353,7 +361,8 @@ def verify_variance_additive_sigma_band_sessions(
                 rel = abs(obs_sq - expected_sq) / expected_sq
                 if rel > tolerance:
                     followups.append(
-                        f"{_GS}^2 variance {sess[:18]}: 1{_GS}^2 obs={obs_sq:.2f} vs ej^2+dv^2={expected_sq:.2f} ({rel:.0%} err); fix daily_vol or inputs.",
+                        f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+1)={obs_sq:.2f} expected "
+                        f"ej^2+dv^2={expected_sq:.2f}, off by {rel:.0%}; fix daily_vol or inputs.",
                     )
             else:
                 expected_delta = float(n_i - 1) * dv2
@@ -363,7 +372,8 @@ def verify_variance_additive_sigma_band_sessions(
                 rel = abs(obs_delta - expected_delta) / expected_delta
                 if rel > tolerance:
                     followups.append(
-                        f"{_GS}^2 variance {sess[:18]}: delta_obs={obs_delta:.2f} vs (N-1)dv^2={expected_delta:.2f} (N={n_i}, {rel:.0%} err); fix daily_vol.",
+                        f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+{n_i})-{_GS}^2(T+1)={obs_delta:.2f} "
+                        f"expected (N-1)*daily_vol^2={expected_delta:.2f} (N={n_i}), off by {rel:.0%}; fix daily_vol.",
                     )
         else:
             expected_sq = ej2 + float(n_i) * dv2
@@ -372,7 +382,8 @@ def verify_variance_additive_sigma_band_sessions(
             rel = abs(obs_sq - expected_sq) / expected_sq
             if rel > tolerance:
                 followups.append(
-                    f"{_GS}^2 variance {sess[:18]}: 1{_GS}^2 obs={obs_sq:.2f} vs ej^2+N*dv^2={expected_sq:.2f} (N={n_i}, {rel:.0%} err); fix inputs.",
+                    f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+{n_i})={obs_sq:.2f} expected "
+                    f"ej^2+N*daily_vol^2={expected_sq:.2f} (N={n_i}), off by {rel:.0%}; fix inputs.",
                 )
     return followups
 
@@ -417,6 +428,78 @@ def _parse_variance_additive_literals(synthesis: str) -> tuple[float | None, flo
         return float(ej_m.group(1)), float(dv_m.group(1))
     except ValueError:
         return None, None
+
+
+def _dated_rows_for_variance_additive_check(
+    by_date: dict[date, tuple[float, str]],
+    earnings_date: date | None,
+) -> dict[date, tuple[float, str]]:
+    """Prefer post-earnings dated rows when the anchor is known (avoid mixing pre/post for N)."""
+    if earnings_date is None or not by_date:
+        return dict(by_date)
+    post = {d: v for d, v in by_date.items() if d >= earnings_date}
+    if post:
+        return post
+    return dict(by_date)
+
+
+def should_apply_sqrt_t_three_sigma_ratio(
+    *,
+    variance_literals_present: bool,
+    early_d: date,
+    late_d: date,
+    earnings_date: date | None,
+) -> bool:
+    """True only when constant-IV sqrt(t) scaling is appropriate for earliest vs latest 3-sigma % rows."""
+    if variance_literals_present:
+        return False
+    if late_d <= early_d:
+        return False
+    if earnings_date is None:
+        return True
+    if early_d < earnings_date <= late_d:
+        return False
+    entirely_pre = late_d < earnings_date
+    entirely_post = early_d >= earnings_date
+    return entirely_pre or entirely_post
+
+
+_PCR_NUMERIC_IN_PARAGRAPH_RE = re.compile(
+    r"(?is)\b(?:PCR|put\s*/\s*call\s+ratio|P/?C\s+ratio)\b.{0,240}?\b(\d+\.\d+)\b",
+)
+
+
+def followups_from_unsourced_options_chain_numeric_claims(
+    synthesis_text: str,
+    *,
+    context_label: str = "synthesis",
+) -> list[str]:
+    """Heuristic: PCR / put-call ratio decimals without URL or ``Source:`` in the same paragraph."""
+    followups: list[str] = []
+    for block in re.split(r"\n\s*\n+", synthesis_text.strip()):
+        b = block.strip()
+        if not b or len(b) > 800:
+            continue
+        m = _PCR_NUMERIC_IN_PARAGRAPH_RE.search(b)
+        if not m:
+            continue
+        low = b.lower()
+        if "http://" in low or "https://" in low:
+            continue
+        if "source:" in low:
+            continue
+        val = m.group(1)
+        followups.append(
+            f"Cite or verify: {context_label} claims PCR={val} without a primary source.",
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    for f in followups:
+        if f in seen:
+            continue
+        seen.add(f)
+        out.append(f)
+    return out
 
 
 def per_provider_sigma_variance_check(
@@ -573,6 +656,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     symbol: str = "",
     iv_crush_multiplier: float | None = None,
     hv30_annualized_pct: float | None = None,
+    earnings_date: date | None = None,
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     out = dict(result)
@@ -599,13 +683,15 @@ def augment_verifier_result_with_sigma_structural_checks(
     for d, pct, lbl in dated:
         by_date[d] = (pct, lbl)
 
-    if variance_mode and len(by_date) >= 1:
+    by_date_var = _dated_rows_for_variance_additive_check(by_date, earnings_date)
+
+    if variance_mode and len(by_date_var) >= 1:
         assert ej_lit is not None and dv_lit is not None
-        keys_sorted = sorted(by_date)
+        keys_sorted = sorted(by_date_var)
         early_d = keys_sorted[0]
         session_payload: list[dict[str, Any]] = []
         for d in keys_sorted:
-            w3, lbl = by_date[d]
+            w3, lbl = by_date_var[d]
             n_inc = trading_sessions_inclusive(early_d, d)
             session_payload.append({"session": lbl, "N": n_inc, "sigma_pct": w3 / 3.0})
         extras.extend(
@@ -619,20 +705,26 @@ def augment_verifier_result_with_sigma_structural_checks(
     elif len(by_date) >= 2:
         keys = sorted(by_date)
         early_d, late_d = keys[0], keys[-1]
-        span = trading_sessions_after_exclusive(early_d, late_d)
-        w_early, lbl_e = by_date[early_d]
-        w_late, lbl_l = by_date[late_d]
-        if span >= 2 and w_early > 0.0:
-            extras.extend(
-                sigma_band_sqrt_ratio_followups(
-                    width_early=w_early,
-                    width_late=w_late,
-                    trading_day_span=span,
-                    session_early=lbl_e,
-                    session_late=lbl_l,
-                    tolerance=sqrt_tolerance,
-                ),
-            )
+        if should_apply_sqrt_t_three_sigma_ratio(
+            variance_literals_present=variance_mode,
+            early_d=early_d,
+            late_d=late_d,
+            earnings_date=earnings_date,
+        ):
+            span = trading_sessions_after_exclusive(early_d, late_d)
+            w_early, lbl_e = by_date[early_d]
+            w_late, lbl_l = by_date[late_d]
+            if span >= 2 and w_early > 0.0:
+                extras.extend(
+                    sigma_band_sqrt_ratio_followups(
+                        width_early=w_early,
+                        width_late=w_late,
+                        trading_day_span=span,
+                        session_early=lbl_e,
+                        session_late=lbl_l,
+                        tolerance=sqrt_tolerance,
+                    ),
+                )
 
     for row in out.get("sigma_band_sessions") or []:
         if not isinstance(row, dict):
@@ -663,6 +755,7 @@ def augment_verifier_result_with_sigma_structural_checks(
         ),
     )
 
+    extras.extend(followups_from_unsourced_options_chain_numeric_claims(synthesis_text))
     merged = extras + [u for u in prior if u not in extras]
     deduped: list[str] = []
     seen: set[str] = set()
@@ -1155,6 +1248,7 @@ class RefinementState(TypedDict, total=False):
     options_chain_data: NotRequired[dict[str, Any]]
     final_report_full_synthesis: NotRequired[bool]
     equity_prompt_render_context: NotRequired[dict[str, Any]]
+    earnings_date: NotRequired[str]
 
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
@@ -2075,6 +2169,17 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             raw_hv = eq_ctx_raw.get("hv30_annualized_pct")
             if isinstance(raw_hv, (int, float)) and not isinstance(raw_hv, bool):
                 hv_p = float(raw_hv)
+        earn_calendar: date | None = None
+        ed_raw: str | None = None
+        raw_top = state.get("earnings_date")
+        if isinstance(raw_top, str) and raw_top.strip():
+            ed_raw = raw_top.strip()
+        elif isinstance(eq_ctx_raw, dict):
+            ctx_ed = eq_ctx_raw.get("earnings_date")
+            if isinstance(ctx_ed, str) and ctx_ed.strip():
+                ed_raw = ctx_ed.strip()
+        if ed_raw:
+            earn_calendar = _parse_earnings_calendar_date(ed_raw)
         data = augment_verifier_result_with_sigma_structural_checks(
             syn,
             data,
@@ -2082,6 +2187,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             symbol=str(state.get("symbol", "")),
             iv_crush_multiplier=iv_c,
             hv30_annualized_pct=hv_p,
+            earnings_date=earn_calendar,
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -2305,6 +2411,7 @@ def build_initial_refinement_state(
         "options_chain_data": rendered.context.get("options_chain_data") or {},
         "final_report_full_synthesis": cfg.final_report_full_synthesis,
         "equity_prompt_render_context": copy.deepcopy(rendered.context),
+        "earnings_date": cfg.earnings_date,
     }
 
 

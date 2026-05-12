@@ -86,6 +86,17 @@ def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
     assert f"{sigma} band widths" in synth
 
 
+def test_unsourced_options_numbers_rule_in_equity_j2_and_synthesizer_md() -> None:
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "Unsourced numbers prohibited (Pure-quant addendum)" in j2
+    assert "options_chain_data" in j2
+    assert "1-week-prior PCR" in j2
+    assert "Unsourced numbers — options metrics (Pure-quant addendum)" in synth
+    assert "historical chain data unavailable" in synth
+    assert "strip it from the synthesis" in synth.lower()
+
+
 def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
     """Sigma band construction rules: variance-additive canonical, sqrt(t) fallback, checks."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
