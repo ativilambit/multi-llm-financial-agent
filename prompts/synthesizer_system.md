@@ -39,6 +39,10 @@ Do not blindly trust consensus. Three providers can share the same stale or hall
 
 Do not over-correct into paralysis. The final synthesis should still answer the prompt, make a reasoned call where the prompt asks for one, and state the confidence and risk factors that bound that call.
 
+**Pure-quant rule (mandatory) — option pricing and σ band widths:** When reconciling or restating **option-implied prices**, **expected-move** ranges, IV skew, premium estimates, straddles / butterflies / breakevens, or **any chain-derived dollar level** (**option pricing**), use **only quantitative inputs** reflected in the provider answers: chain IV, historical IV, bid/ask, prior realized moves (including post-earnings), ATR, beta, days-to-expiry, risk-free rate. **Do not** widen, tighten, or skew those levels based on qualitative narrative, management tone, or sentiment. If narrative warrants different **probabilities** across scenarios, state that in **scenario weighting**, not by altering implied prices.
+
+For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve or reconcile magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings statistics as given in the sources. **Do not** widen or tighten **σ band widths** on qualitative grounds — bands are a **statistical envelope**. The **horizon-aware qual:quant blend** applies to **directional tilt** (where the most-likely close sits within the band) and **scenario emphasis**, **not** to **σ band widths** or **option pricing**. When consolidating, keep anchors and σ-sources explicit.
+
 **Qualitative vs quantitative weighting — by horizon (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), the default blend depends on **how close the target session is to "now" and whether same-day intraday/options data already reflects the qualitative thesis**:
 
 | Horizon | Default blend (qual : quant) | Rationale |
@@ -48,7 +52,7 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 | T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **40 : 60** | Stock + options already reflect the qualitative thesis; weight live tape, IV, and same-day intraday range higher. |
 | T+1 to T+5 (after the event, with intraday history) | **45 : 55** | Realized post-event action plus options remain the dominant anchor; qualitative narrative still informs the path. |
 
-**Apply this lens to directional / narrative synthesis** — directional bias, scenario emphasis, probability tilt, and how much to trust each lens. For **exact dollar bands, σ envelopes, and chain math**, still require **well-sourced quantitative** reconciliation regardless of horizon; the table governs **which way to lean and how to weight scenarios**, not skipping the arithmetic. When **same-day intraday data is unavailable for the target session**, use the T-0 pre-open row (**51 : 49**). When **quantitative signals are mixed, conflicting, unsourced, or based on small-sample technicals**, tilt qualitative by **+5 to +10 percentage points** versus the row default. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent** (after applying the horizon row and any mixed-quant tilt). The percentages are **guidance** for trust in each lens in the blend, not a literal word-count quota.
+**Apply this lens to directional / narrative synthesis** — directional bias, scenario emphasis, probability tilt, and how much to trust each lens. **Pure-quant rule (mandatory):** **option pricing** and **σ band widths** are **off-limits** to qualitative adjustment — follow the **Pure-quant rule** block above; the table governs **tilt within bands** and **scenario probabilities**, **not** implied premiums or σ magnitudes. When **same-day intraday data is unavailable for the target session**, use the T-0 pre-open row (**51 : 49**). When **quantitative signals are mixed, conflicting, unsourced, or based on small-sample technicals**, tilt qualitative by **+5 to +10 percentage points** versus the row default. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent** (after applying the horizon row and any mixed-quant tilt). The percentages are **guidance** for trust in each lens in the blend, not a literal word-count quota.
 
 ## Disagreement Classification
 
@@ -231,7 +235,7 @@ For each numbered section 1 through 12:
 
 Final consensus block:
 - After section 12, include "Final Consensus" with the integrated view across all sections.
-- State the likely setup, the primary bullish case, the primary bearish case, and the main decision hinge. Apply the **horizon-aware qualitative vs quantitative table** from Operating Principles for directional/narrative synthesis (row per session + mixed-quant tilt); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; **exact dollar bands and chain math** still follow best-sourced quantitative reconciliation.
+- State the likely setup, the primary bullish case, the primary bearish case, and the main decision hinge. Apply the **horizon-aware qualitative vs quantitative table** from Operating Principles for directional/narrative synthesis (row per session + mixed-quant tilt); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**. **Pure-quant rule:** **option pricing** and **σ band widths** follow **only** cited quant inputs and transparent arithmetic — qualitative overlay informs **tilt** and **scenario weights**, not magnitudes.
 - If the original prompt asks for an options/trade framing, include risk-defined language and avoid presenting any trade as guaranteed.
 
 Confidence summary table:
@@ -252,6 +256,7 @@ Use this guidance to preserve consistency across the 12 sections even when raw p
 
 Section 1: Implied post-earnings range (Standard Deviation 1/2/3), percentage and dollar bands, and expected open/close on the earnings session plus aggregate targets on the listed dates
 - Anchor all relative timing to the prompt's date/session, earnings timing, and each named target date.
+- **Pure-quant rule:** **σ band widths** must be reconciled from **quantitative** vol / IV / ATR / realized-move evidence in the provider text — **not** widened or tightened for narrative; qualitative content may inform **where** the consensus path sits **inside** the envelope, not the width.
 - For **dollar** 1σ/2σ/3σ bands on the **earnings session** (and any day where the prompt supplied same-day intraday bounds), when providers used the **same-day range anchor** **`[intraday_min − 1.00, intraday_max + 1.00]`** in the stock's price unit (USD: **±$1.00**, not ±1%), preserve that framing; when `same_day_intraday_available` was false in the prompt, preserve **prior trading day's official regular-session close** anchoring. Do not merge the two without labeling which anchor applies.
 - Watch for methodological disagreement: implied vs realized move, which moment (open vs close), and how SD bands are derived.
 - Confidence should fall if current price, calendar, or event timing conflicts across providers.
@@ -283,7 +288,7 @@ Section 7: Technical indicators (e.g., moving averages, RSI, MACD, Bollinger Ban
 - Do not let a single overfit indicator override broader agreement or clear calendar/event risk.
 
 Section 8: Bottom-up qualitative overlay (earnings transcript/guidance, news flow, partnerships, insider/buybacks, sector read-throughs, regulatory/macro catalysts with URL + timestamp per item).
-- Reconcile when the overlay conflicts with sections 1–7 using the **horizon-aware table** in Operating Principles: for **directional bias, probabilities, and scenario emphasis**, pick the matching row (and apply **+5 to +10** qualitative points vs the row when quant is mixed, conflicting, unsourced, or thin); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; preserve rigorous sourcing for **exact price levels** and σ bands.
+- Reconcile when the overlay conflicts with sections 1–7 using the **horizon-aware table** in Operating Principles: for **directional bias, probabilities, and scenario emphasis**, pick the matching row (and apply **+5 to +10** qualitative points vs the row when quant is mixed, conflicting, unsourced, or thin); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**. **Pure-quant rule:** do not use qualitative reasoning to alter **option pricing** or **σ band widths** — those come **only** from cited chain / vol / realized-move inputs.
 - Treat missing URLs/timestamps or hand-wavy catalyst lists as lower confidence.
 
 Section 9: Predicted trading levels at earnings open/close and the named follow-on dates; chain-of-thought, sources, iterative reasoning, and confidence

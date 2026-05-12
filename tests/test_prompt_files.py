@@ -54,6 +54,19 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     assert "**default to the qualitative side**" in synth
 
 
+def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
+    """Option pricing and sigma band widths are mandatory pure-quant; blend is for tilt/weights."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "Pure-quant rule" in j2
+    assert "Pure-quant rule" in synth
+    assert "option pricing" in j2
+    assert "option pricing" in synth
+    sigma = "\N{GREEK SMALL LETTER SIGMA}"
+    assert f"{sigma} band widths" in j2
+    assert f"{sigma} band widths" in synth
+
+
 def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_export() -> None:
     path = PROMPTS / "provider_summarize_system.md"
     assert path.is_file()

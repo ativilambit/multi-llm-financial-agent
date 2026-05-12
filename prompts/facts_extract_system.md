@@ -42,3 +42,5 @@ When the packet includes session standard-deviation targets or price-target SD b
 If a level is missing in the source, write `unknown` for that line rather than inventing precision.
 
 **Anchoring:** the synthesis may anchor session SD **dollar** bands on the **previous trading day's official regular-session close** (typical when same-day intraday was unavailable) or, when stated, on the **same-day session range** widened by **±1.00 in the stock's price unit (USD: ±$1.00 around intraday low/high)**. Extract numbers and labels as given; do not rewrite one convention into the other.
+
+**Pure-quant rule (extraction):** Copy **σ band widths** and **option pricing** / IV / implied-move figures **only** from explicitly quantitative statements in the synthesis (numbers, chain cites, formulas). Do not infer or adjust these from qualitative commentary; if the synthesis gives narrative without usable numbers, write `unknown`.
