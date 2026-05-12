@@ -67,7 +67,8 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
     assert "one trading week after" in text
     assert "Bottom-up qualitative overlay" in text
     assert "directional bias" in text
-    assert "source URL and timestamp" in text
+    assert "### Qualitative evidence" in text
+    assert "Source:" in text and ("http://" in text or "https://" in text)
     assert "sections 1, 9, and 11" in text or "(sections 1, 9, 11)" in text
 
     sigma = "\N{GREEK SMALL LETTER SIGMA}"

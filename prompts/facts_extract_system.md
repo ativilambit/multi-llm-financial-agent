@@ -14,7 +14,7 @@ Rules:
   - **Session / SD price targets** when the synthesis states standard-deviation envelopes for named sessions or horizons (sections 1, 9, 11 of the analyst template): include **all three** SD levels, not only 1σ (see “Session SD targets” below)
   - Analyst targets (median, range, N analysts) if stated
   - Last N quarters earnings reactions (compact table or bullets)
-  - Key qualitative anchors (1–3 bullets)
+  - **Qualitative evidence** (section 8 of the equity template): up to **8** bullets mirroring the synthesis—each bullet should echo **claim + URL or `Source:` + date** when present; if section 8 is mostly methodology without sourced bullets, write `unknown` for qualitative evidence
 - Do not add investment advice or new trades; facts only.
 
 ### Implied moves (IV / options)

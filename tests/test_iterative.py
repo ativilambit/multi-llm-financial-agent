@@ -44,6 +44,12 @@ def test_verifier_instruction_sigma_structural_checks() -> None:
     assert "HV30 sqrt(t) scaling" in VERIFIER_INSTRUCTION_PREFIX
 
 
+def test_verifier_instruction_section8_citation_heuristic() -> None:
+    assert "section 8" in VERIFIER_INSTRUCTION_PREFIX
+    assert "800" in VERIFIER_INSTRUCTION_PREFIX
+    assert "Source:" in VERIFIER_INSTRUCTION_PREFIX
+
+
 def test_sigma_band_sqrt_ratio_followups_flags_may13_to_may19_example() -> None:
     """60% vs 75% over 4 trading sessions implies ratio 1.25 vs √4=2.0 (>25% off)."""
     qs = sigma_band_sqrt_ratio_followups(

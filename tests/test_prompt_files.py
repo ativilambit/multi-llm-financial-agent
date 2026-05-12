@@ -54,6 +54,25 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     assert "**default to the qualitative side**" in synth
 
 
+def test_section8_qualitative_evidence_subsections_and_limits() -> None:
+    """Section 8 mandates sourced Qualitative evidence before short blend text."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    assert "### Qualitative evidence" in j2
+    assert "### Horizon & blend application" in j2
+    assert "### Directional resolution" in j2
+    assert "minimum **6**" in j2 or "minimum 6" in j2
+    assert "120 words" in j2
+    assert "at most 4 sentences" in j2
+    assert "Unable to verify from primary sources" in j2
+
+
+def test_synthesizer_preserves_section8_qualitative_bullets() -> None:
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "Preserve and dedupe" in synth and "Qualitative evidence" in synth
+    assert "methodology-only" in synth.lower()
+    assert "conflicting" in synth.lower() and "sources" in synth.lower()
+
+
 def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
     """Option pricing and sigma band widths are mandatory pure-quant; blend is for tilt/weights."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
