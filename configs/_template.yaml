@@ -94,6 +94,10 @@ synthesizer:
 #   — optional API model id for the verifier only (default: each provider's built-in default, e.g. GeminiProvider default).
 # verifier_max_output_tokens: 8192
 #   — iterative verifier JSON completion budget (default 8192; max 32768).
+# fan_out_on_continue: true
+#   — iterative: when true (default), iteration 2+ re-runs fan-out providers if the route step emitted
+#     follow-up questions from contradictions/unverifiable, even when conditional_fanout_enabled is true
+#     and the verifier did not set refan_out_*. Set false for legacy “verifier refan only” cost behavior.
 # request_timeout_s: 180
 #   — default asyncio wait_for ceiling for each provider/synthesis call (3 minutes).
 # retry_max_attempts: 3

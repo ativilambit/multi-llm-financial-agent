@@ -571,8 +571,10 @@ class RefinementState(TypedDict, total=False):
     iterative_config_snapshot: NotRequired[dict[str, Any]]
     facts_packet_enabled: NotRequired[bool]
     conditional_fanout_enabled: NotRequired[bool]
+    fan_out_on_continue: NotRequired[bool]
     refinement_mode_prompt_enabled: NotRequired[bool]
     facts_packet_md: NotRequired[str]
+    last_route_followup_questions: NotRequired[list[str]]
 
 
 def _estimate_prompt_tokens(text: str) -> int:
@@ -757,7 +759,17 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         raw_refan = ver_for_directives.get("refan_out_providers") or []
         refan_set = {str(x).strip().lower() for x in raw_refan if str(x).strip()} & allowed_names
 
-        skip_fanout = it_no >= 2 and conditional and not refan_all and not refan_set
+        fan_out_on_continue = bool(state.get("fan_out_on_continue", True))
+        last_route_followups = [str(x).strip() for x in (state.get("last_route_followup_questions") or []) if str(x).strip()]
+        router_requests_fanout = fan_out_on_continue and bool(last_route_followups)
+
+        skip_fanout = (
+            it_no >= 2
+            and conditional
+            and not refan_all
+            and not refan_set
+            and not router_requests_fanout
+        )
         partial_fanout = it_no >= 2 and conditional and bool(refan_set) and not refan_all
 
         task_body = _compose_fan_out_user_body(state, it_no=it_no, skip_fanout=skip_fanout)
@@ -765,18 +777,42 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         if facts_enabled and it_no >= 2 and facts_md:
             body = facts_frozen_user_prefix(facts_markdown=facts_md) + task_body
 
-        fan_label = "full"
         if skip_fanout:
-            fan_label = "skipped"
-        elif partial_fanout:
-            fan_label = "partial"
-
-        logger.info(
-            "Iteration %s: fan_out=%s, facts_packet=%s",
-            it_no,
-            fan_label,
-            facts_label,
-        )
+            n_drop = len(last_route_followups)
+            if not fan_out_on_continue and last_route_followups:
+                skip_reason = "fan_out_on_continue_disabled"
+            else:
+                skip_reason = "conditional_fanout_without_verifier_refan_and_no_router_followups"
+            logger.info(
+                "Iteration %s: fan_out=skipped (reason=%s) followups_dropped=%s facts_packet=%s",
+                it_no,
+                skip_reason,
+                n_drop,
+                facts_label,
+            )
+        else:
+            if it_no < 2:
+                run_reason = "initial_round"
+            elif refan_all:
+                run_reason = "verifier_refan_out_all"
+            elif refan_set:
+                run_reason = "verifier_refan_out_providers"
+            elif router_requests_fanout:
+                run_reason = "router_continue_fan_out"
+            elif not conditional:
+                run_reason = "conditional_fanout_disabled"
+            else:
+                run_reason = "provider_fanout"
+            n_fu = len(last_route_followups)
+            run_names = sorted(refan_set) if partial_fanout else list(state["providers"])
+            logger.info(
+                "Iteration %s: fan_out=running providers=%s followups=%s reason=%s facts_packet=%s",
+                it_no,
+                run_names,
+                n_fu,
+                run_reason,
+                facts_label,
+            )
         est_full = _estimate_prompt_tokens(_fan_out_task_body(state))
         n_providers = len(state["providers"])
         saved_tokens = 0
@@ -1238,7 +1274,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         for u in ver.get("unverifiable") or []:
             qs.append(f"Cite or verify: {u}")
         logger.info("Route decision: continue (fan_out) followups=%s", len(qs))
-        return Command(goto="fan_out", update={"followup_questions": qs})
+        return Command(
+            goto="fan_out",
+            update={
+                "followup_questions": qs,
+                "last_route_followup_questions": qs,
+            },
+        )
 
     async def finalize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
@@ -1431,6 +1473,7 @@ def build_initial_refinement_state(
         "iterative_config_snapshot": cfg.model_dump(mode="json"),
         "facts_packet_enabled": cfg.facts_packet_enabled,
         "conditional_fanout_enabled": cfg.conditional_fanout_enabled,
+        "fan_out_on_continue": cfg.fan_out_on_continue,
         "refinement_mode_prompt_enabled": cfg.refinement_mode_prompt_enabled,
     }
 

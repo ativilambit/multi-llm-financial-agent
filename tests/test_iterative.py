@@ -628,6 +628,32 @@ class _CountingFan(LLMProvider):
         )
 
 
+class _CountingFanDistinct(LLMProvider):
+    """Like ``_CountingFan`` but body changes each ``generate`` so iteration artifacts differ."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls = 0
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        self.calls += 1
+        _FANOUT_CALL_COUNTS[self.name] += 1
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=f"fan-{self.name}-call-{self.calls}\n",
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
 class _VerSkipFan(LLMProvider):
     """First round contradicts; second clears (no re-fan-out requested)."""
 
@@ -647,6 +673,42 @@ class _VerSkipFan(LLMProvider):
         if self.k == 1:
             body = (
                 '{"verified":[],"contradicted":["issue"],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        else:
+            body = (
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+            )
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=body,
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+class _VerTwoContradictionsThenClear(LLMProvider):
+    """First verification emits two contradictions (two router follow-ups); second clears."""
+
+    def __init__(self) -> None:
+        self.name = "gemini"
+        self.k = 0
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        self.k += 1
+        if self.k == 1:
+            body = (
+                '{"verified":[],"contradicted":["numbers look off","ratios disagree"],'
+                '"unverifiable":[],'
                 '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
             )
         else:
@@ -822,6 +884,7 @@ async def test_iteration_two_conditional_fanout_skips_fan_providers(tmp_path: Pa
         synthesizer="gemini",
         facts_packet_enabled=False,
         conditional_fanout_enabled=True,
+        fan_out_on_continue=False,
     )
     out = tmp_path / "o"
     out.mkdir()
@@ -830,6 +893,36 @@ async def test_iteration_two_conditional_fanout_skips_fan_providers(tmp_path: Pa
     assert _FANOUT_CALL_COUNTS["anthropic"] == 1
     assert _FANOUT_CALL_COUNTS["openai"] == 1
     assert _FANOUT_CALL_COUNTS["grok"] == 1
+
+
+@pytest.mark.asyncio
+async def test_iteration_two_router_followups_rerun_fan_out_under_conditional(
+    tmp_path: Path,
+) -> None:
+    """Router continue(fan_out) with follow-ups must invoke providers when conditional fan-out is on."""
+    _FANOUT_CALL_COUNTS.clear()
+    reg = ProviderRegistry()
+    _openai_fan = _CountingFanDistinct("openai")
+    reg.register("openai", lambda **_: _openai_fan)
+    synth = _SynthCalls("gemini")
+    ver = _VerTwoContradictionsThenClear()
+    reg.register("gemini", lambda **_: _GeminiSplit(synth, ver))
+    cfg = _base_cfg(
+        providers=["openai"],
+        synthesizer="gemini",
+        facts_packet_enabled=False,
+        conditional_fanout_enabled=True,
+    )
+    assert cfg.fan_out_on_continue is True
+    out = tmp_path / "o-router-fanout"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "router-fanout"}})
+    assert _FANOUT_CALL_COUNTS["openai"] >= 2
+    p1 = (out / "iterations" / "iteration_1_providers.md").read_text(encoding="utf-8")
+    p2 = (out / "iterations" / "iteration_2_providers.md").read_text(encoding="utf-8")
+    assert p1 != p2
+    assert "fan-out skipped" not in p2
 
 
 @pytest.mark.asyncio

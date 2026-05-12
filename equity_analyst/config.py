@@ -193,7 +193,14 @@ class RunConfig(BaseModel):
     )
     conditional_fanout_enabled: bool = Field(
         default=True,
-        description="Iterative: after round 1, skip fan-out providers unless the verifier requests re-fan-out.",
+        description="Iterative: after round 1, skip fan-out providers unless the verifier requests re-fan-out "
+        "or (when fan_out_on_continue is True) the router emitted follow-up questions for this round.",
+    )
+    fan_out_on_continue: bool = Field(
+        default=True,
+        description="Iterative: when True, iteration 2+ runs full provider fan-out if the route step appended "
+        "follow-up questions (from contradictions / unverifiable), even when conditional_fanout_enabled is True "
+        "and the verifier left refan_out_* unset. Set False to keep legacy cost behavior (verifier refan only).",
     )
     refinement_mode_prompt_enabled: bool = Field(
         default=True,
@@ -504,6 +511,13 @@ class RunConfig(BaseModel):
             and "conditional_fanout_enabled" not in self.model_fields_set
         ):
             updates["conditional_fanout_enabled"] = str(cf).strip().lower() in ("1", "true", "yes", "on")
+        foc = os.environ.get("FAN_OUT_ON_CONTINUE")
+        if (
+            foc is not None
+            and str(foc).strip()
+            and "fan_out_on_continue" not in self.model_fields_set
+        ):
+            updates["fan_out_on_continue"] = str(foc).strip().lower() in ("1", "true", "yes", "on")
         rm = os.environ.get("REFINEMENT_MODE_PROMPT_ENABLED")
         if (
             rm is not None

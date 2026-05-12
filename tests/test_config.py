@@ -28,6 +28,7 @@ def test_iterative_cost_optimization_flags_default_on() -> None:
     )
     assert cfg.facts_packet_enabled is True
     assert cfg.conditional_fanout_enabled is True
+    assert cfg.fan_out_on_continue is True
     assert cfg.refinement_mode_prompt_enabled is True
 
 
