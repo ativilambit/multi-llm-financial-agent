@@ -206,6 +206,94 @@ def trading_sessions_inclusive(start: date, end: date) -> int:
     return n
 
 
+def _is_weekday_session(d: date) -> bool:
+    return d.weekday() < 5
+
+
+def next_trading_day_on_or_after(d: date) -> date:
+    """First NYSE-style weekday on or after ``d``."""
+    cur = d
+    while not _is_weekday_session(cur):
+        cur += timedelta(days=1)
+    return cur
+
+
+def next_trading_day_strictly_after(d: date) -> date:
+    """First weekday strictly after calendar day ``d``."""
+    return next_trading_day_on_or_after(d + timedelta(days=1))
+
+
+def _earnings_timing_implies_amc(earnings_timing: str | None) -> bool:
+    """Heuristic AMC vs BMO from ``RunConfig.earnings_timing`` / template copy."""
+    if not earnings_timing or not earnings_timing.strip():
+        return False
+    low = earnings_timing.lower()
+    if "bmo" in low:
+        return False
+    if "before" in low and "open" in low:
+        return False
+    if "morning" in low and "before" in low:
+        return False
+    amc_markers = (
+        "after the close",
+        "after market close",
+        "after close",
+        "amc",
+        "post-market",
+        "post market",
+        "after hours",
+        "after-hours",
+        "after the bell",
+    )
+    return any(m in low for m in amc_markers)
+
+
+def anchor_session_date_for_variance_check(
+    earnings_calendar: date | None,
+    earnings_timing: str | None,
+) -> date | None:
+    """First **post-event** regular session used as **T+1** for variance-additive sigma checks.
+
+    Matches the equity / synthesizer brief:
+
+    - **BMO** (and unknown timing): first weekday **on or after** ``earnings_calendar`` — the
+      earnings-day regular session is the first post-print diffusion anchor for variance steps.
+    - **AMC** (heuristic on ``earnings_timing``): first weekday **strictly after**
+      ``earnings_calendar`` — diffusion ribbon starts the next session.
+
+    ``N`` for a dated synthesis row is then ``trading_sessions_inclusive(anchor, row_date)``.
+    """
+    if earnings_calendar is None:
+        return None
+    if _earnings_timing_implies_amc(earnings_timing):
+        return next_trading_day_strictly_after(earnings_calendar)
+    return next_trading_day_on_or_after(earnings_calendar)
+
+
+def _dated_rows_for_variance_additive_check(
+    by_date: dict[date, tuple[float, str]],
+    anchor_session: date | None,
+) -> dict[date, tuple[float, str]]:
+    """Keep only rows on/after ``anchor_session`` when the anchor is known."""
+    if anchor_session is None or not by_date:
+        return dict(by_date)
+    post = {d: v for d, v in by_date.items() if d >= anchor_session}
+    return post if post else {}
+
+
+def _merge_dated_sigma_rows_first_wins(
+    dated: list[tuple[date, float, float, str]],
+) -> tuple[dict[date, tuple[float, str]], dict[date, tuple[float, str]]]:
+    """First row per calendar date wins; returns ``(by_three_sigma_half, by_one_sigma_half)``."""
+    by_w3: dict[date, tuple[float, str]] = {}
+    by_s1: dict[date, tuple[float, str]] = {}
+    for d, w3_half, s1_half, lbl in dated:
+        if d not in by_w3:
+            by_w3[d] = (w3_half, lbl)
+            by_s1[d] = (s1_half, lbl)
+    return by_w3, by_s1
+
+
 # Loosely match styled literals: optional LaTeX ``\\`` before ``_``, ``:`` or ``=``, optional ``\\`` before ``%``,
 # optional ``/day`` suffix on daily_vol.
 _EVENT_JUMP_PCT_RE = re.compile(
@@ -225,8 +313,22 @@ _SESSION_HEAD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Month + day with optional weekday and optional 4-digit year (Gemini / compact headings).
+_SESSION_HEAD_RELAXED_RE = re.compile(
+    r"\b((?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*,?\s+)?"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
+    r"(\d{1,2})(?:\s*,\s*((?:19|20)\d{2}))?)\b",
+    re.IGNORECASE,
+)
+
 _THREE_SIG_PCT_RE = re.compile(
     rf"3\s*{_GS}\s*:\s*[^\n(]*\(\s*±\s*(?P<pct>[\d.]+)\s*%\s*\)",
+    re.IGNORECASE,
+)
+
+_ONE_SIG_PCT_RE = re.compile(
+    rf"1\s*{_GS}\s*:\s*[^\n(]*\(\s*±\s*(?P<pct>[\d.]+)\s*%\s*\)",
     re.IGNORECASE,
 )
 
@@ -234,7 +336,8 @@ _THREE_SIG_PCT_RE = re.compile(
 def _parse_month_day_label(label: str, *, year: int) -> date | None:
     m = re.search(
         r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
-        r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})\b",
+        r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})"
+        r"(?:\s*,?\s*((?:19|20)\d{2}))?\b",
         label,
         re.IGNORECASE,
     )
@@ -242,33 +345,66 @@ def _parse_month_day_label(label: str, *, year: int) -> date | None:
         return None
     token = m.group(1)
     day = int(m.group(2))
+    eff_year = int(m.group(3)) if m.group(3) else year
     for fmt in ("%b %d %Y", "%B %d %Y"):
         try:
-            return datetime.strptime(f"{token} {day} {year}", fmt).date()
+            return datetime.strptime(f"{token} {day} {eff_year}", fmt).date()
         except ValueError:
             continue
     return None
 
 
-def extract_dated_three_sigma_half_widths(synthesis: str, *, year: int = 2026) -> list[tuple[date, float, str]]:
-    """Best-effort: pair 3-sigma (+-pct%) lines with the most recent weekday+month+day header."""
+def extract_dated_three_sigma_half_widths(
+    synthesis: str,
+    *,
+    year: int = 2026,
+) -> list[tuple[date, float, float, str]]:
+    """Pair dated 3-sigma (plus-minus pct) lines with headers.
+
+    Returns ``(session_date, three_sigma_half_width_pct, one_sigma_half_width_pct, label)``.
+    ``three_sigma_half_width_pct`` preserves the literal 3-sigma half-width percent for sqrt(t)
+    checks; ``one_sigma_half_width_pct`` prefers an explicit preceding 1-sigma line when present,
+    else ``three_sigma_half_width_pct / 3`` for variance-additive math.
+    """
     lines = synthesis.splitlines()
     current_label: str | None = None
-    out: list[tuple[date, float, str]] = []
+    pending_1s_half: float | None = None
+    out: list[tuple[date, float, float, str]] = []
     for line in lines:
+        relaxed = None
         mh = _SESSION_HEAD_RE.search(line)
         if mh:
             current_label = mh.group(1)
+            pending_1s_half = None
+        else:
+            relaxed = _SESSION_HEAD_RELAXED_RE.search(line)
+            if relaxed:
+                current_label = relaxed.group(1).strip()
+                pending_1s_half = None
+        m1 = _ONE_SIG_PCT_RE.search(line)
+        if m1:
+            try:
+                pending_1s_half = float(m1.group("pct"))
+            except ValueError:
+                pending_1s_half = None
         m3 = _THREE_SIG_PCT_RE.search(line)
         if not m3:
             continue
-        pct = float(m3.group("pct"))
+        try:
+            w3_half = float(m3.group("pct"))
+        except ValueError:
+            continue
         anchor = _parse_month_day_label(current_label or "", year=year)
+        if anchor is None and relaxed:
+            anchor = _parse_month_day_label(relaxed.group(1), year=year)
         if anchor is None:
             anchor = _parse_month_day_label(line, year=year)
-        lbl = current_label or line.strip()[:120]
-        if anchor is not None:
-            out.append((anchor, pct, lbl))
+        if anchor is None:
+            continue
+        sigma_half = pending_1s_half if pending_1s_half is not None else w3_half / 3.0
+        pending_1s_half = None
+        lbl_src = (current_label or "").strip() or line.strip()[:120]
+        out.append((anchor, w3_half, sigma_half, lbl_src))
     return out
 
 
@@ -311,14 +447,19 @@ def verify_variance_additive_sigma_band_sessions(
     event_jump_pct: float,
     tolerance: float = 0.25,
 ) -> list[str]:
-    """Return follow-up strings when 1-sigma % half-widths violate variance-additive post-event math.
+    """Return follow-up strings when 1-sigma percent half-widths violate variance-additive post-event math.
 
-    Each session entry should be a mapping with ``session`` (str), ``N`` (int trading days from T+1
-    inclusive), and ``sigma_pct`` (float, **1-sigma** +-percent half-width). ``N`` must be >= 1.
+    Each session entry uses ``session`` (label), ``N`` (weekday sessions from **anchor T+1**
+    through the row's session date, **inclusive**), and ``sigma_pct`` (1-sigma plus-minus half-width
+    as a percent).
 
-    When an ``N == 1`` row exists, later horizons are checked via
-    ``sigma^2(T+N) - sigma^2(T+1)`` vs ``(N-1) * daily_vol^2``. Otherwise each row is checked against
-    ``event_jump^2 + N * daily_vol^2`` on ``sigma^2``.
+    ``event_jump`` follows the equity / synthesizer prompts: **ATM straddle implied move (%)** in
+    the **same half-width percent units** as ``sigma_pct`` (if a model quotes a full width, it must
+    halve before emitting the literal so it matches ``sigma(T+1)``).
+
+    With an ``N == 1`` row, ``ref_sq`` is that row's ``sigma_pct**2``. Otherwise ``ref_sq`` defaults
+    to ``event_jump**2 + daily_vol**2`` so ``sigma**2(T+N)-sigma**2(T+1)`` can be checked when the anchor
+    line is missing from the text.
     """
     rows: list[tuple[str, int, float]] = []
     for raw in sessions:
@@ -347,43 +488,34 @@ def verify_variance_additive_sigma_band_sessions(
             ref_sq = sig * sig
             break
 
-    followups: list[str] = []
     ej2 = float(event_jump_pct) ** 2
     dv2 = float(daily_vol_pct) ** 2
+    if ref_sq is None:
+        ref_sq = ej2 + dv2
 
+    followups: list[str] = []
     for sess, n_i, sig in rows:
         obs_sq = sig * sig
-        if ref_sq is not None:
-            if n_i == 1:
-                expected_sq = ej2 + dv2
-                if expected_sq <= 0.0:
-                    continue
-                rel = abs(obs_sq - expected_sq) / expected_sq
-                if rel > tolerance:
-                    followups.append(
-                        f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+1)={obs_sq:.2f} expected "
-                        f"ej^2+dv^2={expected_sq:.2f}, off by {rel:.0%}; fix daily_vol or inputs.",
-                    )
-            else:
-                expected_delta = float(n_i - 1) * dv2
-                if expected_delta <= 0.0:
-                    continue
-                obs_delta = obs_sq - ref_sq
-                rel = abs(obs_delta - expected_delta) / expected_delta
-                if rel > tolerance:
-                    followups.append(
-                        f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+{n_i})-{_GS}^2(T+1)={obs_delta:.2f} "
-                        f"expected (N-1)*daily_vol^2={expected_delta:.2f} (N={n_i}), off by {rel:.0%}; fix daily_vol.",
-                    )
-        else:
-            expected_sq = ej2 + float(n_i) * dv2
+        if n_i == 1:
+            expected_sq = ej2 + dv2
             if expected_sq <= 0.0:
                 continue
             rel = abs(obs_sq - expected_sq) / expected_sq
             if rel > tolerance:
                 followups.append(
-                    f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+{n_i})={obs_sq:.2f} expected "
-                    f"ej^2+N*daily_vol^2={expected_sq:.2f} (N={n_i}), off by {rel:.0%}; fix inputs.",
+                    f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+1)={obs_sq:.2f} expected "
+                    f"ej^2+dv^2={expected_sq:.2f}, off by {rel:.0%}; fix daily_vol or inputs.",
+                )
+        else:
+            expected_delta = float(n_i - 1) * dv2
+            if expected_delta <= 0.0:
+                continue
+            obs_delta = obs_sq - ref_sq
+            rel = abs(obs_delta - expected_delta) / expected_delta
+            if rel > tolerance:
+                followups.append(
+                    f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+{n_i})-{_GS}^2(T+1)={obs_delta:.2f} "
+                    f"expected (N-1)*daily_vol^2={expected_delta:.2f} (N={n_i}), off by {rel:.0%}; fix daily_vol.",
                 )
     return followups
 
@@ -428,19 +560,6 @@ def _parse_variance_additive_literals(synthesis: str) -> tuple[float | None, flo
         return float(ej_m.group(1)), float(dv_m.group(1))
     except ValueError:
         return None, None
-
-
-def _dated_rows_for_variance_additive_check(
-    by_date: dict[date, tuple[float, str]],
-    earnings_date: date | None,
-) -> dict[date, tuple[float, str]]:
-    """Prefer post-earnings dated rows when the anchor is known (avoid mixing pre/post for N)."""
-    if earnings_date is None or not by_date:
-        return dict(by_date)
-    post = {d: v for d, v in by_date.items() if d >= earnings_date}
-    if post:
-        return post
-    return dict(by_date)
 
 
 def should_apply_sqrt_t_three_sigma_ratio(
@@ -505,23 +624,23 @@ def followups_from_unsourced_options_chain_numeric_claims(
 def per_provider_sigma_variance_check(
     provider_text: str,
     tolerance: float = 0.25,
+    *,
+    anchor_year: int = 2026,
+    earnings_date: str | None = None,
+    earnings_timing: str | None = None,
 ) -> dict[str, Any]:
     """Parse one provider's text for variance-additive sigma literals and verify the identity.
 
     Returns a dict with the structured result fields used by the synthesizer wiring:
 
-    - ``passed`` (bool): True when the variance identity holds within ``tolerance`` for every
-      dated 3-sigma line found. ``False`` when at least one row violates the identity. ``False``
-      is also returned when only literals are present but no dated 3-sigma rows can be paired
-      (treat as unverifiable / suspect).
-    - ``followups`` (list[str]): per-row follow-up strings (same shape as the consolidated
-      verifier helper) -- empty when ``passed`` is True or the check is not applicable.
-    - ``event_jump`` (float | None): parsed ``event_jump=`` percentage, when present.
-    - ``daily_vol`` (float | None): parsed ``daily_vol=`` percentage, when present.
-    - ``sessions`` (int): number of dated 3-sigma rows that contributed to the identity check.
-    - ``applicable`` (bool): False when the provider text lacks both literals; the synthesizer
-      should treat ``applicable=False`` as "no opinion" rather than a failure.
-    - ``reason`` (str): short one-line summary suitable for logging when ``passed`` is False.
+    - ``passed`` (``True`` / ``False`` / ``None``): ``True`` when the variance identity holds within
+      ``tolerance``. ``False`` on a concrete math mismatch. ``None`` when literals exist but dated
+      rows cannot be verified (missing rows / wrong session window), see ``reason``.
+    - ``followups`` (list[str]): per-row follow-up strings — empty when ``passed`` is not ``False``.
+    - ``event_jump`` / ``daily_vol``: parsed literals when present.
+    - ``sessions`` (int): dated rows used in the check.
+    - ``applicable`` (bool): ``False`` only when literals are missing.
+    - ``reason`` (str): machine tag or first follow-up line.
     """
     ej_lit, dv_lit = _parse_variance_additive_literals(provider_text)
     if ej_lit is None or dv_lit is None:
@@ -535,29 +654,56 @@ def per_provider_sigma_variance_check(
             "reason": "missing_literals",
         }
 
-    dated = extract_dated_three_sigma_half_widths(provider_text)
-    by_date: dict[date, tuple[float, str]] = {}
-    for d, pct, lbl in dated:
-        by_date.setdefault(d, (pct, lbl))
+    dated = extract_dated_three_sigma_half_widths(provider_text, year=anchor_year)
+    _by_w3, by_s1 = _merge_dated_sigma_rows_first_wins(dated)
 
-    if not by_date:
+    if not by_s1:
         return {
-            "passed": False,
-            "followups": [f"{_GS} variance: literals present but no dated 3{_GS} rows found"],
+            "passed": None,
+            "followups": [],
             "event_jump": ej_lit,
             "daily_vol": dv_lit,
             "sessions": 0,
             "applicable": True,
-            "reason": "no dated 3-sigma rows paired with literals",
+            "reason": "missing_dated_rows",
         }
 
-    keys_sorted = sorted(by_date)
-    early_d = keys_sorted[0]
+    earn_cal: date | None = None
+    ed_raw = (earnings_date or "").strip()
+    if ed_raw:
+        earn_cal = _parse_earnings_calendar_date(ed_raw)
+    anchor = anchor_session_date_for_variance_check(earn_cal, (earnings_timing or "").strip() or None)
+
+    by_rows = _dated_rows_for_variance_additive_check(by_s1, anchor if earn_cal is not None else None)
+    if earn_cal is not None and anchor is not None and not by_rows and by_s1:
+        return {
+            "passed": None,
+            "followups": [],
+            "event_jump": ej_lit,
+            "daily_vol": dv_lit,
+            "sessions": 0,
+            "applicable": True,
+            "reason": "missing_post_anchor_rows",
+        }
+
+    if not by_rows:
+        return {
+            "passed": None,
+            "followups": [],
+            "event_jump": ej_lit,
+            "daily_vol": dv_lit,
+            "sessions": 0,
+            "applicable": True,
+            "reason": "missing_dated_rows",
+        }
+
+    keys_sorted = sorted(by_rows)
+    anchor_eff = anchor if anchor is not None else keys_sorted[0]
     sessions_payload: list[dict[str, Any]] = []
     for d in keys_sorted:
-        w3, lbl = by_date[d]
-        n_inc = trading_sessions_inclusive(early_d, d)
-        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": w3 / 3.0})
+        sig_half, lbl = by_rows[d]
+        n_inc = trading_sessions_inclusive(anchor_eff, d)
+        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
 
     followups = verify_variance_additive_sigma_band_sessions(
         sessions_payload,
@@ -618,10 +764,12 @@ def render_per_provider_sigma_checks_markdown(checks: list[dict[str, Any]]) -> s
         ej_s = f"{float(ej_v):.2f}%" if isinstance(ej_v, (int, float)) else "n/a"
         dv_s = f"{float(dv_v):.2f}%" if isinstance(dv_v, (int, float)) else "n/a"
         sess = int(c.get("sessions") or 0)
-        if not c.get("applicable", False):
+        if not c.get("applicable", False) or c.get("passed") is None:
             passed_s = "n/a"
+        elif c.get("passed") is True:
+            passed_s = "True"
         else:
-            passed_s = "True" if c.get("passed") else "False"
+            passed_s = "False"
         reason = str(c.get("reason") or "").strip().replace("|", "/")
         if len(reason) > 80:
             reason = reason[:77] + "..."
@@ -657,6 +805,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     iv_crush_multiplier: float | None = None,
     hv30_annualized_pct: float | None = None,
     earnings_date: date | None = None,
+    earnings_timing: str | None = None,
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     out = dict(result)
@@ -679,21 +828,23 @@ def augment_verifier_result_with_sigma_structural_checks(
             )
 
     dated = extract_dated_three_sigma_half_widths(synthesis_text, year=anchor_year)
-    by_date: dict[date, tuple[float, str]] = {}
-    for d, pct, lbl in dated:
-        by_date[d] = (pct, lbl)
+    by_w3, by_s1 = _merge_dated_sigma_rows_first_wins(dated)
 
-    by_date_var = _dated_rows_for_variance_additive_check(by_date, earnings_date)
+    anchor = anchor_session_date_for_variance_check(earnings_date, earnings_timing)
+    by_date_var = _dated_rows_for_variance_additive_check(
+        by_s1,
+        anchor if earnings_date is not None else None,
+    )
 
     if variance_mode and len(by_date_var) >= 1:
         assert ej_lit is not None and dv_lit is not None
         keys_sorted = sorted(by_date_var)
-        early_d = keys_sorted[0]
+        anchor_eff = anchor if anchor is not None else keys_sorted[0]
         session_payload: list[dict[str, Any]] = []
         for d in keys_sorted:
-            w3, lbl = by_date_var[d]
-            n_inc = trading_sessions_inclusive(early_d, d)
-            session_payload.append({"session": lbl, "N": n_inc, "sigma_pct": w3 / 3.0})
+            sig_half, lbl = by_date_var[d]
+            n_inc = trading_sessions_inclusive(anchor_eff, d)
+            session_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
         extras.extend(
             verify_variance_additive_sigma_band_sessions(
                 session_payload,
@@ -702,8 +853,8 @@ def augment_verifier_result_with_sigma_structural_checks(
                 tolerance=sqrt_tolerance,
             ),
         )
-    elif len(by_date) >= 2:
-        keys = sorted(by_date)
+    elif len(by_w3) >= 2:
+        keys = sorted(by_w3)
         early_d, late_d = keys[0], keys[-1]
         if should_apply_sqrt_t_three_sigma_ratio(
             variance_literals_present=variance_mode,
@@ -712,8 +863,8 @@ def augment_verifier_result_with_sigma_structural_checks(
             earnings_date=earnings_date,
         ):
             span = trading_sessions_after_exclusive(early_d, late_d)
-            w_early, lbl_e = by_date[early_d]
-            w_late, lbl_l = by_date[late_d]
+            w_early, lbl_e = by_w3[early_d]
+            w_late, lbl_l = by_w3[late_d]
             if span >= 2 and w_early > 0.0:
                 extras.extend(
                     sigma_band_sqrt_ratio_followups(
@@ -1249,6 +1400,7 @@ class RefinementState(TypedDict, total=False):
     final_report_full_synthesis: NotRequired[bool]
     equity_prompt_render_context: NotRequired[dict[str, Any]]
     earnings_date: NotRequired[str]
+    earnings_timing: NotRequired[str | None]
 
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
@@ -1844,9 +1996,28 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         ser = {"responses": {k: _response_to_dict(v) for k, v in responses.items()}}
 
+        ed_ctx = state.get("earnings_date")
+        earn_date_s: str | None = None
+        if isinstance(ed_ctx, str) and ed_ctx.strip():
+            earn_date_s = ed_ctx.strip()
+        else:
+            eq_ctx_fan = state.get("equity_prompt_render_context")
+            if isinstance(eq_ctx_fan, dict):
+                raw_ed_fan = eq_ctx_fan.get("earnings_date")
+                if isinstance(raw_ed_fan, str) and raw_ed_fan.strip():
+                    earn_date_s = raw_ed_fan.strip()
+        et_ctx = state.get("earnings_timing")
+        earn_timing_fan: str | None = None
+        if isinstance(et_ctx, str) and et_ctx.strip():
+            earn_timing_fan = et_ctx.strip()
+
         per_provider_checks: list[dict[str, Any]] = []
         for name, resp in responses.items():
-            check = per_provider_sigma_variance_check(resp.text)
+            check = per_provider_sigma_variance_check(
+                resp.text,
+                earnings_date=earn_date_s,
+                earnings_timing=earn_timing_fan,
+            )
             rec: dict[str, Any] = {"provider": name, "model": resp.model}
             rec.update(check)
             per_provider_checks.append(rec)
@@ -1866,13 +2037,22 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     sess,
                     str(check.get("reason") or "missing_literals"),
                 )
-            elif passed:
+            elif passed is True:
                 logger.info(
                     "sigma_variance_check provider=%s passed=True event_jump=%s daily_vol=%s sessions=%s",
                     name,
                     ej_s,
                     dv_s,
                     sess,
+                )
+            elif passed is None:
+                logger.info(
+                    "sigma_variance_check provider=%s passed=n/a event_jump=%s daily_vol=%s sessions=%s reason=%s",
+                    name,
+                    ej_s,
+                    dv_s,
+                    sess,
+                    str(check.get("reason") or "unverifiable"),
                 )
             else:
                 logger.info(
@@ -2180,6 +2360,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 ed_raw = ctx_ed.strip()
         if ed_raw:
             earn_calendar = _parse_earnings_calendar_date(ed_raw)
+        et_raw = state.get("earnings_timing")
+        earn_timing_s: str | None = None
+        if isinstance(et_raw, str) and et_raw.strip():
+            earn_timing_s = et_raw.strip()
         data = augment_verifier_result_with_sigma_structural_checks(
             syn,
             data,
@@ -2188,6 +2372,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             iv_crush_multiplier=iv_c,
             hv30_annualized_pct=hv_p,
             earnings_date=earn_calendar,
+            earnings_timing=earn_timing_s,
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -2412,6 +2597,7 @@ def build_initial_refinement_state(
         "final_report_full_synthesis": cfg.final_report_full_synthesis,
         "equity_prompt_render_context": copy.deepcopy(rendered.context),
         "earnings_date": cfg.earnings_date,
+        "earnings_timing": cfg.earnings_timing,
     }
 
 

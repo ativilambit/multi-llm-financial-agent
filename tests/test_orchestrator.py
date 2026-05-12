@@ -105,6 +105,11 @@ async def test_orchestrator_parallel_and_writes_outputs(
         classmethod(lambda cls: _fake_registry()),
     )
 
+    async def _noop_drive_upload(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(orch_mod, "maybe_upload_run_to_drive", _noop_drive_upload)
+
     pdf_md_paths: list[Path] = []
 
     def _capture_pdf(**kwargs: Any) -> None:

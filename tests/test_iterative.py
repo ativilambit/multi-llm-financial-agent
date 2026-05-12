@@ -259,6 +259,104 @@ def test_per_provider_sigma_check_extracts_with_whitespace_around_equals() -> No
     assert result["daily_vol"] == 8.0
 
 
+def test_per_provider_sigma_variance_excludes_pre_anchor_rows_for_nbis_style_log() -> None:
+    """Pre-earnings dated rows must not define N; BMO anchor is the earnings-day session."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "Monday, May 6 (pre-earnings drift):\n"
+        f"  - 3{sg}: ({pm}99.0%)\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", earnings_timing=None)
+    assert r["applicable"] is True
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_per_provider_sigma_variance_duplicate_session_date_first_row_wins() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: ({pm}30.0%)\n"
+        "Wednesday, May 13 (re-stated):\n"
+        f"  - 3{sg}: ({pm}40.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: ({pm}{w3_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13")
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_per_provider_sigma_variance_gemini_style_month_day_year_header() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "May 13, 2026 (post-earnings):\n"
+        f"  - 3{sg}: ({pm}30.0%)\n"
+        "Tuesday, May 19, 2026:\n"
+        f"  - 3{sg}: ({pm}{w3_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", anchor_year=2026)
+    assert r["passed"] is True
+    assert r["sessions"] == 2
+
+
+def test_per_provider_sigma_variance_missing_dated_rows_is_na_not_false() -> None:
+    r = per_provider_sigma_variance_check(
+        "event_jump=6% daily_vol=8%\nHeader day only, no sigma lines.\n",
+        earnings_date="2026-05-13",
+    )
+    assert r["applicable"] is True
+    assert r["passed"] is None
+    assert r["reason"] == "missing_dated_rows"
+
+
+def test_per_provider_sigma_variance_prefers_explicit_one_sigma_half_width() -> None:
+    """Use explicit 1-sigma (+-pct) when present instead of 3-sigma/3 for the variance identity."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 1{sg}: ({pm}10.0%)\n"
+        f"  - 3{sg}: wide ({pm}90.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: ({pm}{w3_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13")
+    assert r["passed"] is True
+
+
+def test_per_provider_sigma_variance_amc_shifts_anchor_to_next_session() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        "Wednesday, May 13:\n"
+        f"  - 3{sg}: ({pm}30.0%)\n"
+    )
+    r = per_provider_sigma_variance_check(
+        text,
+        earnings_date="2026-05-13",
+        earnings_timing="after market close (AMC)",
+    )
+    assert r["passed"] is None
+    assert r["reason"] == "missing_post_anchor_rows"
+
+
 def test_sigma_missing_literal_router_followups_requires_two_providers() -> None:
     one = [
         {"provider": "openai", "applicable": True, "reason": ""},
@@ -1637,6 +1735,7 @@ async def test_fan_out_records_per_provider_sigma_checks_in_state(tmp_path: Path
         synthesizer="gemini",
         facts_packet_enabled=False,
         conditional_fanout_enabled=False,
+        earnings_date="Wed May 13 2026",
     )
     out = tmp_path / "sigma-checks"
     out.mkdir()
@@ -1687,6 +1786,7 @@ async def test_fan_out_logs_per_provider_sigma_variance_check_lines(
         synthesizer="gemini",
         facts_packet_enabled=False,
         conditional_fanout_enabled=False,
+        earnings_date="Wed May 13 2026",
     )
     out = tmp_path / "sigma-log"
     out.mkdir()
