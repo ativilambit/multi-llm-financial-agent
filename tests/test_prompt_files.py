@@ -40,15 +40,17 @@ def test_synthesizer_system_prompt_covers_same_day_sd_anchor() -> None:
 
 
 def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> None:
-    """Prompts instruct explicit 51:49 qualitative vs quantitative blend on directional calls."""
+    """Prompts include horizon-aware qualitative vs quantitative blend table."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    assert "51% qualitative : 49% quantitative" in j2
-    assert "51%" in j2 and "49%" in j2
-    assert "default to the qualitative side" in j2 and "unambiguous and recent" in j2
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
-    assert "**Qualitative weighting (directional bias vs price levels):**" in synth
-    assert "51% qualitative : 49% quantitative" in synth
-    assert "51%" in synth and "49%" in synth
+    assert "| Horizon | Default blend (qual : quant) | Rationale |" in j2
+    assert "| Horizon | Default blend (qual : quant) | Rationale |" in synth
+    for ratio in ("55 : 45", "51 : 49", "40 : 60", "45 : 55"):
+        assert ratio in j2
+        assert ratio in synth
+    assert "Qualitative vs quantitative weighting" in j2
+    assert "Qualitative vs quantitative weighting" in synth
+    assert "default to the qualitative side" in j2 and "unambiguous and recent" in j2
     assert "**default to the qualitative side**" in synth
 
 

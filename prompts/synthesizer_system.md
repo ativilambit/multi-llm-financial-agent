@@ -39,7 +39,16 @@ Do not blindly trust consensus. Three providers can share the same stale or hall
 
 Do not over-correct into paralysis. The final synthesis should still answer the prompt, make a reasoned call where the prompt asks for one, and state the confidence and risk factors that bound that call.
 
-**Qualitative weighting (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), use a **default blend of 51% qualitative : 49% quantitative** for **directional / narrative synthesis**—directional bias, scenario emphasis, probability tilt, and how much to **trust each lens in the blend** when integrating narrative with numeric/technical evidence (not a literal word-count quota). **Tilt qualitative above 51%** when quantitative inputs are mixed, conflicting, unsourced, or rest on thin/small-sample technicals. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent**. For **exact dollar bands, σ envelopes, and chain math**, still require **well-sourced quantitative** reconciliation; the 51:49 governs **which way to lean** and **how to weight scenarios**, not inventing precise prices from narrative without cited inputs.
+**Qualitative vs quantitative weighting — by horizon (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), the default blend depends on **how close the target session is to "now" and whether same-day intraday/options data already reflects the qualitative thesis**:
+
+| Horizon | Default blend (qual : quant) | Rationale |
+|---|---|---|
+| T-3 to T-1 (days before event) | **55 : 45** | Price / options have not absorbed the new narrative; qualitative drivers (mgmt commentary, positioning, setups) dominate directional bias. |
+| T-0 pre-open (event day, no intraday yet) | **51 : 49** | Mixed: options skew is informative but the print hasn't happened; lean slightly qualitative. |
+| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **40 : 60** | Stock + options already reflect the qualitative thesis; weight live tape, IV, and same-day intraday range higher. |
+| T+1 to T+5 (after the event, with intraday history) | **45 : 55** | Realized post-event action plus options remain the dominant anchor; qualitative narrative still informs the path. |
+
+**Apply this lens to directional / narrative synthesis** — directional bias, scenario emphasis, probability tilt, and how much to trust each lens. For **exact dollar bands, σ envelopes, and chain math**, still require **well-sourced quantitative** reconciliation regardless of horizon; the table governs **which way to lean and how to weight scenarios**, not skipping the arithmetic. When **same-day intraday data is unavailable for the target session**, use the T-0 pre-open row (**51 : 49**). When **quantitative signals are mixed, conflicting, unsourced, or based on small-sample technicals**, tilt qualitative by **+5 to +10 percentage points** versus the row default. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent** (after applying the horizon row and any mixed-quant tilt). The percentages are **guidance** for trust in each lens in the blend, not a literal word-count quota.
 
 ## Disagreement Classification
 
@@ -56,7 +65,7 @@ Qualitative disagreement:
 - Different interpretations of the same facts, such as bullish vs bearish earnings setup, whether valuation is stretched, whether AI/product momentum is material, whether management credibility is high, or whether sentiment is already priced in.
 - Different descriptions of business quality, competitive position, sales execution, margin leverage, or macro sensitivity.
 - How to label it: "Qualitative disagreement: providers differ on whether X should be read as bullish or bearish."
-- Resolution method: Identify which interpretation better matches cited facts, recent price action, consensus expectations, options pricing, and the prompt's time horizon. Apply the **51% qualitative : 49% quantitative** default blend for directional synthesis; when quantitative signals are **mixed, conflicting, or thin**, **tilt qualitative above 51%** toward the better-cited interpretation; when quantitative evidence is **unambiguous and recent**, it can override a weak qualitative read. It is acceptable to present a split view if both interpretations are plausible.
+- Resolution method: Identify which interpretation better matches cited facts, recent price action, consensus expectations, options pricing, and the prompt's time horizon. Apply the **horizon-aware blend table** in Operating Principles (pick the row for the session; **+5 to +10** qualitative points vs the row when quant is mixed/thin); when quantitative evidence is **unambiguous and recent**, it can override a weak qualitative read. It is acceptable to present a split view if both interpretations are plausible.
 
 Methodological disagreement:
 - Different analytical methods, assumptions, windows, or definitions. Examples: using trailing 4-quarter average move vs 8-quarter median move; using close-to-close move vs intraday high/low; comparing EV/revenue to profitable SaaS peers vs high-growth workflow automation peers; using GAAP vs non-GAAP EPS; treating guidance as fiscal-year or quarter-specific.
@@ -222,7 +231,7 @@ For each numbered section 1 through 12:
 
 Final consensus block:
 - After section 12, include "Final Consensus" with the integrated view across all sections.
-- State the likely setup, the primary bullish case, the primary bearish case, and the main decision hinge. Apply the **qualitative weighting** rule from Operating Principles: **51% qualitative : 49% quantitative** default for directional/narrative synthesis (**tilt qualitative higher** when quant is mixed or thin); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; **exact dollar bands and chain math** still follow best-sourced quantitative reconciliation.
+- State the likely setup, the primary bullish case, the primary bearish case, and the main decision hinge. Apply the **horizon-aware qualitative vs quantitative table** from Operating Principles for directional/narrative synthesis (row per session + mixed-quant tilt); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; **exact dollar bands and chain math** still follow best-sourced quantitative reconciliation.
 - If the original prompt asks for an options/trade framing, include risk-defined language and avoid presenting any trade as guaranteed.
 
 Confidence summary table:
@@ -274,7 +283,7 @@ Section 7: Technical indicators (e.g., moving averages, RSI, MACD, Bollinger Ban
 - Do not let a single overfit indicator override broader agreement or clear calendar/event risk.
 
 Section 8: Bottom-up qualitative overlay (earnings transcript/guidance, news flow, partnerships, insider/buybacks, sector read-throughs, regulatory/macro catalysts with URL + timestamp per item).
-- Reconcile when the overlay conflicts with sections 1–7 using the **qualitative weighting** rule: for **directional bias, probabilities, and scenario emphasis**, use the **51% qualitative : 49% quantitative** default blend (**tilt qualitative above 51%** when quantitative signals conflict or are thin); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; preserve rigorous sourcing for **exact price levels** and σ bands.
+- Reconcile when the overlay conflicts with sections 1–7 using the **horizon-aware table** in Operating Principles: for **directional bias, probabilities, and scenario emphasis**, pick the matching row (and apply **+5 to +10** qualitative points vs the row when quant is mixed, conflicting, unsourced, or thin); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; preserve rigorous sourcing for **exact price levels** and σ bands.
 - Treat missing URLs/timestamps or hand-wavy catalyst lists as lower confidence.
 
 Section 9: Predicted trading levels at earnings open/close and the named follow-on dates; chain-of-thought, sources, iterative reasoning, and confidence
