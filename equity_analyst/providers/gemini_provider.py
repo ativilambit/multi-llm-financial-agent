@@ -27,6 +27,8 @@ _PRO_MIN_CACHE_TOKENS = 4096
 _GEMINI_MIN_THINKING_BUDGET_ENV = "GEMINI_MIN_THINKING_BUDGET"
 _DEFAULT_MIN_THINKING_BUDGET_FOR_THINKING_ONLY = 1024
 _THINKING_INVALID_ESCALATION = 8192
+_GEMINI_FLASH_SUMMARIZER_THINKING_BUDGET_ENV = "GEMINI_FLASH_SUMMARIZER_THINKING_BUDGET"
+_DEFAULT_FLASH_SUMMARIZER_THINKING_BUDGET = 8192
 
 
 def gemini_model_requires_nonzero_thinking_budget(model: str) -> bool:
@@ -42,6 +44,59 @@ def gemini_min_thinking_budget_for_thinking_only_models() -> int:
     except ValueError:
         n = _DEFAULT_MIN_THINKING_BUDGET_FOR_THINKING_ONLY
     return max(1, n)
+
+
+def summarizer_thinking_budget_candidates(*, model: str) -> list[int]:
+    """Ordered thinking budgets for pre-synthesis Gemini summarizer (``requested=0`` semantics).
+
+    Gemini 3 Flash preview models default to a **large** first thinking budget so the model
+    can plan a long visible summary; other Gemini 3 models keep a smaller first attempt.
+    """
+    m = model.lower()
+    if not gemini_model_requires_nonzero_thinking_budget(model):
+        seq = thinking_budget_candidates(model=model, requested=0)
+        out_i: list[int] = []
+        for x in seq:
+            if x is None:
+                continue
+            if not out_i or out_i[-1] != x:
+                out_i.append(int(x))
+        return out_i
+
+    d = gemini_min_thinking_budget_for_thinking_only_models()
+    esc = _THINKING_INVALID_ESCALATION
+    if "flash-preview" in m:
+        raw = os.environ.get(
+            _GEMINI_FLASH_SUMMARIZER_THINKING_BUDGET_ENV,
+            str(_DEFAULT_FLASH_SUMMARIZER_THINKING_BUDGET),
+        )
+        try:
+            first = int(str(raw).strip())
+        except ValueError:
+            first = _DEFAULT_FLASH_SUMMARIZER_THINKING_BUDGET
+        first = max(1, first)
+        seq_i = [first, d, esc]
+    else:
+        seq_i = [d, esc]
+    out: list[int] = []
+    for x in seq_i:
+        if not out or out[-1] != x:
+            out.append(x)
+    return out
+
+
+def summarizer_retry_thinking_budget_candidates(*, model: str) -> list[int]:
+    """Thinking budgets for the single retention-floor retry (prefer large planning budget)."""
+    if not gemini_model_requires_nonzero_thinking_budget(model):
+        return summarizer_thinking_budget_candidates(model=model)
+    d = gemini_min_thinking_budget_for_thinking_only_models()
+    esc = _THINKING_INVALID_ESCALATION
+    seq_i = [esc, d]
+    out: list[int] = []
+    for x in seq_i:
+        if not out or out[-1] != x:
+            out.append(x)
+    return out
 
 
 def thinking_budget_candidates(*, model: str, requested: int | None) -> list[int | None]:

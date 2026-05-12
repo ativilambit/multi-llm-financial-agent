@@ -800,6 +800,8 @@ class RefinementState(TypedDict, total=False):
     oversized_summarize_model: str
     oversized_summarize_max_output_tokens: int
     oversized_summarize_max_input_tokens: int
+    oversized_summarize_min_retention: float
+    oversized_summarize_fallback_provider: NotRequired[str | None]
     gemini_cache_ttl_s: int
     synthesizer_cfg: dict[str, Any]
     verifier_name: str
@@ -1439,6 +1441,16 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
         syn_ws = effective_synthesizer_web_search(run_default=state["enable_web_search"], syn=syn_cfg)
+        summarize_fallback_llm = None
+        fb_name = state.get("oversized_summarize_fallback_provider")
+        if not fb_name and state.get("iterative_config_snapshot"):
+            fb_name = (state["iterative_config_snapshot"] or {}).get("oversized_summarize_fallback_provider")
+        if fb_name:
+            pcs_fb = [ProviderConfig.model_validate(d) for d in state["provider_configs"]]
+            for pc in pcs_fb:
+                if pc.name == fb_name:
+                    summarize_fallback_llm = registry.create(pc.name, model=pc.model)
+                    break
         s0 = time.perf_counter()
         it_no = round_idx + 1
         err_ev: list[dict[str, Any]] = []
@@ -1469,6 +1481,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     oversized_summarize_max_input_tokens=int(
                         state.get("oversized_summarize_max_input_tokens", 100_000),
                     ),
+                    oversized_summarize_min_retention=float(
+                        state.get("oversized_summarize_min_retention", 0.40),
+                    ),
+                    oversized_summarize_fallback_provider=summarize_fallback_llm,
                     refinement_markdown=refinement,
                 ),
                 timeout=timeout_syn,
@@ -1864,6 +1880,8 @@ def build_initial_refinement_state(
         "oversized_summarize_model": cfg.oversized_summarize_model,
         "oversized_summarize_max_output_tokens": cfg.oversized_summarize_max_output_tokens,
         "oversized_summarize_max_input_tokens": cfg.oversized_summarize_max_input_tokens,
+        "oversized_summarize_min_retention": cfg.oversized_summarize_min_retention,
+        "oversized_summarize_fallback_provider": cfg.oversized_summarize_fallback_provider,
         "gemini_cache_ttl_s": cfg.gemini_cache_ttl_s,
         "synthesizer_cfg": cfg.synthesizer.model_dump(mode="json"),
         "verifier_name": cfg.verifier_provider,

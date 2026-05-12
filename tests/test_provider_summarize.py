@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -11,6 +12,7 @@ from equity_analyst.provider_summarize import (
     maybe_summarize_healthy_for_synthesis,
     summarize_provider_body_if_needed,
 )
+from equity_analyst.providers.gemini_provider import summarizer_thinking_budget_candidates
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -70,6 +72,7 @@ def test_provider_summarize_system_prompt_retention_guidance() -> None:
     raw = _PROVIDER_SUMMARIZE_PROMPT.read_text(encoding="utf-8")
     lower = raw.lower()
     assert "50%" in raw or "half" in lower
+    assert "minimum" in lower
     assert "table" in lower
     assert "probabilit" in lower
 
@@ -84,7 +87,7 @@ async def test_oversized_body_calls_summarizer_once(
 
     async def fake_gen(**_kwargs: object) -> str:
         calls.append(True)
-        return "[compressed]\n\nshort"
+        return "[compressed]\n\n" + "w" * (5000 * 4)
 
     monkeypatch.setattr(ps, "_generate_summary", fake_gen)
 
@@ -105,7 +108,7 @@ async def test_oversized_body_calls_summarizer_once(
         )
     assert did is True
     assert len(calls) == 1
-    assert out["openai"].text == "[compressed]\n\nshort"
+    assert out["openai"].text == "[compressed]\n\n" + "w" * (5000 * 4)
     assert out["openai"].model == "m"
     assert "pre_synthesis_summarize: condensed provider=openai" in caplog.text
     assert "target=~" in caplog.text
@@ -127,12 +130,14 @@ async def test_summarizer_raises_output_cap_and_injects_target_tokens(
         user_message: str,
         model: str,
         max_output_tokens: int,
+        thinking_budgets: list[int],
         client: object | None = None,
         retry_max_attempts: int = 3,
         retry_base_delay_s: float = 2.0,
     ) -> str:
         captured["max_output_tokens"] = max_output_tokens
         captured["user_message"] = user_message
+        captured["thinking_budgets"] = thinking_budgets
         # ~50% of input token estimate: 4000 est-tokens → 16_000 chars
         out_chars = (8000 // 2) * 4
         return "S" * out_chars
@@ -152,7 +157,10 @@ async def test_summarizer_raises_output_cap_and_injects_target_tokens(
     )
     before_est = 8000
     assert int(captured["max_output_tokens"]) >= int(before_est * 0.45)
-    assert "Target summary token estimate: ~4000" in str(captured["user_message"])
+    um = str(captured["user_message"])
+    assert "Minimum length" in um
+    assert "at least ~3400" in um
+    assert "Max completion tokens reserved" in um
     after_est = max(1, len(out) // 4)
     retention = after_est / before_est
     assert 0.40 <= retention <= 0.60
@@ -229,6 +237,7 @@ async def test_summarize_retries_genai_429_then_succeeds(monkeypatch: pytest.Mon
         client=gc,
         retry_max_attempts=4,
         retry_base_delay_s=0.01,
+        oversized_summarize_min_retention=0.0,
     )
     assert out == "third_try_ok"
     assert gc.aio.models.calls == 3
@@ -303,3 +312,100 @@ async def test_summarize_exception_preserves_original(monkeypatch: pytest.Monkey
     )
     assert "RETAIN_ME" in out["openai"].text
     assert out["openai"].text == big
+
+
+def test_summarizer_thinking_budget_gemini_3_flash_preview_starts_at_8192() -> None:
+    assert summarizer_thinking_budget_candidates(model="gemini-3-flash-preview")[0] == 8192
+
+
+def test_summarizer_thinking_budget_gemini_3_pro_starts_at_min_not_flash_default() -> None:
+    seq = summarizer_thinking_budget_candidates(model="gemini-3.1-pro-preview")
+    assert seq[0] == 1024
+    assert 8192 in seq
+
+
+@pytest.mark.asyncio
+async def test_gemini_flash_summarizer_first_generate_uses_thinking_budget_8192() -> None:
+    captured: list[int] = []
+
+    class Models:
+        async def generate_content(self, **_kw: object) -> object:
+            cfg = _kw["config"]
+            captured.append(int(cfg.thinking_config.thinking_budget))
+            return SimpleNamespace(text="z" * (6000 * 4))
+
+    class Aio:
+        def __init__(self) -> None:
+            self.models = Models()
+
+        async def aclose(self) -> None:
+            return None
+
+    class Client:
+        def __init__(self) -> None:
+            self.aio = Aio()
+
+    gc = Client()
+    big = "a" * (9000 * 4)
+    out = await summarize_provider_body_if_needed(
+        text=big,
+        provider_name="anthropic",
+        symbol="X",
+        threshold=0,
+        model="gemini-3-flash-preview",
+        max_output_tokens=8192,
+        max_input_tokens=100_000,
+        client=gc,
+        oversized_summarize_min_retention=0.35,
+    )
+    assert captured[0] == 8192
+    assert len(out) > 10_000
+
+
+@pytest.mark.asyncio
+async def test_retention_below_floor_triggers_floor_strict_retry(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("equity_analyst.retry.asyncio.sleep", fake_sleep)
+
+    calls = [0]
+
+    class Models:
+        async def generate_content(self, **_kw: object) -> object:
+            calls[0] += 1
+            if calls[0] == 1:
+                return SimpleNamespace(text="brief")
+            return SimpleNamespace(text="W" * (5000 * 4))
+
+    class Aio:
+        def __init__(self) -> None:
+            self.models = Models()
+
+        async def aclose(self) -> None:
+            return None
+
+    class Client:
+        def __init__(self) -> None:
+            self.aio = Aio()
+
+    gc = Client()
+    big = "b" * (9000 * 4)
+    with caplog.at_level(logging.INFO, logger="equity_analyst.provider_summarize"):
+        out = await summarize_provider_body_if_needed(
+            text=big,
+            provider_name="anthropic",
+            symbol="X",
+            threshold=0,
+            model="gemini-3-flash-preview",
+            max_output_tokens=8192,
+            max_input_tokens=100_000,
+            client=gc,
+        )
+    assert calls[0] >= 2
+    assert len(out) > 1000
+    assert "first_pass" in caplog.text
+    assert "floor-strict" in caplog.text
+    assert "retry succeeded" in caplog.text

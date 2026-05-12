@@ -204,6 +204,8 @@ class Synthesizer:
         oversized_summarize_model: str = "gemini-3-flash-preview",
         oversized_summarize_max_output_tokens: int = 8192,
         oversized_summarize_max_input_tokens: int = 100_000,
+        oversized_summarize_min_retention: float = 0.40,
+        oversized_summarize_fallback_provider: LLMProvider | None = None,
         refinement_markdown: str | None = None,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
@@ -244,6 +246,8 @@ class Synthesizer:
             oversized_summarize_model=oversized_summarize_model,
             oversized_summarize_max_output_tokens=oversized_summarize_max_output_tokens,
             oversized_summarize_max_input_tokens=oversized_summarize_max_input_tokens,
+            oversized_summarize_min_retention=oversized_summarize_min_retention,
+            oversized_summarize_fallback_provider=oversized_summarize_fallback_provider,
             symbol=symbol,
             retry_max_attempts=retry_max_attempts,
             retry_base_delay_s=retry_base_delay_s,

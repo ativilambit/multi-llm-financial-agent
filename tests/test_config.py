@@ -293,6 +293,8 @@ def test_oversized_summarize_defaults() -> None:
     assert cfg.oversized_summarize_model == "gemini-3-flash-preview"
     assert cfg.oversized_summarize_max_output_tokens == 8192
     assert cfg.oversized_summarize_max_input_tokens == 100_000
+    assert cfg.oversized_summarize_min_retention == 0.40
+    assert cfg.oversized_summarize_fallback_provider is None
 
 
 def test_oversized_summarize_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

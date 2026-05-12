@@ -298,6 +298,13 @@ class Orchestrator:
         synth_provider = self._registry.create(syn_cfg.name, model=syn_cfg.model)
         syn_ws = effective_synthesizer_web_search(run_default=enable_web_search, syn=syn_cfg)
         syn_timeout = self._config.synthesizer_timeout_s()
+        summarize_fallback_llm = None
+        fb_name = self._config.oversized_summarize_fallback_provider
+        if fb_name:
+            for pc in self._config.providers:
+                if pc.name == fb_name:
+                    summarize_fallback_llm = self._registry.create(pc.name, model=pc.model)
+                    break
         syn_t0 = time.perf_counter()
         try:
             synthesis = await asyncio.wait_for(
@@ -317,6 +324,8 @@ class Orchestrator:
                     oversized_summarize_model=self._config.oversized_summarize_model,
                     oversized_summarize_max_output_tokens=self._config.oversized_summarize_max_output_tokens,
                     oversized_summarize_max_input_tokens=self._config.oversized_summarize_max_input_tokens,
+                    oversized_summarize_min_retention=self._config.oversized_summarize_min_retention,
+                    oversized_summarize_fallback_provider=summarize_fallback_llm,
                 ),
                 timeout=syn_timeout,
             )

@@ -344,6 +344,18 @@ class RunConfig(BaseModel):
         le=500_000,
         description="Estimated input token budget (len//4) sent to the summarizer; larger bodies are shrunk first.",
     )
+    oversized_summarize_min_retention: float = Field(
+        default=0.40,
+        ge=0.05,
+        le=0.95,
+        description="If estimated retention (summary vs input len//4) is below this after Gemini summarization, "
+        "run one floor-strict retry; optionally try oversized_summarize_fallback_provider.",
+    )
+    oversized_summarize_fallback_provider: str | None = Field(
+        default=None,
+        description="Optional provider registry name (e.g. openai) used once if Gemini + retry still miss "
+        "oversized_summarize_min_retention. Must match a configured providers[].name.",
+    )
 
     prompt_cache_enabled: bool = Field(
         default=True,
@@ -461,6 +473,29 @@ class RunConfig(BaseModel):
             )
         return v
 
+    @field_validator("oversized_summarize_fallback_provider", mode="before")
+    @classmethod
+    def _normalize_oversized_summarize_fallback_provider(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, str) and not v.strip():
+            return None
+        if not isinstance(v, str):
+            raise ValueError("oversized_summarize_fallback_provider must be a string or null")
+        return v.strip()
+
+    @field_validator("oversized_summarize_fallback_provider")
+    @classmethod
+    def _known_oversized_summarize_fallback_provider(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v not in KNOWN_PROVIDER_NAMES:
+            raise ValueError(
+                f"Unknown oversized_summarize_fallback_provider {v!r}. Expected one of: "
+                f"{', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
+            )
+        return v
+
     @field_validator("synthesizer", mode="before")
     @classmethod
     def _coerce_synthesizer(cls, v: Any) -> Any:
@@ -492,6 +527,19 @@ class RunConfig(BaseModel):
             else:
                 raise ValueError(f"Invalid provider entry type: {type(item).__name__}")
         return out
+
+    @model_validator(mode="after")
+    def _oversized_summarize_fallback_matches_configured_provider(self) -> Self:
+        fb = self.oversized_summarize_fallback_provider
+        if fb is None:
+            return self
+        names = self.provider_names()
+        if fb not in names:
+            raise ValueError(
+                f"oversized_summarize_fallback_provider {fb!r} must match a configured providers[].name; "
+                f"got providers={names!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _providers_non_empty(self) -> Self:
@@ -678,6 +726,43 @@ class RunConfig(BaseModel):
             and "oversized_summarize_model" not in self.model_fields_set
         ):
             updates["oversized_summarize_model"] = str(raw_m).strip()
+        raw_mr = os.environ.get("OVERSIZED_SUMMARIZE_MIN_RETENTION")
+        if (
+            raw_mr is not None
+            and str(raw_mr).strip()
+            and "oversized_summarize_min_retention" not in self.model_fields_set
+        ):
+            try:
+                f = float(str(raw_mr).strip())
+            except ValueError:
+                f = None
+            if f is not None and 0.05 <= f <= 0.95:
+                updates["oversized_summarize_min_retention"] = f
+            elif f is not None:
+                logger.warning(
+                    "Invalid OVERSIZED_SUMMARIZE_MIN_RETENTION=%r (expected float in 0.05-0.95); using default %s.",
+                    raw_mr,
+                    self.oversized_summarize_min_retention,
+                )
+        raw_fb = os.environ.get("OVERSIZED_SUMMARIZE_FALLBACK_PROVIDER")
+        if (
+            raw_fb is not None
+            and str(raw_fb).strip()
+            and "oversized_summarize_fallback_provider" not in self.model_fields_set
+        ):
+            name = str(raw_fb).strip()
+            if name in KNOWN_PROVIDER_NAMES and name in self.provider_names():
+                updates["oversized_summarize_fallback_provider"] = name
+            elif name in KNOWN_PROVIDER_NAMES:
+                logger.warning(
+                    "OVERSIZED_SUMMARIZE_FALLBACK_PROVIDER=%r is not a configured providers[].name; ignoring.",
+                    name,
+                )
+            else:
+                logger.warning(
+                    "OVERSIZED_SUMMARIZE_FALLBACK_PROVIDER=%r is not a known provider name; ignoring.",
+                    name,
+                )
         return self.model_copy(update=updates) if updates else self
 
     def provider_names(self) -> list[str]:
