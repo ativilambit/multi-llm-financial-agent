@@ -51,9 +51,14 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
    applied to the anchor (same-day intraday `[min−1, max+1]` if available, else prior-session close per the SD anchoring rule).
 
    - `event_jump` = ATM straddle-implied move (%) from the **front weekly expiry covering the earnings session** in `options_chain_data` (or, if unavailable, from a cited public chain).
-   - `daily_vol` = post-event daily volatility in this order of preference: (a) forward IV from a post-event weekly expiry, decomposed via calendar-spread vs the event-week expiry — only if both expiries are listed in `options_chain_data`; (b) **HV30 annualized / √252** from prior daily history (`outcome_tracker`); (c) realized post-earnings daily vol from the last 4 earnings windows if available.
+   - **Canonical `daily_vol` source order (use the first that is computable from the provided context):**
+     1. **HV30** = annualized 30-day historical volatility / √252. Compute from the daily history already injected via `outcome_tracker`. Always available unless the ticker has < 30 trading days of history (rare).
+     2. **Realized post-earnings daily vol** — average of |close-to-close return| over the first 5 trading days after the **last 4** earnings windows. Use this only when HV30 is missing.
+     3. **Forward IV calendar-spread** — only when both event-week and post-event weekly expiries exist in `options_chain_data`. Computation: `daily_vol_post = √((IV_far² × T_far − IV_event² × T_event) / (T_far − T_event)) / √252`. Use only when both (1) and (2) are unavailable.
+
+     **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
    - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.
-   - **State each input numerically with its source.** Example: `event_jump=10.67% (May 15 expiry ATM straddle, verified chain)`, `daily_vol=3.15%/day (HV30 50% ann / √252)`.
+   - **State each input numerically with its source.** Example: `event_jump=10.67% (May 15 expiry ATM straddle, verified chain)`, `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
 
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by `√(target_DTE / chosen_expiry_DTE)` from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 

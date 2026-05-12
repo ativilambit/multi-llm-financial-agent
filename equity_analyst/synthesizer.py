@@ -16,6 +16,9 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 logger = logging.getLogger(__name__)
 
 
+_GS = chr(0x03C3)
+
+
 def detect_max_tokens_truncation(raw: Any) -> tuple[bool, str | None]:
     """Best-effort detection of provider-side ``MAX_TOKENS``-style truncation.
 
@@ -208,6 +211,7 @@ class Synthesizer:
         oversized_summarize_min_retention: float = 0.40,
         oversized_summarize_fallback_provider: LLMProvider | None = None,
         refinement_markdown: str | None = None,
+        per_provider_sigma_checks_markdown: str | None = None,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -262,10 +266,20 @@ class Synthesizer:
             )
         refine = (refinement_markdown or "").strip()
         refine_block = f"\n\n### Iterative refinement task\n{refine}\n" if refine else ""
+        sigma_checks = (per_provider_sigma_checks_markdown or "").strip()
+        sigma_block = (
+            f"\n\n### Per-provider {_GS}-band variance checks\n\n"
+            f"Resolve {_GS}-band disagreements toward providers with `passed=True`; surface any "
+            f"`passed=False` provider explicitly in the {_GS} section per Operating Principles.\n\n"
+            f"{sigma_checks}\n"
+            if sigma_checks
+            else ""
+        )
         fixed_intro = (
             f"{_load_prompt_file('synthesizer_system.md')}\n\n"
             f"### Original user prompt\n{original_prompt}"
-            f"{refine_block}\n\n"
+            f"{refine_block}"
+            f"{sigma_block}\n\n"
             f"### Provider responses\n\n"
         )
         trimmed_bodies, _est_before, _est_after = _trim_healthy_bodies_to_token_budget(

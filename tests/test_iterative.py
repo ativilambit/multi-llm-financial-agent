@@ -20,6 +20,8 @@ from equity_analyst.iterative import (
     dry_run_compile_only,
     parse_overall_confidence,
     parse_verifier_json,
+    per_provider_sigma_variance_check,
+    render_per_provider_sigma_checks_markdown,
     round_summary_for_changelog,
     sigma_band_sqrt_ratio_followups,
     verify_variance_additive_sigma_band_sessions,
@@ -116,6 +118,106 @@ def test_verify_variance_additive_sigma_bands_flags_inconsistent() -> None:
     ]
     bad = verify_variance_additive_sigma_band_sessions(sessions, 2.0, 6.0, tolerance=0.25)
     assert bad
+
+
+def test_per_provider_sigma_variance_check_passes_on_clean_text() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    # ej=6%, dv=8% with N=1 -> sigma=10% (3sigma=30%); N=5 -> sigma=sqrt(356)% -> 3sigma~56.604%
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    provider_text = (
+        "event_jump=6% daily_vol=8% (HV30 50.4% ann / sqrt(252))\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    result = per_provider_sigma_variance_check(provider_text)
+    assert result["applicable"] is True
+    assert result["passed"] is True
+    assert result["followups"] == []
+    assert result["event_jump"] == 6.0
+    assert result["daily_vol"] == 8.0
+    assert result["sessions"] == 2
+
+
+def test_per_provider_sigma_variance_check_flags_inconsistent() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    provider_text = (
+        "event_jump=6% daily_vol=8%\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        # Inconsistent — 3sigma=40% gives sigma=13.33; (13.33^2 - 100)=77.7 vs expected (5-1)*64=256
+        f"  - 3{sg}: $30 - $170 ({pm}40.0%)\n"
+    )
+    result = per_provider_sigma_variance_check(provider_text)
+    assert result["applicable"] is True
+    assert result["passed"] is False
+    assert result["followups"]
+    assert any("variance" in f.lower() for f in result["followups"])
+    assert result["event_jump"] == 6.0
+    assert result["daily_vol"] == 8.0
+    assert result["sessions"] == 2
+
+
+def test_per_provider_sigma_variance_check_handles_missing_literals() -> None:
+    provider_text = "Some narrative without any event_jump/daily_vol literals."
+    result = per_provider_sigma_variance_check(provider_text)
+    assert result["applicable"] is False
+    assert result["passed"] is None
+    assert result["event_jump"] is None
+    assert result["daily_vol"] is None
+    assert result["sessions"] == 0
+
+
+def test_render_per_provider_sigma_checks_markdown_three_providers() -> None:
+    checks = [
+        {
+            "provider": "anthropic",
+            "model": "claude",
+            "applicable": True,
+            "passed": True,
+            "event_jump": 10.67,
+            "daily_vol": 3.15,
+            "sessions": 4,
+            "reason": "",
+            "followups": [],
+        },
+        {
+            "provider": "gemini",
+            "model": "gemini-3-pro",
+            "applicable": True,
+            "passed": False,
+            "event_jump": 10.5,
+            "daily_vol": 1.0,
+            "sessions": 4,
+            "reason": "sigma^2(T+5)-sigma^2(T+1)=38.4 expected ~14.9 (25% err)",
+            "followups": ["sigma^2 variance drift"],
+        },
+        {
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "applicable": False,
+            "passed": None,
+            "event_jump": None,
+            "daily_vol": None,
+            "sessions": 0,
+            "reason": "missing event_jump= / daily_vol= literals",
+            "followups": [],
+        },
+    ]
+    md = render_per_provider_sigma_checks_markdown(checks)
+    assert "| Provider | Model |" in md
+    assert "| anthropic | claude |" in md
+    assert "| gemini | gemini-3-pro |" in md
+    assert "| openai | gpt-5.5 |" in md
+    assert "| True |" in md
+    assert "| False |" in md
+    assert "| n/a |" in md
+    assert "10.67%" in md
+    assert "3.15%" in md
 
 
 def test_augment_verifier_variance_additive_skips_sqrt_when_literals_present() -> None:
@@ -1246,6 +1348,115 @@ async def test_refresh_facts_reruns_extractor(monkeypatch: Any, tmp_path: Path) 
     app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
     await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "refresh"}})
     assert calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_fan_out_records_per_provider_sigma_checks_in_state(tmp_path: Path) -> None:
+    """fan_out node must scan each provider's text and stash structured sigma-check results."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    clean_body = (
+        "event_jump=6% daily_vol=8% (HV30 50.4% ann / sqrt(252))\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+        "OVERALL_CONFIDENCE: 0.5\n"
+    )
+    failing_body = (
+        "event_jump=6% daily_vol=8%\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $30 - $170 ({pm}40.0%)\n"
+        "OVERALL_CONFIDENCE: 0.5\n"
+    )
+    missing_body = "No literals in this provider answer.\nOVERALL_CONFIDENCE: 0.5\n"
+
+    reg = ProviderRegistry()
+    reg.register("anthropic", lambda **_: _Txt("anthropic", clean_body))
+    reg.register("openai", lambda **_: _Txt("openai", failing_body))
+    reg.register("grok", lambda **_: _Txt("grok", missing_body))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "syn\nOVERALL_CONFIDENCE: 0.95\n"),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
+        ),
+    )
+    cfg = _base_cfg(
+        providers=["anthropic", "openai", "grok"],
+        synthesizer="gemini",
+        facts_packet_enabled=False,
+        conditional_fanout_enabled=False,
+    )
+    out = tmp_path / "sigma-checks"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    final = await app.ainvoke(
+        _initial_state(cfg, out), config={"configurable": {"thread_id": "sigma-checks"}}
+    )
+    checks = final.get("per_provider_sigma_checks") or []
+    assert len(checks) == 3
+    by_provider = {c["provider"]: c for c in checks}
+    assert by_provider["anthropic"]["passed"] is True
+    assert by_provider["anthropic"]["applicable"] is True
+    assert by_provider["anthropic"]["sessions"] == 2
+    assert by_provider["openai"]["passed"] is False
+    assert by_provider["openai"]["applicable"] is True
+    assert by_provider["openai"]["followups"]
+    assert by_provider["grok"]["applicable"] is False
+    assert by_provider["grok"]["passed"] is None
+
+
+@pytest.mark.asyncio
+async def test_fan_out_logs_per_provider_sigma_variance_check_lines(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    clean_body = (
+        "event_jump=6% daily_vol=8% (HV30 / sqrt(252))\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "OVERALL_CONFIDENCE: 0.5\n"
+    )
+    reg = ProviderRegistry()
+    reg.register("anthropic", lambda **_: _Txt("anthropic", clean_body))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _Txt("gemini", "syn\nOVERALL_CONFIDENCE: 0.95\n"),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
+        ),
+    )
+    cfg = _base_cfg(
+        providers=["anthropic"],
+        synthesizer="gemini",
+        facts_packet_enabled=False,
+        conditional_fanout_enabled=False,
+    )
+    out = tmp_path / "sigma-log"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    with caplog.at_level(logging.INFO, logger="equity_analyst.iterative"):
+        await app.ainvoke(
+            _initial_state(cfg, out), config={"configurable": {"thread_id": "sigma-log"}}
+        )
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "sigma_variance_check provider=anthropic" in msgs
+    assert "passed=True" in msgs
+    assert "event_jump=6.00%" in msgs
+    assert "daily_vol=8.00%" in msgs
 
 
 def test_parse_verifier_json_sections_to_revise() -> None:

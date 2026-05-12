@@ -378,6 +378,114 @@ def _parse_variance_additive_literals(synthesis: str) -> tuple[float | None, flo
         return None, None
 
 
+def per_provider_sigma_variance_check(
+    provider_text: str,
+    tolerance: float = 0.25,
+) -> dict[str, Any]:
+    """Parse one provider's text for variance-additive sigma literals and verify the identity.
+
+    Returns a dict with the structured result fields used by the synthesizer wiring:
+
+    - ``passed`` (bool): True when the variance identity holds within ``tolerance`` for every
+      dated 3-sigma line found. ``False`` when at least one row violates the identity. ``False``
+      is also returned when only literals are present but no dated 3-sigma rows can be paired
+      (treat as unverifiable / suspect).
+    - ``followups`` (list[str]): per-row follow-up strings (same shape as the consolidated
+      verifier helper) -- empty when ``passed`` is True or the check is not applicable.
+    - ``event_jump`` (float | None): parsed ``event_jump=`` percentage, when present.
+    - ``daily_vol`` (float | None): parsed ``daily_vol=`` percentage, when present.
+    - ``sessions`` (int): number of dated 3-sigma rows that contributed to the identity check.
+    - ``applicable`` (bool): False when the provider text lacks both literals; the synthesizer
+      should treat ``applicable=False`` as "no opinion" rather than a failure.
+    - ``reason`` (str): short one-line summary suitable for logging when ``passed`` is False.
+    """
+    ej_lit, dv_lit = _parse_variance_additive_literals(provider_text)
+    if ej_lit is None or dv_lit is None:
+        return {
+            "passed": None,
+            "followups": [],
+            "event_jump": ej_lit,
+            "daily_vol": dv_lit,
+            "sessions": 0,
+            "applicable": False,
+            "reason": "missing event_jump= / daily_vol= literals",
+        }
+
+    dated = extract_dated_three_sigma_half_widths(provider_text)
+    by_date: dict[date, tuple[float, str]] = {}
+    for d, pct, lbl in dated:
+        by_date.setdefault(d, (pct, lbl))
+
+    if not by_date:
+        return {
+            "passed": False,
+            "followups": [f"{_GS} variance: literals present but no dated 3{_GS} rows found"],
+            "event_jump": ej_lit,
+            "daily_vol": dv_lit,
+            "sessions": 0,
+            "applicable": True,
+            "reason": "no dated 3-sigma rows paired with literals",
+        }
+
+    keys_sorted = sorted(by_date)
+    early_d = keys_sorted[0]
+    sessions_payload: list[dict[str, Any]] = []
+    for d in keys_sorted:
+        w3, lbl = by_date[d]
+        n_inc = trading_sessions_inclusive(early_d, d)
+        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": w3 / 3.0})
+
+    followups = verify_variance_additive_sigma_band_sessions(
+        sessions_payload,
+        daily_vol_pct=dv_lit,
+        event_jump_pct=ej_lit,
+        tolerance=tolerance,
+    )
+    passed = not followups
+    reason = "" if passed else (followups[0] if followups else "variance identity drift")
+    return {
+        "passed": passed,
+        "followups": followups,
+        "event_jump": ej_lit,
+        "daily_vol": dv_lit,
+        "sessions": len(sessions_payload),
+        "applicable": True,
+        "reason": reason,
+    }
+
+
+def render_per_provider_sigma_checks_markdown(checks: list[dict[str, Any]]) -> str:
+    """Render the per-provider sigma-variance summary as a short markdown table for the synthesizer.
+
+    ``checks`` items are the records stashed in ``state["per_provider_sigma_checks"]`` (provider,
+    model, plus the fields from :func:`per_provider_sigma_variance_check`). When the input list
+    is empty, returns an empty string so the synthesizer prompt can omit the section entirely.
+    """
+    if not checks:
+        return ""
+    lines = [
+        "| Provider | Model | event_jump | daily_vol | sessions | passed | reason |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for c in checks:
+        prov = str(c.get("provider", "")).strip() or "?"
+        model = str(c.get("model", "")).strip() or "?"
+        ej_v = c.get("event_jump")
+        dv_v = c.get("daily_vol")
+        ej_s = f"{float(ej_v):.2f}%" if isinstance(ej_v, (int, float)) else "n/a"
+        dv_s = f"{float(dv_v):.2f}%" if isinstance(dv_v, (int, float)) else "n/a"
+        sess = int(c.get("sessions") or 0)
+        if not c.get("applicable", False):
+            passed_s = "n/a"
+        else:
+            passed_s = "True" if c.get("passed") else "False"
+        reason = str(c.get("reason") or "").strip().replace("|", "/")
+        if len(reason) > 80:
+            reason = reason[:77] + "..."
+        lines.append(f"| {prov} | {model} | {ej_s} | {dv_s} | {sess} | {passed_s} | {reason} |")
+    return "\n".join(lines)
+
+
 def _coerce_sigma_band_sessions(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
@@ -956,6 +1064,7 @@ class RefinementState(TypedDict, total=False):
     followup_questions: Annotated[list[str], operator.add]
     timing_events: Annotated[list[dict[str, Any]], operator.add]
     error_events: Annotated[list[dict[str, Any]], operator.add]
+    per_provider_sigma_checks: NotRequired[list[dict[str, Any]]]
     final_report: str
     drive_upload_enabled: bool
     drive_credentials_path: str | None
@@ -1168,6 +1277,16 @@ def _build_synthesis_refinement_markdown(state: RefinementState) -> str | None:
         "End with the required OVERALL_CONFIDENCE line."
     )
     return "\n\n".join(parts)
+
+
+def build_per_provider_sigma_checks_markdown(state: RefinementState) -> str:
+    """Render the synthesizer-facing ``per_provider_sigma_checks_markdown`` block.
+
+    Returns an empty string when the fan-out node has not yet stashed any checks (e.g. dry
+    runs or older checkpoints replayed without the field).
+    """
+    checks = state.get("per_provider_sigma_checks") or []
+    return render_per_provider_sigma_checks_markdown(list(checks))
 
 
 def _fan_out_task_body(state: RefinementState) -> str:
@@ -1555,11 +1674,50 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         (iter_dir / f"iteration_{round_idx + 1}_providers.md").write_text("\n".join(lines_out), encoding="utf-8")
 
         ser = {"responses": {k: _response_to_dict(v) for k, v in responses.items()}}
+
+        per_provider_checks: list[dict[str, Any]] = []
+        for name, resp in responses.items():
+            check = per_provider_sigma_variance_check(resp.text)
+            rec: dict[str, Any] = {"provider": name, "model": resp.model}
+            rec.update(check)
+            per_provider_checks.append(rec)
+            applicable = bool(check.get("applicable"))
+            passed = check.get("passed")
+            ej = check.get("event_jump")
+            dv = check.get("daily_vol")
+            sess = int(check.get("sessions") or 0)
+            ej_s = f"{float(ej):.2f}%" if isinstance(ej, (int, float)) else "n/a"
+            dv_s = f"{float(dv):.2f}%" if isinstance(dv, (int, float)) else "n/a"
+            if not applicable:
+                logger.info(
+                    "sigma_variance_check provider=%s passed=n/a event_jump=%s daily_vol=%s sessions=%s reason=%s",
+                    name,
+                    ej_s,
+                    dv_s,
+                    sess,
+                    "missing_literals",
+                )
+            elif passed:
+                logger.info(
+                    "sigma_variance_check provider=%s passed=True event_jump=%s daily_vol=%s sessions=%s",
+                    name,
+                    ej_s,
+                    dv_s,
+                    sess,
+                )
+            else:
+                logger.info(
+                    "sigma_variance_check provider=%s passed=False reason=%r",
+                    name,
+                    str(check.get("reason") or "variance identity drift"),
+                )
+
         out_fan: dict[str, Any] = {
             "provider_responses": [ser],
             "timing_events": [
                 {"iteration": it_no, "providers_parallel_wall_s": parallel_wall},
             ],
+            "per_provider_sigma_checks": per_provider_checks,
         }
         out_fan.update(state_update)
         return out_fan
@@ -1603,6 +1761,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         it_no = round_idx + 1
         err_ev: list[dict[str, Any]] = []
         refinement = _build_synthesis_refinement_markdown(state) if round_idx >= 1 else None
+        sigma_checks_md = build_per_provider_sigma_checks_markdown(state)
         try:
             with prompt_call_context(node="synthesize", iteration=it_no):
                 result = await asyncio.wait_for(
@@ -1635,6 +1794,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         ),
                         oversized_summarize_fallback_provider=summarize_fallback_llm,
                         refinement_markdown=refinement,
+                        per_provider_sigma_checks_markdown=sigma_checks_md,
                     ),
                     timeout=timeout_syn,
                 )

@@ -111,6 +111,34 @@ def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
         assert needle in synth
 
 
+def test_equity_analyst_template_canonical_daily_vol_source_order() -> None:
+    """Rule 2 must enumerate canonical daily_vol source order: HV30 -> realized -> calendar IV."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    assert "Canonical `daily_vol` source order" in j2
+    hv30_idx = j2.find("**HV30**")
+    realized_idx = j2.find("**Realized post-earnings daily vol**")
+    calspread_idx = j2.find("**Forward IV calendar-spread**")
+    assert 0 < hv30_idx < realized_idx < calspread_idx, (
+        "Canonical daily_vol order must list HV30 first, realized post-earnings second, "
+        "calendar-spread IV third"
+    )
+    minus = "\N{MINUS SIGN}"
+    assert "annualized 30-day historical volatility / \N{SQUARE ROOT}252" in j2
+    assert "the **last 4** earnings windows" in j2
+    assert f"T_far {minus} T_event" in j2
+    assert "State which source was used" in j2
+    assert "daily_vol=3.15%/day (HV30 50.0% ann / \N{SQUARE ROOT}252)" in j2
+
+
+def test_synthesizer_system_prompt_includes_per_provider_sigma_checks_paragraph() -> None:
+    sigma = "\N{GREEK SMALL LETTER SIGMA}"
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "per_provider_sigma_checks_markdown" in synth
+    assert "passed=False" in synth
+    assert f"Per-provider {sigma} variance pre-check" in synth
+    assert "surface the disagreement explicitly" in synth.lower() or "explicitly" in synth
+
+
 def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_export() -> None:
     path = PROMPTS / "provider_summarize_system.md"
     assert path.is_file()
