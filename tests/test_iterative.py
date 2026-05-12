@@ -1322,3 +1322,103 @@ def test_round_summary_never_cuts_mid_sentence() -> None:
     )
     # The specific mid-word fragment "The pr" (the bug shape) must not be the tail.
     assert not body.rstrip().endswith("The pr")
+
+
+class _LongSynth(LLMProvider):
+    """Synthesis body long enough to trigger legacy changelog abridgement."""
+
+    def __init__(self, name: str, *, pad_len: int = 2500, tail: str = "UNIQUE_INLINE_TAIL_ZZ") -> None:
+        self.name = name
+        self._text = ("x" * pad_len) + "\n\n" + tail + "\n\nOVERALL_CONFIDENCE: 0.95\n"
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text=self._text,
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_finalize_synthesis_md_changelog_full_text_no_abridged_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf_sources: list[tuple[str, str]] = []
+
+    def _capture_pdf(**kwargs: Any) -> None:
+        p = kwargs["md_path"]
+        pdf_sources.append((p.name, kwargs["markdown_text"]))
+
+    monkeypatch.setattr("equity_analyst.iterative.maybe_write_pdf_sibling", _capture_pdf)
+
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _LongSynth("gemini"),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
+        ),
+    )
+    cfg = _base_cfg()
+    out = tmp_path / "full-changelog"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "full-changelog"}})
+
+    md = (out / "synthesis.md").read_text(encoding="utf-8")
+    pre_final, _, _post = md.partition("## Final synthesis (last round)")
+    assert "abridged" not in pre_final
+    assert "UNIQUE_INLINE_TAIL_ZZ" in pre_final
+    assert "### Round 1 synthesis (summary)" not in pre_final
+    assert "### Round 1 synthesis\n" in pre_final
+
+    syn_pdf = next((t for n, t in pdf_sources if n == "synthesis.md"), "")
+    assert syn_pdf
+    assert "abridged" not in syn_pdf
+    assert "UNIQUE_INLINE_TAIL_ZZ" in syn_pdf
+
+
+@pytest.mark.asyncio
+async def test_finalize_synthesis_md_changelog_abridged_when_final_report_full_synthesis_off(
+    tmp_path: Path,
+) -> None:
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _Txt("openai", "fan"))
+    reg.register(
+        "gemini",
+        lambda **_: _GeminiSplit(
+            _LongSynth("gemini"),
+            _Txt(
+                "gemini",
+                '{"verified":[],"contradicted":[],"unverifiable":[],'
+                '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}',
+            ),
+        ),
+    )
+    cfg = _base_cfg(final_report_full_synthesis=False)
+    out = tmp_path / "abbr-changelog"
+    out.mkdir()
+    st = _initial_state(cfg, out)
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(st, config={"configurable": {"thread_id": "abbr-changelog"}})
+
+    md = (out / "synthesis.md").read_text(encoding="utf-8")
+    pre_final, _, post = md.partition("## Final synthesis (last round)")
+    assert "abridged" in pre_final
+    assert "UNIQUE_INLINE_TAIL_ZZ" not in pre_final
+    assert "### Round 1 synthesis (summary)" in pre_final
+    assert "UNIQUE_INLINE_TAIL_ZZ" in post

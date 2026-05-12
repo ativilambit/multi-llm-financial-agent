@@ -378,6 +378,12 @@ class RunConfig(BaseModel):
         default=True,
         description="When True, emit a .pdf next to each primary analysis .md (requires WeasyPrint).",
     )
+    final_report_full_synthesis: bool = Field(
+        default=True,
+        description="Iterative finalize: when True, the iteration changelog in synthesis.md uses each round's "
+        "full synthesis text instead of an abridged preview with a pointer to iterations/*.md. "
+        "Set FINAL_REPORT_FULL_SYNTHESIS=0 to restore the legacy abridged changelog.",
+    )
     delete_checkpoint_after_success: bool = Field(
         default=True,
         description="When True, remove iterative checkpoint.sqlite (+ WAL/SHM/journal) from the run directory "
@@ -626,6 +632,19 @@ class RunConfig(BaseModel):
         s = str(raw).strip().lower()
         delete_after = s in ("1", "true", "yes", "on")
         return self.model_copy(update={"delete_checkpoint_after_success": delete_after})
+
+    @model_validator(mode="after")
+    def _final_report_full_synthesis_env_fallback(self) -> Self:
+        """Env override when ``final_report_full_synthesis`` was not set explicitly in YAML (YAML > env > default)."""
+        raw = os.environ.get("FINAL_REPORT_FULL_SYNTHESIS")
+        if (
+            raw is None
+            or not str(raw).strip()
+            or "final_report_full_synthesis" in self.model_fields_set
+        ):
+            return self
+        full = str(raw).strip().lower() in ("1", "true", "yes", "on")
+        return self.model_copy(update={"final_report_full_synthesis": full})
 
     @model_validator(mode="after")
     def _facts_packet_and_conditional_fanout_env_fallback(self) -> Self:

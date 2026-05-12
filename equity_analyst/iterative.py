@@ -368,10 +368,11 @@ def round_summary_for_changelog(
     """Render a per-round preview for the final report's iteration changelog.
 
     The full per-round synthesis is preserved verbatim in
-    ``iterations/iteration_{i}_synthesis.md`` and (for the last round) in the
-    ``Final synthesis (last round)`` section of ``synthesis.md``. This helper
-    builds a short preview for the changelog that cuts at a paragraph
-    boundary (never mid-sentence) so the abridgement is visually clear and
+    ``iterations/iteration_{i}_synthesis.md``. When ``RunConfig.final_report_full_synthesis``
+    is True (default), ``synthesis.md`` also inlines the full text for each round in the
+    iteration changelog and repeats the last round under ``Final synthesis (last round)``.
+    This helper builds a short preview for the legacy abridged changelog when that flag
+    is False; it cuts at a paragraph boundary (never mid-sentence) so the abridgement is visually clear and
     can't be mistaken for an LLM ``MAX_TOKENS`` truncation.
     """
     text = synthesis_text.rstrip()
@@ -831,6 +832,7 @@ class RefinementState(TypedDict, total=False):
     facts_packet_md: NotRequired[str]
     last_route_followup_questions: NotRequired[list[str]]
     options_chain_data: NotRequired[dict[str, Any]]
+    final_report_full_synthesis: NotRequired[bool]
 
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
@@ -1712,9 +1714,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             f"# Refined equity report: {state['symbol']}\n",
             "## Iteration changelog\n",
         ]
+        full_changelog = bool(state.get("final_report_full_synthesis", True))
         for i, syn in enumerate(state["synthesis_history"], start=1):
-            summary = round_summary_for_changelog(syn, iteration_index=i)
-            parts.append(f"### Round {i} synthesis (summary)\n\n{summary}\n\n")
+            body = syn.rstrip() if full_changelog else round_summary_for_changelog(syn, iteration_index=i)
+            round_heading = (
+                f"### Round {i} synthesis\n\n" if full_changelog else f"### Round {i} synthesis (summary)\n\n"
+            )
+            parts.append(f"{round_heading}{body}\n\n")
         parts.append("## Verification summary\n\n")
         trunc_notes = [
             f"(round {i} verifier output was truncated; partial recovery)"
@@ -1901,6 +1907,7 @@ def build_initial_refinement_state(
         "fan_out_on_continue": cfg.fan_out_on_continue,
         "refinement_mode_prompt_enabled": cfg.refinement_mode_prompt_enabled,
         "options_chain_data": rendered.context.get("options_chain_data") or {},
+        "final_report_full_synthesis": cfg.final_report_full_synthesis,
     }
 
 

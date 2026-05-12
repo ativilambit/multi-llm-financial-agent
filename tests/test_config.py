@@ -637,6 +637,27 @@ def _minimal_run_config_dict() -> dict[str, Any]:
     }
 
 
+def test_final_report_full_synthesis_defaults_true() -> None:
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.final_report_full_synthesis is True
+
+
+def test_final_report_full_synthesis_env_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINAL_REPORT_FULL_SYNTHESIS", "0")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.final_report_full_synthesis is False
+    monkeypatch.delenv("FINAL_REPORT_FULL_SYNTHESIS", raising=False)
+
+
+def test_final_report_full_synthesis_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINAL_REPORT_FULL_SYNTHESIS", "0")
+    d = _minimal_run_config_dict()
+    d["final_report_full_synthesis"] = True
+    cfg = RunConfig.model_validate(d)
+    assert cfg.final_report_full_synthesis is True
+    monkeypatch.delenv("FINAL_REPORT_FULL_SYNTHESIS", raising=False)
+
+
 def test_facts_packet_max_output_tokens_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", "4096")
     cfg = RunConfig.model_validate(_minimal_run_config_dict())
