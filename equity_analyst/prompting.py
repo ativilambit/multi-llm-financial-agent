@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from equity_analyst.config import RunConfig
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
+
+log = logging.getLogger(__name__)
 
 
 def _resolve_same_day_intraday(cfg: RunConfig) -> tuple[float | None, float | None]:
@@ -20,6 +23,36 @@ def _resolve_same_day_intraday(cfg: RunConfig) -> tuple[float | None, float | No
     from equity_analyst.outcome_tracker import fetch_earnings_day_intraday_high_low_yfinance
 
     return fetch_earnings_day_intraday_high_low_yfinance(cfg.symbol, cfg.earnings_date)
+
+
+def _resolve_options_chain(cfg: RunConfig) -> tuple[dict[str, Any], str]:
+    """Return ``(options_chain_data dict, options_chain_markdown)`` for Jinja."""
+    from equity_analyst.options_chain import (
+        empty_options_prompt_dict,
+        fetch_options_chain_snapshot,
+        options_chain_snapshot_from_prompt_dict,
+    )
+
+    if cfg.options_chain_snapshot is not None and isinstance(cfg.options_chain_snapshot, dict):
+        snap = options_chain_snapshot_from_prompt_dict(cfg.options_chain_snapshot)
+        if snap is not None:
+            data = snap.to_prompt_dict()
+            return data, snap.to_markdown_table()
+        log.warning("options_chain: manual options_chain_snapshot invalid; falling back to fetch/off")
+
+    if cfg.options_chain_auto_fetch:
+        snap = fetch_options_chain_snapshot(
+            cfg.symbol,
+            cfg.earnings_date,
+            cfg.target_dates,
+            today_date=cfg.today_date,
+        )
+        if snap is not None:
+            data = snap.to_prompt_dict()
+            return data, snap.to_markdown_table()
+
+    empty = empty_options_prompt_dict(cfg.symbol)
+    return empty, ""
 
 
 def split_static_dynamic(rendered: RenderedPrompt) -> tuple[str, str]:
@@ -100,6 +133,11 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
     else:
         context["same_day_intraday_anchor_band_low"] = None
         context["same_day_intraday_anchor_band_high"] = None
+
+    oc_data, oc_md = _resolve_options_chain(cfg)
+    context["options_chain_data"] = oc_data
+    context["options_chain_markdown"] = oc_md
+    context["options_chain_available"] = bool(oc_data.get("options_chain_available"))
 
     user_message_text = template.render(**context)
     text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"

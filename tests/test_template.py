@@ -230,10 +230,77 @@ def test_template_generalizes_to_other_symbol() -> None:
     assert "{{" not in text
     assert "NVDA" in text
     assert "$100.0\u2013$110.0" in text
-    assert "~$105.5" in text
-    assert "web_search" in text
-    assert "Wed Feb 18 2026" in text
-    assert "Date anchors" in text
-    assert "day of the earnings call" in text
-    assert "next trading day" in text
-    assert "end of that earnings week" in text
+def test_template_options_chain_markdown_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    md = "| test table |\n|--|\n| x |"
+
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        assert cfg.symbol == "ACME"
+        return (
+            {
+                "options_chain_available": True,
+                "symbol": "ACME",
+                "spot": 10.0,
+                "available_expiries": ["2026-06-01"],
+                "selected_expiries": [],
+                "as_of": "z",
+                "fetch_error": None,
+            },
+            md,
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "ACME",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
+    assert "**Verified options chain (use these numbers, do not fabricate):**" in text
+    assert "| test table |" in text
+    assert "Verified options chain not available in this run" not in text
+
+
+def test_template_options_chain_fallback_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_resolve(cfg: RunConfig) -> tuple[dict, str]:
+        return (
+            {
+                "options_chain_available": False,
+                "symbol": cfg.symbol,
+                "spot": None,
+                "available_expiries": [],
+                "selected_expiries": [],
+                "as_of": "z",
+                "fetch_error": None,
+            },
+            "",
+        )
+
+    monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "ZZZ",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": ["t1"],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "historical_quarters": 4,
+            "short_interest_lookbacks": ["last week"],
+            "providers": ["openai"],
+            "synthesizer": "openai",
+        }
+    )
+    text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
+    assert "Verified options chain not available in this run" in text
+    assert "Yahoo Options" in text

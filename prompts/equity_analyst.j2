@@ -23,6 +23,20 @@ Date anchors (use only to map relational phrasing in sections below to concrete 
 
 When computing **1σ / 2σ / 3σ** **σ band widths** around the anchor (same-day **`[intraday_min − 1.00, intraday_max + 1.00]`** or prior-close per the **SD / range anchoring rule** above), derive σ magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings move statistics (with sources). **Do not** widen or tighten **σ band widths** for qualitative reasons — the bands are a **statistical confidence interval**, not a directional view. The **horizon-aware qual:quant blend** in section 8 governs **directional tilt** (where the most-likely close sits **within** the band) and **scenario probability weighting**, **not** **σ band widths** and **not** **option pricing**. State each band's anchor and σ-source explicitly.
 
+**Verified options chain (use these numbers, do not fabricate):**
+
+{% if options_chain_available %}
+
+{{ options_chain_markdown }}
+
+Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute expected moves and σ widths from these inputs; do **not** invent alternative chain numbers. If a target session is not covered by a listed expiry, scale by √t from the **named** expiry per the σ band sanity rules below.
+
+{% else %}
+
+Verified options chain not available in this run; fall back to citing public chain sources per request (Yahoo Options, CBOE) and label all numbers with their source.
+
+{% endif %}
+
 **σ band construction — sanity rules (mandatory):**
 
 1. **No fake same-day implied move.** If **no options contract expires on the target session** for this ticker, you must **not** report an "implied-move" σ figure for that session. Instead:

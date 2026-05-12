@@ -27,6 +27,7 @@ from equity_analyst.facts_packet import (
     write_facts_packet,
 )
 from equity_analyst.gemini_cache import GeminiCacheIndex
+from equity_analyst.options_chain import options_chain_expiry_audit_messages
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
@@ -287,6 +288,8 @@ def augment_verifier_result_with_sigma_structural_checks(
     *,
     anchor_year: int = 2026,
     sqrt_tolerance: float = 0.25,
+    options_chain_data: dict[str, Any] | None = None,
+    symbol: str = "",
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     out = dict(result)
@@ -331,6 +334,15 @@ def augment_verifier_result_with_sigma_structural_checks(
         passed = row.get("sigma_scaling_check_passed")
         if passed is False:
             extras.append(f"{_GS} scaling failed for {sess}; re-derive or document vol regime split.")
+
+    extras.extend(
+        options_chain_expiry_audit_messages(
+            synthesis_text,
+            out,
+            options_chain_data=options_chain_data,
+            symbol=symbol,
+        ),
+    )
 
     merged = extras + [u for u in prior if u not in extras]
     deduped: list[str] = []
@@ -816,6 +828,7 @@ class RefinementState(TypedDict, total=False):
     refinement_mode_prompt_enabled: NotRequired[bool]
     facts_packet_md: NotRequired[str]
     last_route_followup_questions: NotRequired[list[str]]
+    options_chain_data: NotRequired[dict[str, Any]]
 
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
@@ -1651,7 +1664,12 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             provider_finish_reason=provider_finish_reason_label(resp.raw),
             provider_raw=resp.raw,
         )
-        data = augment_verifier_result_with_sigma_structural_checks(syn, data)
+        data = augment_verifier_result_with_sigma_structural_checks(
+            syn,
+            data,
+            options_chain_data=state.get("options_chain_data"),
+            symbol=str(state.get("symbol", "")),
+        )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
         verify_path.write_text(verify_body, encoding="utf-8")
@@ -1864,6 +1882,7 @@ def build_initial_refinement_state(
         "conditional_fanout_enabled": cfg.conditional_fanout_enabled,
         "fan_out_on_continue": cfg.fan_out_on_continue,
         "refinement_mode_prompt_enabled": cfg.refinement_mode_prompt_enabled,
+        "options_chain_data": rendered.context.get("options_chain_data") or {},
     }
 
 

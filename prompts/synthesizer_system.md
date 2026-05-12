@@ -43,6 +43,8 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 
 For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve or reconcile magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings statistics as given in the sources. **Do not** widen or tighten **σ band widths** on qualitative grounds — bands are a **statistical envelope**. The **horizon-aware qual:quant blend** applies to **directional tilt** (where the most-likely close sits within the band) and **scenario emphasis**, **not** to **σ band widths** or **option pricing**. When consolidating, keep anchors and σ-sources explicit.
 
+When the equity prompt included a **Verified options chain** table (`options_chain_markdown`), treat those strikes, expiries, IV, and straddle mids as **authoritative** for consolidation: prefer them **verbatim** over conflicting provider chain numbers. If providers disagree on chain inputs, defer to the verified table; still flag stale timestamps or missing fields if the table itself is thin.
+
 **σ band construction — sanity rules (mandatory) — same as equity prompt:** When merging provider σ bands, enforce coherence, not ad hoc % picks.
 
 1. **No fake same-day implied move.** If **no options contract expires on the target session** for the ticker, the synthesis must **not** present a same-day "implied-move" σ band without relabeling: use the **nearest real weekly expiry**, state `"derived from <YYYY-MM-DD> weekly expiry"`, and scale by **√(target_DTE / chosen_expiry_DTE)** (constant IV); or **HV30 (annualized) × √(target_DTE / 252)** labeled `"HV30 √t scaling"`. **State explicitly** which path applies per session.

@@ -89,7 +89,20 @@ Tuesday, May 19 (~1 Week Post-Earnings Open/Close):
     assert any("sqrt-t" in u for u in unver)
 
 
-def test_parse_verifier_json_preserves_sigma_band_sessions() -> None:
+def test_augment_verifier_flags_expiry_not_in_verified_chain() -> None:
+    sg = chr(0x03C3)
+    syn = f"3{sg}: 1% derived from 2026-05-15 weekly expiry\n"
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"sigma_band_sessions":[{"session":"t","sigma_baseline":"2026-05-99 weekly",'
+        '"sigma_scaling_check_passed":true}],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    oc = {"options_chain_available": True, "available_expiries": ["2026-05-15", "2026-05-22"]}
+    out = augment_verifier_result_with_sigma_structural_checks(syn, base, options_chain_data=oc, symbol="DT")
+    joined = " ".join(out["unverifiable"])
+    assert "2026-05-99" in joined
+    assert "verified chain" in joined.lower()
     raw = (
         '{"verified":[],"contradicted":[],"unverifiable":[],'
         '"sigma_band_sessions":[{"session":"May 13","sigma_baseline":"2026-05-16",'

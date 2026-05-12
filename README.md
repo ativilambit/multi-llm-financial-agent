@@ -4,6 +4,10 @@ Python CLI that renders a Jinja2 equity/options prompt from YAML config, fans ou
 
 See [CHANGELOG.md](CHANGELOG.md) for the change history.
 
+## Documentation
+
+- **[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)** — Product and system requirements for onboarding: architecture, prompt rules, routing, configuration matrix, operational runbook, data sources, limitations, recent commit map, and test inventory.
+
 ## Install
 
 ```bash
@@ -214,6 +218,16 @@ python -m equity_analyst run --config ... --env production
 ## Configs
 
 Stock-specific YAML lives under `configs/`. **Workflow:** pick the **MNDY** or **CRCL** pair below as a **template**, copy both YAMLs to new filenames (`<symbol>_YYYY_MM_DD.yaml` and `_fast.yaml`), then edit symbol, company name, session labels, dates, optional price hints, and any symbol-specific lookbacks. **Price fields** (`today_low` / `today_high` / `current_price`, or the aliases `reference_session_*` / `reference_last_price`) are **optional, unverified hints** for orientation only—the rendered prompt tells models to **fetch and cite** the **last regular-session official closing price** (and session high/low) via **web_search** and not to treat YAML numbers as ground truth. **`earnings_timing`** is also **optional**: if you omit it, the equity prompt requires **web_search** verification of the actual **BMO / AMC / during-hours** schedule for `earnings_date` (with URL citation); if you set it, that label is treated as the stated schedule while still allowing cross-checks.
+
+### Verified options chain (`yfinance`)
+
+When **`options_chain_auto_fetch: true`** is set in YAML (or **`OPTIONS_CHAIN_AUTO_FETCH=1`** in the environment), the renderer pulls a Yahoo Finance option chain via **[yfinance](https://github.com/ranaroussi/yfinance)** and injects a **Verified options chain** markdown table into the equity prompt so models and the iterative verifier can anchor ATM straddles, IV, PCR, and expiry labels to **server-side numbers** instead of inventing chain math. You can skip the network call and paste a frozen snapshot with **`options_chain_snapshot`** (a YAML mapping in the same shape as the structured `options_chain_data` object).
+
+**Caveats:**
+
+- **Quote delay:** Yahoo’s public options feed is typically **~15 minutes delayed** on the free tier; for intraday earnings-day runs the printed chain may lag the live tape by a few minutes.
+- **Skew proxy:** yfinance does not expose option **delta**; the “25Δ skew” column is an **approximation** using **±5% strike offsets** on IV, noted in the table footer.
+- **Rate limits:** like other yfinance calls, repeated fetches can hit **throttling**; the library uses an in-process **LRU cache keyed by `(symbol, earnings_date)`** so a single iterative run does not re-hit Yahoo for the same key every render.
 
 | File | Use case |
 |------|----------|

@@ -177,6 +177,17 @@ class RunConfig(BaseModel):
         "SAME_DAY_INTRADAY_AUTO_FETCH=1 for intraday/post-close runs.",
     )
 
+    options_chain_auto_fetch: bool = Field(
+        default_factory=lambda: _env_flag_truthy("OPTIONS_CHAIN_AUTO_FETCH"),
+        description="When True and options_chain_snapshot is unset, render_prompt fetches a Yahoo option chain "
+        "via yfinance (may rate-limit). Enable globally with OPTIONS_CHAIN_AUTO_FETCH=1.",
+    )
+    options_chain_snapshot: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional manual override: mapping matching OptionsChainSnapshot.to_prompt_dict(); "
+        "when set, fetch is skipped.",
+    )
+
     target_dates: list[str] = Field(default_factory=list)
     next_trading_day: str
     followup_open_date: str
@@ -600,6 +611,13 @@ class RunConfig(BaseModel):
             and "refinement_mode_prompt_enabled" not in self.model_fields_set
         ):
             updates["refinement_mode_prompt_enabled"] = str(rm).strip().lower() in ("1", "true", "yes", "on")
+        ocf = os.environ.get("OPTIONS_CHAIN_AUTO_FETCH")
+        if (
+            ocf is not None
+            and str(ocf).strip()
+            and "options_chain_auto_fetch" not in self.model_fields_set
+        ):
+            updates["options_chain_auto_fetch"] = str(ocf).strip().lower() in ("1", "true", "yes", "on")
         raw_m = os.environ.get("FACTS_PACKET_MAX_OUTPUT_TOKENS")
         if (
             raw_m is not None
