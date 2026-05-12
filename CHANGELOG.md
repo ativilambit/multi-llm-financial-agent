@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- Pre-synthesis provider summarizer system prompt targets **~50% retention** (vs. aggressive compression): preserve tables, probabilities, σ-bands, IV/PCR/short interest with labels, disagreements, and top citations/URLs; optional self-check against `len(text)//4`. (`feat(prompt): relax pre-synthesis summarizer to ~50% retention`)
 - **Iterative** Refinement-mode prompt — iter 2+ fan-out providers (when actually invoked) are told not to re-derive market primitives from the facts packet; refine sections flagged by the verifier (`sections_to_revise`) instead. Config: `refinement_mode_prompt_enabled` (default on); env `REFINEMENT_MODE_PROMPT_ENABLED`.
 - Pre-synthesis summarizer log prefix renamed to `pre_synthesis_summarize:` for clarity (was `synthesizer:`).
 - Pre-synthesis summarizer defaults to Gemini Flash (configurable via `OVERSIZED_SUMMARIZE_PROVIDER` / `OVERSIZED_SUMMARIZE_MODEL`).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -11,6 +12,9 @@ from equity_analyst.provider_summarize import (
     summarize_provider_body_if_needed,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+_PROVIDER_SUMMARIZE_PROMPT = REPO_ROOT / "prompts" / "provider_summarize_system.md"
 
 
 class _DummyAio:
@@ -60,6 +64,14 @@ def _resp(*, name: str, text: str) -> ProviderResponse:
         usage=ProviderUsage(),
         raw=None,
     )
+
+
+def test_provider_summarize_system_prompt_retention_guidance() -> None:
+    raw = _PROVIDER_SUMMARIZE_PROMPT.read_text(encoding="utf-8")
+    lower = raw.lower()
+    assert "50%" in raw or "half" in lower
+    assert "table" in lower
+    assert "probabilit" in lower
 
 
 @pytest.mark.asyncio
