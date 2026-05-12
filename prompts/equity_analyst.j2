@@ -71,7 +71,18 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 
      **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
    - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.
-   - **State each input numerically with its source.** Example: `event_jump=10.67% (May 15 expiry ATM straddle, verified chain)`, `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
+   - **MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** Before showing any σ bands, output **exactly** these two lines in a fenced code block (any backticks), with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, no Unicode multipliers):
+
+     ```
+     event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)
+     daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)
+     ```
+
+     Numbers are percentages with 2 decimals. `<source>` is a short parenthetical. If `iv_crush_multiplier` is provided, also output:
+
+     ```
+     iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day
+     ```
 
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by `√(target_DTE / chosen_expiry_DTE)` from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 

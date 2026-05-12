@@ -113,6 +113,8 @@ that are not represented in the excerpt.
 
 If the excerpt includes **section 8** bottom-up qualitative material, add an **unverifiable** item when the first 800 characters of that section-8 passage contain **no** `http://` or `https://` URL and **no** line starting with `Source:` (heuristic for missing citations—tune to reduce false positives).
 
+When the excerpt concerns **post-earnings sigma bands** (variance-additive horizons), require **machine-parseable** inputs before any band table: the literal tokens ``event_jump=`` and ``daily_vol=`` (exact spelling, ASCII ``=``) with **two decimals** and ``%/day`` on ``daily_vol``, inside a fenced code block—same mandatory shape as the equity prompt (no LaTeX ``\\_`` escapes, no Markdown italics, no Unicode multipliers). If either token is missing from the excerpt, add an **unverifiable** item demanding those two lines in that exact format (plus ``iv_crush_multiplier=`` / ``daily_vol_raw=`` / ``daily_vol=`` when IV crush context applies).
+
 When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, treat **prior-close anchoring** and **labeled same-day intraday `[low-1.00, high+1.00]` (USD)** as both valid when the synthesis states which anchor it used; do not flag a contradiction solely because two runs used different branches of the equity prompt.
 
 """
@@ -200,8 +202,16 @@ def trading_sessions_inclusive(start: date, end: date) -> int:
     return n
 
 
-_EVENT_JUMP_PCT_RE = re.compile(r"event_jump\s*=\s*([\d.]+)\s*%", re.IGNORECASE)
-_DAILY_VOL_PCT_RE = re.compile(r"daily_vol\s*=\s*([\d.]+)\s*%", re.IGNORECASE)
+# Loosely match styled literals: optional LaTeX ``\\`` before ``_``, ``:`` or ``=``, optional ``\\`` before ``%``,
+# optional ``/day`` suffix on daily_vol.
+_EVENT_JUMP_PCT_RE = re.compile(
+    r"event\\?_jump\s*[:=]\s*(\d+(?:\.\d+)?|\.\d+)\s*\\?%",
+    re.IGNORECASE,
+)
+_DAILY_VOL_PCT_RE = re.compile(
+    r"daily\\?_vol\s*[:=]\s*(\d+(?:\.\d+)?|\.\d+)\s*\\?%(?:\s*/\s*day)?",
+    re.IGNORECASE,
+)
 
 
 _SESSION_HEAD_RE = re.compile(
@@ -439,7 +449,7 @@ def per_provider_sigma_variance_check(
             "daily_vol": dv_lit,
             "sessions": 0,
             "applicable": False,
-            "reason": "missing event_jump= / daily_vol= literals",
+            "reason": "missing_literals",
         }
 
     dated = extract_dated_three_sigma_half_widths(provider_text)
@@ -483,6 +493,25 @@ def per_provider_sigma_variance_check(
         "applicable": True,
         "reason": reason,
     }
+
+
+def sigma_missing_literal_router_followups(checks: Sequence[dict[str, Any]]) -> list[str]:
+    """When multiple providers omit parseable ``event_jump=`` / ``daily_vol=``, nudge the next fan-out."""
+    missing: list[str] = []
+    for c in checks:
+        if bool(c.get("applicable", True)):
+            continue
+        if str(c.get("reason", "")).strip() != "missing_literals":
+            continue
+        prov = str(c.get("provider", "")).strip() or "unknown"
+        missing.append(
+            "Cite or verify: Provider "
+            f"{prov} did not include the mandatory event_jump= / daily_vol= literals; "
+            "please include them in the exact format specified.",
+        )
+    if len(missing) < 2:
+        return []
+    return missing
 
 
 def render_per_provider_sigma_checks_markdown(checks: list[dict[str, Any]]) -> str:
@@ -1146,6 +1175,7 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
     unver_thr = int(snap.get("unverifiable_count_threshold_for_fanout", 3))
     conf_cut = float(snap.get("unverifiable_fanout_confidence_below", 0.8))
     force_fan = bool(snap.get("force_fan_out_on_continue", False))
+    sigma_router_qs = sigma_missing_literal_router_followups(state.get("per_provider_sigma_checks") or [])
 
     logger.info(
         "Node route rounds_completed=%s max_iterations=%s overall_confidence=%s contradicted=%s "
@@ -1162,7 +1192,7 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
         logger.info("Route decision: finalize (max_iterations reached)")
         return Command(goto="finalize")
 
-    if conf is not None and conf >= threshold and n_contrad == 0 and n_unver == 0:
+    if conf is not None and conf >= threshold and n_contrad == 0 and n_unver == 0 and not sigma_router_qs:
         logger.info(
             "Route decision: stop confidence=%s contradicted=0 unverifiable=0",
             f"{conf:.2f}",
@@ -1174,6 +1204,9 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
         qs.append(f"Resolve with primary sources: {c}")
     for u in unver:
         qs.append(f"Cite or verify: {u}")
+    for sq in sigma_router_qs:
+        if sq not in qs:
+            qs.append(sq)
 
     high_unver_fanout = (
         n_contrad == 0
@@ -1737,7 +1770,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     ej_s,
                     dv_s,
                     sess,
-                    "missing_literals",
+                    str(check.get("reason") or "missing_literals"),
                 )
             elif passed:
                 logger.info(

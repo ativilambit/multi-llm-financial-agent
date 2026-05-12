@@ -24,6 +24,7 @@ from equity_analyst.iterative import (
     render_per_provider_sigma_checks_markdown,
     round_summary_for_changelog,
     sigma_band_sqrt_ratio_followups,
+    sigma_missing_literal_router_followups,
     verify_iv_crush_daily_vol_followups,
     verify_variance_additive_sigma_band_sessions,
 )
@@ -36,6 +37,20 @@ from equity_analyst.types import ProviderResponse, ProviderUsage
 from tests.test_providers import _FakeOpenAIClient
 
 _FANOUT_CALL_COUNTS: defaultdict[str, int] = defaultdict(int)
+
+
+def _fanout_sigma_literal_pass_suffix() -> str:
+    """Minimal variance-clean literals + dated 3-sigma rows for integration fan-out stubs."""
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    return (
+        "event_jump=6% daily_vol=8%\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
 
 
 def test_build_initial_refinement_state_sets_fan_out_retry_attempts() -> None:
@@ -75,6 +90,12 @@ def test_verifier_instruction_section8_citation_heuristic() -> None:
     assert "section 8" in VERIFIER_INSTRUCTION_PREFIX
     assert "800" in VERIFIER_INSTRUCTION_PREFIX
     assert "Source:" in VERIFIER_INSTRUCTION_PREFIX
+
+
+def test_verifier_instruction_mandatory_sigma_literals() -> None:
+    assert "machine-parseable" in VERIFIER_INSTRUCTION_PREFIX
+    assert "event_jump=" in VERIFIER_INSTRUCTION_PREFIX
+    assert "daily_vol=" in VERIFIER_INSTRUCTION_PREFIX
 
 
 def test_sigma_band_sqrt_ratio_followups_flags_may13_to_may19_example() -> None:
@@ -171,6 +192,89 @@ def test_per_provider_sigma_variance_check_handles_missing_literals() -> None:
     assert result["event_jump"] is None
     assert result["daily_vol"] is None
     assert result["sessions"] == 0
+    assert result["reason"] == "missing_literals"
+
+
+def test_per_provider_sigma_check_extracts_with_colon_separator() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    provider_text = (
+        "event_jump: 6% daily_vol: 8%/day\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    result = per_provider_sigma_variance_check(provider_text)
+    assert result["applicable"] is True
+    assert result["passed"] is True
+    assert result["event_jump"] == 6.0
+    assert result["daily_vol"] == 8.0
+
+
+def test_per_provider_sigma_check_extracts_with_latex_escape() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    provider_text = (
+        r"event\_jump = 6\% daily\_vol = 8\%/day" + "\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    result = per_provider_sigma_variance_check(provider_text)
+    assert result["applicable"] is True
+    assert result["passed"] is True
+    assert result["event_jump"] == 6.0
+    assert result["daily_vol"] == 8.0
+
+
+def test_per_provider_sigma_check_extracts_with_whitespace_around_equals() -> None:
+    sg = chr(0x03C3)
+    pm = chr(0x00B1)
+    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    provider_text = (
+        "event_jump = 6% daily_vol = 8%\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
+    )
+    result = per_provider_sigma_variance_check(provider_text)
+    assert result["applicable"] is True
+    assert result["passed"] is True
+    assert result["event_jump"] == 6.0
+    assert result["daily_vol"] == 8.0
+
+
+def test_sigma_missing_literal_router_followups_requires_two_providers() -> None:
+    one = [
+        {"provider": "openai", "applicable": True, "reason": ""},
+        {"provider": "anthropic", "applicable": False, "reason": "missing_literals"},
+    ]
+    assert sigma_missing_literal_router_followups(one) == []
+    two = [
+        {"provider": "anthropic", "applicable": False, "reason": "missing_literals"},
+        {"provider": "gemini", "applicable": False, "reason": "missing_literals"},
+    ]
+    qs = sigma_missing_literal_router_followups(two)
+    assert len(qs) == 2
+    assert "Provider anthropic" in qs[0]
+    assert "Provider gemini" in qs[1]
+
+
+def test_per_provider_sigma_check_flags_missing_literals_as_unverifiable() -> None:
+    """Router follow-ups when multiple providers omit parseable sigma literals."""
+    checks = [
+        {"provider": "anthropic", "applicable": False, "reason": "missing_literals"},
+        {"provider": "openai", "applicable": True, "passed": True, "reason": ""},
+        {"provider": "gemini", "applicable": False, "reason": "missing_literals"},
+    ]
+    qs = sigma_missing_literal_router_followups(checks)
+    assert len(qs) == 2
+    assert all("mandatory event_jump=" in q for q in qs)
 
 
 def test_render_per_provider_sigma_checks_markdown_three_providers() -> None:
@@ -205,7 +309,7 @@ def test_render_per_provider_sigma_checks_markdown_three_providers() -> None:
             "event_jump": None,
             "daily_vol": None,
             "sessions": 0,
-            "reason": "missing event_jump= / daily_vol= literals",
+            "reason": "missing_literals",
             "followups": [],
         },
     ]
@@ -1024,6 +1128,24 @@ def test_compute_refinement_route_stop_clean_verification() -> None:
     assert cmd.goto == "finalize"
 
 
+def test_compute_refinement_route_sigma_missing_literals_prevents_early_finalize() -> None:
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.92\n",
+        verification={"contradicted": [], "unverifiable": []},
+    )
+    st["per_provider_sigma_checks"] = [
+        {"provider": "anthropic", "applicable": False, "reason": "missing_literals"},
+        {"provider": "openai", "applicable": True, "passed": True, "reason": ""},
+        {"provider": "gemini", "applicable": False, "reason": "missing_literals"},
+    ]
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "fan_out"
+    upd = cmd.update or {}
+    lrq = upd.get("last_route_followup_questions") or []
+    assert any("Provider anthropic" in str(x) for x in lrq)
+    assert any("Provider gemini" in str(x) for x in lrq)
+
+
 class _CountingFan(LLMProvider):
     def __init__(self, name: str) -> None:
         self.name = name
@@ -1040,7 +1162,7 @@ class _CountingFan(LLMProvider):
         return ProviderResponse(
             provider_name=self.name,
             model="m",
-            text=f"fan-{self.name}\n",
+            text=f"fan-{self.name}\n{_fanout_sigma_literal_pass_suffix()}",
             usage=ProviderUsage(),
             raw=None,
         )
@@ -1066,7 +1188,7 @@ class _CountingFanDistinct(LLMProvider):
         return ProviderResponse(
             provider_name=self.name,
             model="m",
-            text=f"fan-{self.name}-call-{self.calls}\n",
+            text=f"fan-{self.name}-call-{self.calls}\n{_fanout_sigma_literal_pass_suffix()}",
             usage=ProviderUsage(),
             raw=None,
         )

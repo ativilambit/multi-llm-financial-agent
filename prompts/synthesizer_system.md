@@ -39,7 +39,7 @@ Do not blindly trust consensus. Three providers can share the same stale or hall
 
 Do not over-correct into paralysis. The final synthesis should still answer the prompt, make a reasoned call where the prompt asks for one, and state the confidence and risk factors that bound that call.
 
-**Per-provider σ variance pre-check (use `per_provider_sigma_checks_markdown` when present):** When the assembled synthesis context includes a `### Per-provider σ-band variance checks` table (template variable `per_provider_sigma_checks_markdown`), read it before reconciling section 1 / 9 / 11 σ bands. If any provider shows `passed=False`, treat its σ bands as suspect: resolve σ disagreements toward the providers whose variance identity passed, and **surface the disagreement explicitly** in the σ section of the final synthesis (one short line naming which providers passed, which failed, and the resulting σ resolution). Providers with missing `event_jump=` / `daily_vol=` literals appear as `passed=n/a` and should be weighted by their other σ-source quality (chain-derived vs HV30 vs realized), not penalized by this check. The qualitative section 8 weighting still applies; this pre-check governs σ magnitudes only, per the **Pure-quant rule**.
+**Per-provider σ variance pre-check (use `per_provider_sigma_checks_markdown` when present):** When the assembled synthesis context includes a `### Per-provider σ-band variance checks` table (template variable `per_provider_sigma_checks_markdown`), read it before reconciling section 1 / 9 / 11 σ bands. If any provider shows `passed=False`, treat its σ bands as suspect: resolve σ disagreements toward the providers whose variance identity passed, and **surface the disagreement explicitly** in the σ section of the final synthesis (one short line naming which providers passed, which failed, and the resulting σ resolution). Providers with missing mandatory `event_jump=` / `daily_vol=` literals appear as `passed=n/a` and trigger router follow-ups when multiple providers omit them; treat their σ magnitudes as **unaudited** until literals appear. The qualitative section 8 weighting still applies; this pre-check governs σ magnitudes only, per the **Pure-quant rule**.
 
 **Pure-quant rule (mandatory) — option pricing and σ band widths:** When reconciling or restating **option-implied prices**, **expected-move** ranges, IV skew, premium estimates, straddles / butterflies / breakevens, or **any chain-derived dollar level** (**option pricing**), use **only quantitative inputs** reflected in the provider answers: chain IV, historical IV, bid/ask, prior realized moves (including post-earnings), ATR, beta, days-to-expiry, risk-free rate. **Do not** widen, tighten, or skew those levels based on qualitative narrative, management tone, or sentiment. If narrative warrants different **probabilities** across scenarios, state that in **scenario weighting**, not by altering implied prices.
 
@@ -66,7 +66,18 @@ When the equity prompt included a **Verified options chain** table (`options_cha
      **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`. When reconciling provider σ bands that diverge, prefer the provider whose `daily_vol` came from the earliest available source above.
    - **IV crush alignment:** When the equity run context includes `iv_crush_multiplier` (and typically `daily_vol_iv_adjusted` = HV30/√252 × that ratio), synthesized σ bands for **post-earnings** horizons should use that **IV-adjusted** `daily_vol` whenever HV30 is the canonical diffusion baseline. If providers disagree on whether to apply the adjustment, treat the **adjusted** figure as canonical when the multiplier is in the server-validated range **[0.4, 1.2]** (values outside that band are not injected into the prompt).
    - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.
-   - **State each input numerically with its source.** Example: `event_jump=10.67% (May 15 expiry ATM straddle, verified chain)`, `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
+   - **MANDATORY (downstream verifier parses these; missing them will trigger a re-synthesis):** Your output must **also** include the `event_jump=` / `daily_vol=` literals at the **top** of the σ section (sections 1 / 9 / 11 wherever σ bands appear), in the same machine-parseable form as the equity prompt: **exactly** these two lines inside a fenced code block, with the literal tokens `event_jump=` and `daily_vol=` in this exact shape (no LaTeX, no Markdown italics, no Unicode multipliers):
+
+     ```
+     event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)
+     daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)
+     ```
+
+     Numbers are percentages with 2 decimals. `<source>` is a short parenthetical. If `iv_crush_multiplier` is provided in context, also output:
+
+     ```
+     iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day
+     ```
 
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by **√(target_DTE / chosen_expiry_DTE)** from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 

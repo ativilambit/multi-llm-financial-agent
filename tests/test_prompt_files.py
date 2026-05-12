@@ -130,6 +130,48 @@ def test_equity_analyst_template_canonical_daily_vol_source_order() -> None:
     assert "daily_vol=3.15%/day (HV30 50.0% ann / \N{SQUARE ROOT}252)" in j2
 
 
+def test_mandatory_sigma_literal_format_block_in_equity_j2_and_synthesizer_md() -> None:
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    sg = chr(0x03C3)
+    mandatory_equity = (
+        "**MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** "
+        f"Before showing any {sg} bands, output **exactly** these two lines in a fenced code block (any backticks), "
+        "with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, "
+        "no Unicode multipliers):"
+    )
+    assert mandatory_equity in j2
+    assert (
+        "event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)"
+        in j2
+    )
+    assert (
+        "daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)" in j2
+    )
+    assert (
+        "iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day" in j2
+    )
+    mandatory_synth = (
+        "**MANDATORY (downstream verifier parses these; missing them will trigger a re-synthesis):** "
+        "Your output must **also** include the `event_jump=` / `daily_vol=` literals at the **top** of the "
+        f"{sg} section "
+        f"(sections 1 / 9 / 11 wherever {sg} bands appear), in the same machine-parseable form as the equity prompt: "
+        "**exactly** these two lines inside a fenced code block, with the literal tokens `event_jump=` and "
+        "`daily_vol=` in this exact shape (no LaTeX, no Markdown italics, no Unicode multipliers):"
+    )
+    assert mandatory_synth in synth
+    assert (
+        "event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)"
+        in synth
+    )
+    assert (
+        "daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)" in synth
+    )
+    assert (
+        "iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day" in synth
+    )
+
+
 def test_synthesizer_system_prompt_includes_per_provider_sigma_checks_paragraph() -> None:
     sigma = "\N{GREEK SMALL LETTER SIGMA}"
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
