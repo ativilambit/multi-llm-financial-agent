@@ -11,6 +11,7 @@ from typing import Any
 from equity_analyst.config import RunConfig
 from equity_analyst.db_ops import best_effort_replace_predictions as db_replace_predictions
 from equity_analyst.outcome_tracker import _pick_synthesis_path
+from equity_analyst.prompt_export import logical_prompt_split, prompt_call_context
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse
@@ -299,11 +300,12 @@ async def _invoke_prediction_extract_llm(
     timeout_s = float(config.prediction_extract_timeout_s)
 
     async def _call() -> ProviderResponse:
-        return await provider.generate(
-            prompt,
-            enable_web_search=False,
-            max_output_tokens=int(config.prediction_extract_max_output_tokens),
-        )
+        with prompt_call_context(node="prediction_extract"), logical_prompt_split(system, user_message):
+            return await provider.generate(
+                prompt,
+                enable_web_search=False,
+                max_output_tokens=int(config.prediction_extract_max_output_tokens),
+            )
 
     return await asyncio.wait_for(_call(), timeout=timeout_s)
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from equity_analyst.prompt_export import maybe_export_prompt
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.providers.openai_provider import _serialize_responses_request_body_for_debug
 from equity_analyst.types import ProviderResponse, ProviderUsage
@@ -82,6 +83,18 @@ class GrokProvider(LLMProvider):
                 body_hash,
                 len(body_str),
             )
+        await maybe_export_prompt(
+            provider=self.name,
+            model=self._model,
+            system="",
+            user=prompt,
+            config={
+                "model": self._model,
+                "max_output_tokens": max_output_tokens,
+                "web_search": enable_web_search,
+                "stream": False,
+            },
+        )
         logger.info("Calling provider %s", self.name)
         resp = await self._client.responses.create(**create_kwargs)
 

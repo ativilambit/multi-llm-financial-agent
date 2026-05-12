@@ -47,6 +47,7 @@ Copy `.env.example` to `.env` and set keys for the providers you enable in confi
 The Postgres DB layer is **additive**: it stores structured metadata for querying/calibration, but it **does not replace** file artifacts. The human-readable source of truth remains:
 
 - `outputs/<run-id>/run.json`
+- `outputs/<run-id>/prompts/` — per-LLM-call exports of the rendered system/user text, model caps, tool flags, and (for analyst fan-out) a JSON sidecar of the Jinja render context; see `prompts_index.md` inside that folder. Disable with **`EXPORT_PROMPTS=0`** if you want smaller run directories.
 - `outputs/<run-id>/synthesis.md` (and optional PDFs)
 - `outputs/<run-id>/outcome.json`
 - `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down or `db_enabled` is false; see prediction extraction below)

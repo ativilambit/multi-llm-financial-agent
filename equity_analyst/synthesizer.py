@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from equity_analyst.prompt_export import logical_prompt_split
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.provider_runtime import partition_provider_responses
 from equity_analyst.provider_summarize import maybe_summarize_healthy_for_synthesis
@@ -289,19 +290,26 @@ class Synthesizer:
             enable_web_search,
         )
 
+        syn_sys = _load_prompt_file("synthesizer_system.md")
+        syn_sep = syn_sys + "\n\n"
+        syn_user_only = (
+            synthesis_prompt[len(syn_sep) :] if synthesis_prompt.startswith(syn_sep) else synthesis_prompt
+        )
+
         async def _call() -> ProviderResponse:
-            if isinstance(self._provider, AnthropicProvider):
+            with logical_prompt_split(syn_sys, syn_user_only):
+                if isinstance(self._provider, AnthropicProvider):
+                    return await self._provider.generate(
+                        synthesis_prompt,
+                        enable_web_search=enable_web_search,
+                        max_output_tokens=max_output_tokens,
+                        force_tool_use=anthropic_force_tool_use,
+                    )
                 return await self._provider.generate(
                     synthesis_prompt,
                     enable_web_search=enable_web_search,
                     max_output_tokens=max_output_tokens,
-                    force_tool_use=anthropic_force_tool_use,
                 )
-            return await self._provider.generate(
-                synthesis_prompt,
-                enable_web_search=enable_web_search,
-                max_output_tokens=max_output_tokens,
-            )
 
         resp = await async_retry_call(
             _call,

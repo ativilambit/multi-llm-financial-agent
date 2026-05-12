@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import anthropic
 
+from equity_analyst.prompt_export import maybe_export_prompt
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, ephemeral_cache_control
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
@@ -88,6 +89,21 @@ class AnthropicProvider(LLMProvider):
             max_tokens,
             prompt_cache_enabled,
             use_cache_breakpoints,
+        )
+        exp_sys = EQUITY_ANALYST_SYSTEM_PROMPT if use_cache_breakpoints and user_turn is not None else ""
+        exp_user = user_turn if use_cache_breakpoints and user_turn is not None else prompt
+        await maybe_export_prompt(
+            provider=self.name,
+            model=self._model,
+            system=exp_sys,
+            user=exp_user,
+            config={
+                "model": self._model,
+                "max_output_tokens": max_tokens,
+                "web_search": enable_web_search,
+                "prompt_cache_breakpoints": use_cache_breakpoints,
+                "tool_choice": "any" if (enable_web_search and force_tool_use) else None,
+            },
         )
         logger.info("Calling provider %s", self.name)
         # Anthropic requires streaming for requests that may exceed ~10 minutes (e.g. web_search).

@@ -32,6 +32,7 @@ from equity_analyst.outcome_tracker import (
     record_outcome_for_run_dir,
 )
 from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
+from equity_analyst.prompt_export import use_prompt_exporter
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
 
@@ -646,14 +647,15 @@ async def _run_iterative_cli(
     async with AsyncSqliteSaver.from_conn_string(str(ckpt)) as saver:
         app = compile_refinement_workflow(registry=reg, checkpointer=saver)
         config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
-        if resume:
-            final_state = await app.ainvoke(None, config=config)
-        else:
-            st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out_dir)
-            st["max_iterations"] = args.max_iterations
-            st["confidence_threshold"] = args.confidence_threshold
-            st["enable_web_search"] = args.enable_web_search
-            final_state = await app.ainvoke(st, config=config)
+        with use_prompt_exporter(out_dir):
+            if resume:
+                final_state = await app.ainvoke(None, config=config)
+            else:
+                st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out_dir)
+                st["max_iterations"] = args.max_iterations
+                st["confidence_threshold"] = args.confidence_threshold
+                st["enable_web_search"] = args.enable_web_search
+                final_state = await app.ainvoke(st, config=config)
     logger.info("Iterative run finished output_dir=%s", str(out_dir.resolve()))
     return str(final_state.get("final_report", "")), out_dir, final_state
 

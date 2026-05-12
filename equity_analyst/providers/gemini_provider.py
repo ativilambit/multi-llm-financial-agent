@@ -14,6 +14,8 @@ from equity_analyst.gemini_cache import (
     gemini_cache_tools_signature,
     prefix_sha256,
 )
+from equity_analyst.prompt_export import maybe_export_prompt
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -293,6 +295,34 @@ class GeminiProvider(LLMProvider):
                 len(contents),
                 tb,
                 attempt_i,
+            )
+            if uses_explicit_cache and user_turn is not None and cacheable_prefix is not None:
+                exp_sys = cacheable_prefix
+                exp_user = user_turn
+            else:
+                sep = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n"
+                if prompt.startswith(sep):
+                    exp_sys = EQUITY_ANALYST_SYSTEM_PROMPT
+                    exp_user = prompt[len(sep) :]
+                else:
+                    exp_sys = ""
+                    exp_user = contents
+            exp_cfg: dict[str, Any] = {
+                "model": self._model,
+                "max_output_tokens": max_output_tokens,
+                "thinking_budget": tb,
+                "web_search": enable_web_search,
+                "explicit_content_cache": uses_explicit_cache,
+                "thinking_attempt_index": attempt_i,
+            }
+            if trial_cfg.get("cached_content") is not None:
+                exp_cfg["cached_content"] = str(trial_cfg.get("cached_content"))
+            await maybe_export_prompt(
+                provider=self.name,
+                model=self._model,
+                system=exp_sys,
+                user=exp_user,
+                config=exp_cfg,
             )
             logger.info("Calling provider %s", self.name)
             try:

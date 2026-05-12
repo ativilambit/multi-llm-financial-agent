@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from equity_analyst.config import RunConfig
+from equity_analyst.prompt_export import logical_prompt_split, prompt_call_context
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.synthesizer import detect_max_tokens_truncation
@@ -371,11 +372,12 @@ async def extract_facts_packet(*, synthesis_text: str, symbol: str, config: RunC
     max_out = int(config.facts_packet_max_output_tokens)
 
     async def _call(max_tokens: int) -> ProviderResponse:
-        return await provider.generate(
-            prompt,
-            enable_web_search=False,
-            max_output_tokens=max_tokens,
-        )
+        with prompt_call_context(node="facts_extract", iteration=1), logical_prompt_split(system, user):
+            return await provider.generate(
+                prompt,
+                enable_web_search=False,
+                max_output_tokens=max_tokens,
+            )
 
     try:
         resp = await asyncio.wait_for(_call(max_out), timeout=timeout_s)

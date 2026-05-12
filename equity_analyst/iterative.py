@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import logging
 import math
@@ -30,6 +31,7 @@ from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.options_chain import options_chain_expiry_audit_messages
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
+from equity_analyst.prompt_export import prompt_call_context
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
 from equity_analyst.provider_runtime import (
@@ -835,6 +837,7 @@ class RefinementState(TypedDict, total=False):
     last_route_followup_questions: NotRequired[list[str]]
     options_chain_data: NotRequired[dict[str, Any]]
     final_report_full_synthesis: NotRequired[bool]
+    equity_prompt_render_context: NotRequired[dict[str, Any]]
 
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
@@ -1261,142 +1264,145 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             str(out.resolve()),
         )
 
-        pcs_raw = state.get("provider_configs")
-        if not pcs_raw:
-            pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
-        pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
-        cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
-        cfg_mot = int(state.get("max_output_tokens", 16_000))
-        retry_max = int(state.get("retry_max_attempts", 3))
-        retry_base = float(state.get("retry_base_delay_s", 2.0))
-        gemini_cache_index: GeminiCacheIndex | None = (
-            GeminiCacheIndex() if state.get("prompt_cache_enabled", True) else None
-        )
-        gemini_ttl = int(state.get("gemini_cache_ttl_s", 3600))
-
-        async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
-            start = time.perf_counter()
-            while True:
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=30.0)
-                    return
-                except TimeoutError:
-                    logger.info(
-                        "Still waiting on providers=%s (%ss elapsed)",
-                        provider_names,
-                        int(time.perf_counter() - start),
-                    )
-
-        async def _run_one(pc: ProviderConfig, prompt_body: str) -> ProviderResponse:
-            t0 = time.perf_counter()
-            p = registry.create(
-                pc.name,
-                model=pc.model,
-                gemini_cache_index=gemini_cache_index,
-                gemini_cache_ttl_s=gemini_ttl,
+        fan_ctx_raw = state.get("equity_prompt_render_context")
+        fan_ctx = fan_ctx_raw if isinstance(fan_ctx_raw, dict) else None
+        with prompt_call_context(node="fan_out", iteration=it_no, analyst_render_context=fan_ctx):
+            pcs_raw = state.get("provider_configs")
+            if not pcs_raw:
+                pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
+            pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
+            cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
+            cfg_mot = int(state.get("max_output_tokens", 16_000))
+            retry_max = int(state.get("retry_max_attempts", 3))
+            retry_base = float(state.get("retry_base_delay_s", 2.0))
+            gemini_cache_index: GeminiCacheIndex | None = (
+                GeminiCacheIndex() if state.get("prompt_cache_enabled", True) else None
             )
-            ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
-            to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+            gemini_ttl = int(state.get("gemini_cache_ttl_s", 3600))
 
-            async def _attempt() -> ProviderResponse:
-                mot = fan_out_max_output_tokens(pc, cfg_mot)
-                pce = bool(state.get("prompt_cache_enabled", True))
-                if isinstance(p, AnthropicProvider):
-                    static = EQUITY_ANALYST_SYSTEM_PROMPT
-                    sep = f"{static}\n\n"
-                    user_only = prompt_body[len(sep) :] if prompt_body.startswith(sep) else prompt_body
-                    return await p.generate(
-                        prompt_body,
-                        enable_web_search=ws,
-                        max_output_tokens=mot,
-                        prompt_cache_enabled=pce,
-                        user_message_for_cache=user_only,
-                        force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
+            async def _heartbeat(stop: asyncio.Event, provider_names: list[str]) -> None:
+                start = time.perf_counter()
+                while True:
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=30.0)
+                        return
+                    except TimeoutError:
+                        logger.info(
+                            "Still waiting on providers=%s (%ss elapsed)",
+                            provider_names,
+                            int(time.perf_counter() - start),
+                        )
+
+            async def _run_one(pc: ProviderConfig, prompt_body: str) -> ProviderResponse:
+                t0 = time.perf_counter()
+                p = registry.create(
+                    pc.name,
+                    model=pc.model,
+                    gemini_cache_index=gemini_cache_index,
+                    gemini_cache_ttl_s=gemini_ttl,
+                )
+                ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
+                to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+
+                async def _attempt() -> ProviderResponse:
+                    mot = fan_out_max_output_tokens(pc, cfg_mot)
+                    pce = bool(state.get("prompt_cache_enabled", True))
+                    if isinstance(p, AnthropicProvider):
+                        static = EQUITY_ANALYST_SYSTEM_PROMPT
+                        sep = f"{static}\n\n"
+                        user_only = prompt_body[len(sep) :] if prompt_body.startswith(sep) else prompt_body
+                        return await p.generate(
+                            prompt_body,
+                            enable_web_search=ws,
+                            max_output_tokens=mot,
+                            prompt_cache_enabled=pce,
+                            user_message_for_cache=user_only,
+                            force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
+                        )
+                    if isinstance(p, GeminiProvider) and pce and gemini_cache_index is not None:
+                        static = EQUITY_ANALYST_SYSTEM_PROMPT
+                        sep = f"{static}\n\n"
+                        if prompt_body.startswith(sep):
+                            return await p.generate(
+                                prompt_body,
+                                enable_web_search=ws,
+                                max_output_tokens=mot,
+                                cacheable_prefix=static,
+                                user_message_for_cache=prompt_body[len(sep) :],
+                            )
+                    if isinstance(p, OpenAIProvider):
+                        static = EQUITY_ANALYST_SYSTEM_PROMPT
+                        sep = f"{static}\n\n"
+                        if prompt_body.startswith(sep):
+                            return await p.generate(
+                                prompt_body,
+                                enable_web_search=ws,
+                                max_output_tokens=mot,
+                                cacheable_prefix=static,
+                                user_message_for_cache=prompt_body[len(sep) :],
+                            )
+                    return await p.generate(prompt_body, enable_web_search=ws, max_output_tokens=mot)
+
+                try:
+                    return await asyncio.wait_for(
+                        async_retry_call(
+                            _attempt,
+                            provider=pc.name,
+                            max_attempts=retry_max,
+                            base_delay_s=retry_base,
+                        ),
+                        timeout=to,
                     )
-                if isinstance(p, GeminiProvider) and pce and gemini_cache_index is not None:
-                    static = EQUITY_ANALYST_SYSTEM_PROMPT
-                    sep = f"{static}\n\n"
-                    if prompt_body.startswith(sep):
-                        return await p.generate(
-                            prompt_body,
-                            enable_web_search=ws,
-                            max_output_tokens=mot,
-                            cacheable_prefix=static,
-                            user_message_for_cache=prompt_body[len(sep) :],
-                        )
-                if isinstance(p, OpenAIProvider):
-                    static = EQUITY_ANALYST_SYSTEM_PROMPT
-                    sep = f"{static}\n\n"
-                    if prompt_body.startswith(sep):
-                        return await p.generate(
-                            prompt_body,
-                            enable_web_search=ws,
-                            max_output_tokens=mot,
-                            cacheable_prefix=static,
-                            user_message_for_cache=prompt_body[len(sep) :],
-                        )
-                return await p.generate(prompt_body, enable_web_search=ws, max_output_tokens=mot)
+                except asyncio.CancelledError:
+                    raise
+                except TimeoutError as exc:
+                    return failure_response_from_completed(pc.name, exc, started_perf=t0)
 
-            try:
-                return await asyncio.wait_for(
-                    async_retry_call(
-                        _attempt,
-                        provider=pc.name,
-                        max_attempts=retry_max,
-                        base_delay_s=retry_base,
-                    ),
-                    timeout=to,
-                )
-            except asyncio.CancelledError:
-                raise
-            except TimeoutError as exc:
-                return failure_response_from_completed(pc.name, exc, started_perf=t0)
+            parallel_wall = 0.0
+            responses: dict[str, ProviderResponse] = {}
 
-        parallel_wall = 0.0
-        responses: dict[str, ProviderResponse] = {}
-
-        if skip_fanout:
-            prev = state["provider_responses"][-1]["responses"]
-            responses = {k: _dict_to_response(v) for k, v in prev.items()}
-        else:
-            to_run = pcs if not partial_fanout else [pc for pc in pcs if pc.name in refan_set]
-            if partial_fanout and not to_run:
-                logger.warning(
-                    "refan_out_providers produced an empty runnable set; falling back to full fan-out",
-                )
-                to_run = pcs
-                partial_fanout = False
-            stop_hb = asyncio.Event()
-            hb = asyncio.create_task(_heartbeat(stop_hb, [pc.name for pc in to_run]))
-            batch_t0 = time.perf_counter()
-            try:
-                res_list = await asyncio.gather(
-                    *[_run_one(pc, body) for pc in to_run],
-                    return_exceptions=True,
-                )
-            finally:
-                stop_hb.set()
-                hb.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await hb
-            parallel_wall = time.perf_counter() - batch_t0
-            ran: dict[str, ProviderResponse] = {}
-            for pc, item in zip(to_run, res_list, strict=True):
-                if isinstance(item, ProviderResponse):
-                    ran[pc.name] = item
-                elif isinstance(item, Exception):
-                    ran[pc.name] = failure_response(pc.name, item, latency_s=None)
-                else:
-                    raise item
-            if partial_fanout:
+            if skip_fanout:
                 prev = state["provider_responses"][-1]["responses"]
-                for pc in pcs:
-                    if pc.name in refan_set:
-                        responses[pc.name] = ran[pc.name]
-                    else:
-                        responses[pc.name] = _dict_to_response(prev[pc.name])
+                responses = {k: _dict_to_response(v) for k, v in prev.items()}
             else:
-                responses = ran
+                to_run = pcs if not partial_fanout else [pc for pc in pcs if pc.name in refan_set]
+                if partial_fanout and not to_run:
+                    logger.warning(
+                        "refan_out_providers produced an empty runnable set; falling back to full fan-out",
+                    )
+                    to_run = pcs
+                    partial_fanout = False
+                stop_hb = asyncio.Event()
+                hb = asyncio.create_task(_heartbeat(stop_hb, [pc.name for pc in to_run]))
+                batch_t0 = time.perf_counter()
+                try:
+                    res_list = await asyncio.gather(
+                        *[_run_one(pc, body) for pc in to_run],
+                        return_exceptions=True,
+                    )
+                finally:
+                    stop_hb.set()
+                    hb.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await hb
+                parallel_wall = time.perf_counter() - batch_t0
+                ran: dict[str, ProviderResponse] = {}
+                for pc, item in zip(to_run, res_list, strict=True):
+                    if isinstance(item, ProviderResponse):
+                        ran[pc.name] = item
+                    elif isinstance(item, Exception):
+                        ran[pc.name] = failure_response(pc.name, item, latency_s=None)
+                    else:
+                        raise item
+                if partial_fanout:
+                    prev = state["provider_responses"][-1]["responses"]
+                    for pc in pcs:
+                        if pc.name in refan_set:
+                            responses[pc.name] = ran[pc.name]
+                        else:
+                            responses[pc.name] = _dict_to_response(prev[pc.name])
+                else:
+                    responses = ran
 
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
@@ -1460,39 +1466,40 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         err_ev: list[dict[str, Any]] = []
         refinement = _build_synthesis_refinement_markdown(state) if round_idx >= 1 else None
         try:
-            result = await asyncio.wait_for(
-                syn.synthesize(
-                    original_prompt=state["original_prompt"],
-                    responses=resp_map,
-                    enable_web_search=syn_ws,
-                    max_output_tokens=synth_mot,
-                    synthesizer_max_input_tokens=syn_max_in,
-                    retry_max_attempts=retry_max,
-                    retry_base_delay_s=retry_base,
-                    anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
-                    symbol=state.get("symbol"),
-                    summarize_oversized_providers=bool(state.get("summarize_oversized_providers", True)),
-                    summarize_threshold_input_tokens=int(
-                        state.get("summarize_threshold_input_tokens", 8000),
+            with prompt_call_context(node="synthesize", iteration=it_no):
+                result = await asyncio.wait_for(
+                    syn.synthesize(
+                        original_prompt=state["original_prompt"],
+                        responses=resp_map,
+                        enable_web_search=syn_ws,
+                        max_output_tokens=synth_mot,
+                        synthesizer_max_input_tokens=syn_max_in,
+                        retry_max_attempts=retry_max,
+                        retry_base_delay_s=retry_base,
+                        anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
+                        symbol=state.get("symbol"),
+                        summarize_oversized_providers=bool(state.get("summarize_oversized_providers", True)),
+                        summarize_threshold_input_tokens=int(
+                            state.get("summarize_threshold_input_tokens", 8000),
+                        ),
+                        oversized_summarize_provider=str(state.get("oversized_summarize_provider", "gemini")),
+                        oversized_summarize_model=str(
+                            state.get("oversized_summarize_model", "gemini-3-flash-preview"),
+                        ),
+                        oversized_summarize_max_output_tokens=int(
+                            state.get("oversized_summarize_max_output_tokens", 8192),
+                        ),
+                        oversized_summarize_max_input_tokens=int(
+                            state.get("oversized_summarize_max_input_tokens", 100_000),
+                        ),
+                        oversized_summarize_min_retention=float(
+                            state.get("oversized_summarize_min_retention", 0.40),
+                        ),
+                        oversized_summarize_fallback_provider=summarize_fallback_llm,
+                        refinement_markdown=refinement,
                     ),
-                    oversized_summarize_provider=str(state.get("oversized_summarize_provider", "gemini")),
-                    oversized_summarize_model=str(
-                        state.get("oversized_summarize_model", "gemini-3-flash-preview"),
-                    ),
-                    oversized_summarize_max_output_tokens=int(
-                        state.get("oversized_summarize_max_output_tokens", 8192),
-                    ),
-                    oversized_summarize_max_input_tokens=int(
-                        state.get("oversized_summarize_max_input_tokens", 100_000),
-                    ),
-                    oversized_summarize_min_retention=float(
-                        state.get("oversized_summarize_min_retention", 0.40),
-                    ),
-                    oversized_summarize_fallback_provider=summarize_fallback_llm,
-                    refinement_markdown=refinement,
-                ),
-                timeout=timeout_syn,
-            )
+                    timeout=timeout_syn,
+                )
         except asyncio.CancelledError:
             raise
         except TimeoutError as exc:
@@ -1640,15 +1647,16 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             )
 
         try:
-            resp = await asyncio.wait_for(
-                async_retry_call(
-                    _v_attempt,
-                    provider=state["verifier_name"],
-                    max_attempts=retry_max,
-                    base_delay_s=retry_base,
-                ),
-                timeout=timeout_v,
-            )
+            with prompt_call_context(node="verify", iteration=it_no):
+                resp = await asyncio.wait_for(
+                    async_retry_call(
+                        _v_attempt,
+                        provider=state["verifier_name"],
+                        max_attempts=retry_max,
+                        base_delay_s=retry_base,
+                    ),
+                    timeout=timeout_v,
+                )
         except asyncio.CancelledError:
             raise
         except TimeoutError as exc:
@@ -1910,6 +1918,7 @@ def build_initial_refinement_state(
         "refinement_mode_prompt_enabled": cfg.refinement_mode_prompt_enabled,
         "options_chain_data": rendered.context.get("options_chain_data") or {},
         "final_report_full_synthesis": cfg.final_report_full_synthesis,
+        "equity_prompt_render_context": copy.deepcopy(rendered.context),
     }
 
 

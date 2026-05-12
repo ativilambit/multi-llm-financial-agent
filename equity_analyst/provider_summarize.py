@@ -7,6 +7,12 @@ from dataclasses import replace
 from google import genai
 from google.genai import types
 
+from equity_analyst.prompt_export import (
+    current_prompt_call_meta,
+    logical_prompt_split,
+    maybe_export_prompt,
+    prompt_call_context,
+)
 from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.providers.gemini_provider import (
@@ -136,32 +142,48 @@ async def _generate_summary(
                     max_output_tokens=max_output_tokens,
                     thinking_config=types.ThinkingConfig(thinking_budget=tb),
                 )
-                try:
-                    msg = await c.aio.models.generate_content(
+                prev = current_prompt_call_meta()
+                prev_it = prev.iteration if prev is not None else None
+                with prompt_call_context(node="pre_synthesis_summarize", iteration=prev_it):
+                    await maybe_export_prompt(
+                        provider="gemini_sdk",
                         model=model,
-                        contents=user_message,
-                        config=cfg,
+                        system=summarize_system_prompt(),
+                        user=user_message,
+                        config={
+                            "model": model,
+                            "max_output_tokens": max_output_tokens,
+                            "thinking_budget": tb,
+                            "web_search": False,
+                            "thinking_attempt_index": attempt_i,
+                        },
                     )
-                    if attempt_i > 0:
-                        logger.info(
-                            "gemini_summarizer: succeeded after thinking_budget retries model=%s final=%s",
-                            model,
-                            tb,
+                    try:
+                        msg = await c.aio.models.generate_content(
+                            model=model,
+                            contents=user_message,
+                            config=cfg,
                         )
-                    return (msg.text or "").strip()
-                except Exception as exc:
-                    last_failure = exc
-                    if (
-                        not gemini_thinking_budget_invalid_client_error(exc)
-                        or attempt_i == len(thinking_budgets) - 1
-                    ):
-                        raise
-                    logger.warning(
-                        "gemini_summarizer: thinking_budget=%s rejected; retrying model=%s detail=%s",
-                        tb,
-                        model,
-                        exc,
-                    )
+                        if attempt_i > 0:
+                            logger.info(
+                                "gemini_summarizer: succeeded after thinking_budget retries model=%s final=%s",
+                                model,
+                                tb,
+                            )
+                        return (msg.text or "").strip()
+                    except Exception as exc:
+                        last_failure = exc
+                        if (
+                            not gemini_thinking_budget_invalid_client_error(exc)
+                            or attempt_i == len(thinking_budgets) - 1
+                        ):
+                            raise
+                        logger.warning(
+                            "gemini_summarizer: thinking_budget=%s rejected; retrying model=%s detail=%s",
+                            tb,
+                            model,
+                            exc,
+                        )
             raise last_failure if last_failure is not None else RuntimeError("thinking budget loop empty")
 
         return await async_retry_call(
@@ -187,12 +209,17 @@ async def _generate_summary_via_llm_provider(
     prompt = f"{system}\n\n---\n\n{user_message}"
 
     async def _call() -> str:
-        resp = await provider.generate(
-            prompt,
-            enable_web_search=False,
-            max_output_tokens=max_output_tokens,
-        )
-        return (resp.text or "").strip()
+        prev = current_prompt_call_meta()
+        prev_it = prev.iteration if prev is not None else None
+        with prompt_call_context(node="pre_synthesis_summarize", iteration=prev_it), logical_prompt_split(
+            system, user_message
+        ):
+            resp = await provider.generate(
+                prompt,
+                enable_web_search=False,
+                max_output_tokens=max_output_tokens,
+            )
+            return (resp.text or "").strip()
 
     return await async_retry_call(
         _call,

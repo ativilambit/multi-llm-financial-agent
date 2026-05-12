@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from openai import AsyncOpenAI
 
+from equity_analyst.prompt_export import maybe_export_prompt
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -204,6 +205,30 @@ class OpenAIProvider(LLMProvider):
                 instr_stable,
                 len(body_str),
             )
+        exp_system = (instructions or "") if use_structured_cache_split else ""
+        exp_user = (
+            user_message_for_cache
+            if use_structured_cache_split and user_message_for_cache is not None
+            else (
+                input_payload
+                if isinstance(input_payload, str)
+                else json.dumps(input_payload, ensure_ascii=False)
+            )
+        )
+        await maybe_export_prompt(
+            provider=self.name,
+            model=self._model,
+            system=exp_system,
+            user=exp_user,
+            config={
+                "model": self._model,
+                "max_output_tokens": max_output_tokens,
+                "web_search": enable_web_search,
+                "stream": True,
+                "structured_prompt_cache_split": use_structured_cache_split,
+                "prompt_cache_key": EQUITY_FANOUT_PROMPT_CACHE_KEY if use_structured_cache_split else None,
+            },
+        )
         logger.info("Calling provider %s", self.name)
         stream = await self._client.responses.create(**create_kwargs)
         text, resp = await _consume_responses_stream(stream)

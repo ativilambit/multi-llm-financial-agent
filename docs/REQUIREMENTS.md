@@ -27,6 +27,7 @@ Run **parallel multi-provider** equity/options research for a single symbol ahea
 | Artifact | Typical path / notes |
 | --- | --- |
 | Per-provider markdown | `outputs/<RUN>/claude.md`, `openai.md`, `grok.md`, `gemini.md` |
+| LLM prompt exports | `outputs/<RUN>/prompts/` (`*.md` per call, optional `*.context.json` for fan-out Jinja context, `prompts_index.md` summary); omit by setting **`EXPORT_PROMPTS=0`** |
 | Synthesized analysis | `outputs/<RUN>/synthesis.md` (+ optional `.pdf` sibling) |
 | Verified JSON (iterative) | Embedded in round state; verifier output parsed in `iterative.py` |
 | Facts packet | `outputs/<RUN>/facts_packet.md` when facts extraction runs |
@@ -265,6 +266,8 @@ python -m equity_analyst run --config configs/<sym>_<date>.yaml --iterative --ma
 ```
 
 Use **`--log-level DEBUG`** for provider request shapes; **`--dry-run`** renders prompt without API calls (iterative dry-run does not create `outputs/` — see `README.md`).
+
+Live runs (default) also write **`outputs/<RUN>/prompts/`**: one Markdown file per LLM request (system + user body, metadata such as `max_output_tokens` / `thinking_budget` / web search flags, node name, iteration). Analyst fan-out includes a matching **`.context.json`** sidecar of the resolved Jinja context. Set **`EXPORT_PROMPTS=0`** to skip these files (older run trees do not have a `prompts/` folder).
 
 ### Batch: `scripts/run_all_symbols.sh`
 
