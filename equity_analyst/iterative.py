@@ -47,6 +47,7 @@ from equity_analyst.synthesizer import (
     SynthesisResult,
     Synthesizer,
     format_synthesis_artifact_markdown,
+    provider_finish_reason_label,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -450,8 +451,15 @@ def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) ->
     return result
 
 
-def parse_verifier_json(text: str) -> dict[str, Any]:
-    """Parse verifier model output into verified / contradicted / unverifiable lists (and optional notes)."""
+def parse_verifier_json(
+    text: str,
+    *,
+    provider_finish_reason: str | None = None,
+) -> dict[str, Any]:
+    """Parse verifier model output into verified / contradicted / unverifiable lists (and optional notes).
+
+    ``provider_finish_reason`` is logged when a truncated JSON repair path runs (debugging).
+    """
     raw = text
     candidates = _candidate_dicts_from_text(text)
     truncated = False
@@ -488,8 +496,13 @@ def parse_verifier_json(text: str) -> dict[str, Any]:
     assert best_data is not None
     result = _build_verification_result(best_data, truncated=truncated)
     if truncated:
+        raw_bytes = len(text.encode("utf-8"))
+        fr = provider_finish_reason if provider_finish_reason is not None else "n/a"
         logger.warning(
-            "verifier: response was truncated; salvaged %s verified, %s contradicted, %s unverifiable items",
+            "verifier: response was truncated; finish_reason=%s raw_bytes=%s salvaged "
+            "%s verified, %s contradicted, %s unverifiable items",
+            fr,
+            raw_bytes,
             len(result["verified"]),
             len(result["contradicted"]),
             len(result["unverifiable"]),
@@ -1158,7 +1171,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             gemini_cache_index=None,
             gemini_cache_ttl_s=gemini_ttl,
         )
-        vmt = int(state.get("verifier_max_output_tokens", 8192))
+        vmt = int(state.get("verifier_max_output_tokens", 16_384))
         timeout_v = float(state.get("request_timeout_s", 180.0))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
@@ -1176,11 +1189,15 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     force_tool_use=False,
                 )
             if isinstance(verifier, GeminiProvider):
+                # Gemini 3 shares max_output_tokens with internal "thinking"; disable so the
+                # budget applies to visible JSON. TODO: consider structured output
+                # (response_mime_type=application/json + response_schema) for stricter parsing.
                 return await verifier.generate(
                     prompt,
                     enable_web_search=state["enable_web_search"],
                     max_output_tokens=vmt,
                     cacheable_prefix=None,
+                    thinking_budget=0,
                 )
             return await verifier.generate(
                 prompt,
@@ -1228,7 +1245,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
         (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(resp.text, encoding="utf-8")
-        data = parse_verifier_json(resp.text)
+        data = parse_verifier_json(
+            resp.text,
+            provider_finish_reason=provider_finish_reason_label(resp.raw),
+        )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
         verify_path.write_text(verify_body, encoding="utf-8")

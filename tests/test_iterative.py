@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, ClassVar
@@ -604,6 +605,18 @@ def test_parse_verifier_json_repairs_minimal_truncation() -> None:
     assert out["verified"] == ["a", "b"]
     assert out["contradicted"] == []
     assert out["unverifiable"] == []
+
+
+def test_parse_verifier_json_truncation_warning_includes_finish_reason_and_raw_bytes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="equity_analyst.iterative")
+    truncated_in = '{"verified": ["a"],'
+    parse_verifier_json(truncated_in, provider_finish_reason="MAX_TOKENS")
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "finish_reason=MAX_TOKENS" in joined
+    assert "raw_bytes=" in joined
+    assert str(len(truncated_in.encode("utf-8"))) in joined
 
 
 class _CountingFan(LLMProvider):

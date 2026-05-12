@@ -72,6 +72,7 @@ class GeminiProvider(LLMProvider):
         max_output_tokens: int | None = None,
         cacheable_prefix: str | None = None,
         user_message_for_cache: str | None = None,
+        thinking_budget: int | None = None,
     ) -> ProviderResponse:
         start = time.perf_counter()
         use_cache = (
@@ -116,6 +117,10 @@ class GeminiProvider(LLMProvider):
         gen_cfg: dict[str, Any] = {}
         if max_output_tokens is not None:
             gen_cfg["max_output_tokens"] = max_output_tokens
+        if thinking_budget is not None:
+            # Gemini 3 shares max_output_tokens with internal "thinking"; set an explicit
+            # budget so callers can reserve the completion cap for visible output (JSON, etc.).
+            gen_cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
 
         contents: str
         uses_explicit_cache = False

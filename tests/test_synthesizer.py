@@ -11,6 +11,7 @@ from equity_analyst.synthesizer import (
     SYNTHESIS_SYSTEM_PROMPT,
     Synthesizer,
     detect_max_tokens_truncation,
+    provider_finish_reason_label,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -235,6 +236,22 @@ def test_detect_max_tokens_truncation_handles_none_raw() -> None:
     truncated, label = detect_max_tokens_truncation(None)
     assert truncated is False
     assert label is None
+
+
+def test_provider_finish_reason_label_gemini_candidate() -> None:
+    fr = SimpleNamespace(name="STOP")
+    cand = SimpleNamespace(finish_reason=fr)
+    raw = SimpleNamespace(candidates=[cand])
+    assert provider_finish_reason_label(raw) == "STOP"
+
+
+def test_provider_finish_reason_label_none_raw() -> None:
+    assert provider_finish_reason_label(None) is None
+
+
+def test_provider_finish_reason_label_anthropic_stop_reason() -> None:
+    raw = SimpleNamespace(candidates=None, stop_reason="end_turn")
+    assert provider_finish_reason_label(raw) == "end_turn"
 
 
 class _MaxTokensProvider(LLMProvider):

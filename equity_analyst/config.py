@@ -30,6 +30,25 @@ def _parse_facts_packet_max_output_tokens_env(raw: str) -> int | None:
         return n
     return None
 
+
+_VERIFIER_MAX_OUT_MIN = 256
+_VERIFIER_MAX_OUT_MAX = 32_768
+
+
+def _parse_verifier_max_output_tokens_env(raw: str) -> int | None:
+    """Parse ``VERIFIER_MAX_OUTPUT_TOKENS``; return ``None`` if missing or invalid."""
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        n = int(s, 10)
+    except ValueError:
+        return None
+    if _VERIFIER_MAX_OUT_MIN <= n <= _VERIFIER_MAX_OUT_MAX:
+        return n
+    return None
+
+
 DriveAuthMode = Literal["service_account", "oauth_user"]
 RunEnvironment = Literal["production", "test"]
 
@@ -225,10 +244,10 @@ class RunConfig(BaseModel):
     max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
     verifier_max_output_tokens: int = Field(
-        default=8192,
+        default=16_384,
         ge=256,
         le=32_768,
-        description="Completion budget for the iterative verifier JSON response (default 8192).",
+        description="Completion budget for the iterative verifier JSON response (default 16384).",
     )
     synthesizer_max_output_tokens: int = Field(default=24_000, ge=1024, le=128_000)
 
@@ -544,6 +563,28 @@ class RunConfig(BaseModel):
                     self.facts_packet_max_output_tokens,
                 )
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _verifier_max_output_tokens_env_fallback(self) -> Self:
+        """Env override when ``verifier_max_output_tokens`` was not set explicitly in YAML."""
+        raw_m = os.environ.get("VERIFIER_MAX_OUTPUT_TOKENS")
+        if (
+            raw_m is None
+            or not str(raw_m).strip()
+            or "verifier_max_output_tokens" in self.model_fields_set
+        ):
+            return self
+        n = _parse_verifier_max_output_tokens_env(str(raw_m))
+        if n is not None:
+            return self.model_copy(update={"verifier_max_output_tokens": n})
+        logger.warning(
+            "Invalid VERIFIER_MAX_OUTPUT_TOKENS=%r (expected integer in %s-%s); using default %s.",
+            raw_m,
+            _VERIFIER_MAX_OUT_MIN,
+            _VERIFIER_MAX_OUT_MAX,
+            self.verifier_max_output_tokens,
+        )
+        return self
 
     @model_validator(mode="after")
     def _oversized_summarize_env_fallback(self) -> Self:

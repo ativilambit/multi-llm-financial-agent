@@ -53,6 +53,27 @@ def detect_max_tokens_truncation(raw: Any) -> tuple[bool, str | None]:
     return False, None
 
 
+def provider_finish_reason_label(raw: Any) -> str | None:
+    """Best-effort finish / stop reason for logging (not limited to truncation)."""
+    if raw is None:
+        return None
+    candidates = getattr(raw, "candidates", None)
+    if candidates:
+        first = candidates[0]
+        fr = getattr(first, "finish_reason", None)
+        if fr is not None:
+            return getattr(fr, "name", None) or str(fr)
+    stop_reason = getattr(raw, "stop_reason", None)
+    if stop_reason is not None:
+        return str(stop_reason)
+    incomplete = getattr(raw, "incomplete_details", None)
+    if incomplete is not None:
+        reason = getattr(incomplete, "reason", None)
+        if reason is not None:
+            return str(reason)
+    return None
+
+
 def __getattr__(name: str) -> str:
     if name == "SYNTHESIS_SYSTEM_PROMPT":
         return _load_prompt_file("synthesizer_system.md")

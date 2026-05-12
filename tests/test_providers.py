@@ -487,6 +487,17 @@ async def test_gemini_provider_assembles_request_and_parses_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gemini_provider_thinking_budget_zero_sets_thinking_config() -> None:
+    fake = _FakeGeminiClient()
+    p = GeminiProvider(model="gemini-3.1-pro-preview", client=fake)  # type: ignore[arg-type]
+    await p.generate("hello", enable_web_search=False, thinking_budget=0)
+    m = fake.aio.models
+    assert m.last_config is not None
+    assert m.last_config.thinking_config is not None
+    assert m.last_config.thinking_config.thinking_budget == 0
+
+
+@pytest.mark.asyncio
 async def test_gemini_uses_cache_on_hit(tmp_path: Path) -> None:
     fake = _FakeGeminiClient()
     idx = GeminiCacheIndex(path=tmp_path / "idx.json")

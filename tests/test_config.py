@@ -203,7 +203,7 @@ def test_default_synthesizer_max_output_tokens() -> None:
     )
     assert cfg.synthesizer_max_output_tokens == 24_000
     assert cfg.max_output_tokens == 16_000
-    assert cfg.verifier_max_output_tokens == 8192
+    assert cfg.verifier_max_output_tokens == 16_384
     assert cfg.synthesizer_max_output_tokens != cfg.max_output_tokens
     assert cfg.request_timeout_s == 180.0
 
@@ -632,6 +632,34 @@ def test_facts_packet_max_output_tokens_yaml_wins_over_env(monkeypatch: pytest.M
     cfg = RunConfig.model_validate(d)
     assert cfg.facts_packet_max_output_tokens == 512
     monkeypatch.delenv("FACTS_PACKET_MAX_OUTPUT_TOKENS", raising=False)
+
+
+def test_verifier_max_output_tokens_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VERIFIER_MAX_OUTPUT_TOKENS", "32768")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.verifier_max_output_tokens == 32_768
+    monkeypatch.delenv("VERIFIER_MAX_OUTPUT_TOKENS", raising=False)
+
+
+def test_verifier_max_output_tokens_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VERIFIER_MAX_OUTPUT_TOKENS", "8192")
+    d = _minimal_run_config_dict()
+    d["verifier_max_output_tokens"] = 2048
+    cfg = RunConfig.model_validate(d)
+    assert cfg.verifier_max_output_tokens == 2048
+    monkeypatch.delenv("VERIFIER_MAX_OUTPUT_TOKENS", raising=False)
+
+
+@pytest.mark.parametrize("bad", ("abc", "0", "255", "1000000"))
+def test_verifier_max_output_tokens_invalid_env_warns_and_keeps_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad: str
+) -> None:
+    monkeypatch.setenv("VERIFIER_MAX_OUTPUT_TOKENS", bad)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.config"):
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.verifier_max_output_tokens == 16_384
+    assert "Invalid VERIFIER_MAX_OUTPUT_TOKENS" in caplog.text
+    monkeypatch.delenv("VERIFIER_MAX_OUTPUT_TOKENS", raising=False)
 
 
 @pytest.mark.parametrize("bad", ("abc", "0", "255", "1000000"))
