@@ -2,7 +2,9 @@
 # Batch runner: iterates `python -m equity_analyst run` over a symbol list and a
 # shared config date suffix (e.g. configs/asts_2026_05_10.yaml). With an explicit
 # --date (or leading positional DATE) and no --symbols/--symbols-file, tickers are
-# auto-discovered from every configs/*_<date>.yaml (sorted).
+# auto-discovered from every configs/*_<date>.yaml (sorted; no dated fallback).
+# With --symbols / --symbols-file, missing configs/<sym>_<date>.yaml fall back to
+# another dated file for that symbol unless --no-fallback / --strict.
 #
 # Sequential by default (one symbol at a time) so provider rate limits and
 # long web-search runs do not stack; each symbol’s Python output is tee’d to
@@ -48,6 +50,9 @@ HAVE_SYMBOLS=0
 SYMBOLS_ARG=""
 HAVE_SYMBOLS_FILE=0
 SYMBOLS_FILE_PATH=""
+# Explicit --symbols / --symbols-file: allow configs/<sym>_<date>.yaml to fall back
+# to another dated file for that symbol unless --no-fallback / --strict.
+NO_FALLBACK=0
 
 normalize_config_date() {
   local d="$1"
@@ -98,24 +103,87 @@ discover_symbols_for_date() {
   printf '%s' "$sorted"
 }
 
-# Fail fast before any run when the user supplied an explicit symbol list.
-validate_explicit_configs() {
-  local d="$1"
-  local syms="$2"
-  local sym lower path had_missing
-  had_missing=0
-  for sym in $syms; do
-    lower="$(printf '%s' "$sym" | tr '[:upper:]' '[:lower:]')"
-    path="configs/${lower}_${d}.yaml"
-    if [ ! -f "$path" ]; then
-      if [ "$had_missing" -eq 0 ]; then
-        echo "ERROR: missing config file(s) for explicit symbol list:" >&2
-        had_missing=1
+# Pick configs/<sym_lower>_*.yaml for explicit-symbol mode when the dated file is
+# missing: prefer the newest file whose embedded date is <= d; if none, use the
+# newest file overall. Echoes a repo-relative path (configs/...) or nothing.
+pick_fallback_config_for_symbol() {
+  local sym_lower="$1"
+  local want="$2"
+  local f base stem dt best_le_dt best_le_f best_any_dt best_any_f rel
+  best_le_dt=""
+  best_le_f=""
+  best_any_dt=""
+  best_any_f=""
+  local -a files
+  shopt -s nullglob
+  files=( "$REPO_ROOT/configs/${sym_lower}"_*.yaml )
+  shopt -u nullglob
+  for f in "${files[@]+"${files[@]}"}"; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"
+    stem="${base%.yaml}"
+    dt="${stem#"${sym_lower}"_}"
+    rel="configs/$base"
+    if [ -z "$best_any_f" ] || [ "$dt" \> "$best_any_dt" ]; then
+      best_any_dt="$dt"
+      best_any_f="$rel"
+    fi
+    if ! [ "$dt" \> "$want" ]; then
+      if [ -z "$best_le_f" ] || [ "$dt" \> "$best_le_dt" ]; then
+        best_le_dt="$dt"
+        best_le_f="$rel"
       fi
-      echo "  $path" >&2
     fi
   done
-  if [ "$had_missing" -eq 1 ]; then
+  if [ -n "$best_le_f" ]; then
+    printf '%s' "$best_le_f"
+    return 0
+  fi
+  if [ -n "$best_any_f" ]; then
+    printf '%s' "$best_any_f"
+    return 0
+  fi
+  return 1
+}
+
+# Resolve per-symbol config paths for explicit lists; sets RESOLVED_EXPLICIT (newline,
+# tab-separated SYMBOL<TAB>relative_config_path). Exits 2 on unrecoverable errors.
+resolve_explicit_configs() {
+  local d="$1"
+  local syms="$2"
+  local sym lower exact fb had_strict_missing missing_syms
+  RESOLVED_EXPLICIT=""
+  had_strict_missing=0
+  missing_syms=""
+  for sym in $syms; do
+    lower="$(printf '%s' "$sym" | tr '[:upper:]' '[:lower:]')"
+    exact="configs/${lower}_${d}.yaml"
+    if [ -f "$exact" ]; then
+      RESOLVED_EXPLICIT="${RESOLVED_EXPLICIT}${RESOLVED_EXPLICIT:+$'\n'}${sym}	${exact}"
+      continue
+    fi
+    if [ "$NO_FALLBACK" -eq 1 ]; then
+      if [ "$had_strict_missing" -eq 0 ]; then
+        echo "ERROR: missing config file(s) for explicit symbol list:" >&2
+        had_strict_missing=1
+      fi
+      echo "  $exact" >&2
+      continue
+    fi
+    fb="$(pick_fallback_config_for_symbol "$lower" "$d")"
+    if [ -n "$fb" ]; then
+      echo "WARN: $exact not found; falling back to $fb" >&2
+      RESOLVED_EXPLICIT="${RESOLVED_EXPLICIT}${RESOLVED_EXPLICIT:+$'\n'}${sym}	${fb}"
+    else
+      missing_syms="${missing_syms}${missing_syms:+ }$sym"
+    fi
+  done
+  if [ "$had_strict_missing" -eq 1 ]; then
+    exit 2
+  fi
+  if [ -n "$missing_syms" ]; then
+    echo "ERROR: no config file found for symbol(s): $missing_syms" >&2
+    echo "       (expected at least configs/<symbol_lower>_*.yaml for each)" >&2
     exit 2
   fi
 }
@@ -188,11 +256,19 @@ Batch options:
                           --symbols-file if both are passed).
   --symbols-file PATH   One or more tickers per line (# comments allowed).
                           Ignored if --symbols is also passed.
-                        With --symbols or --symbols-file, every
-                        configs/<sym_lower>_<date>.yaml must exist before the
-                        batch starts (fail fast with a list of missing paths).
+                        With --symbols or --symbols-file, each symbol uses
+                        configs/<sym_lower>_<date>.yaml when present; otherwise
+                        the script picks the newest dated file for that symbol
+                        that is not newer than <date> (lex order on YYYY_MM_DD),
+                        or the newest file overall if only newer configs exist.
+                        A WARN line is printed for each fallback. Use
+                        --no-fallback or --strict to require the exact dated file
+                        (legacy fail-fast listing missing paths).
 
 Run options:
+  --no-fallback, --strict With --symbols / --symbols-file: require the exact
+                          configs/<sym_lower>_<date>.yaml for each symbol (no
+                          dated fallback). Ignored in auto-discovery mode.
   --parallel              Run symbols as background jobs with bounded concurrency
                           (default: 2 at a time). Per-symbol logs only; see README.
                           Warning: shares one set of API keys across symbols;
@@ -284,6 +360,10 @@ while [ "$#" -gt 0 ]; do
       SYMBOLS_FILE_PATH="${1#--symbols-file=}"
       shift
       ;;
+    --no-fallback|--strict)
+      NO_FALLBACK=1
+      shift
+      ;;
     --parallel)
       MODE="parallel"
       shift
@@ -367,7 +447,7 @@ if [ -z "$SYMBOLS" ]; then
 fi
 
 if [ "$EXPLICIT_SYMBOL_SOURCE" -eq 1 ]; then
-  validate_explicit_configs "$CONFIG_DATE" "$SYMBOLS"
+  resolve_explicit_configs "$CONFIG_DATE" "$SYMBOLS"
 fi
 
 BATCH_TS="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -384,6 +464,15 @@ SUMMARY_FILE="$BATCH_DIR/batch_summary.txt"
   echo "Iterative: $ITERATIVE  Max iterations: $MAX_ITERATIONS  Log level: $LOG_LEVEL"
   echo "Config date suffix: $CONFIG_DATE"
   echo "Symbols (in order): $SYMBOLS"
+  if [ "$EXPLICIT_SYMBOL_SOURCE" -eq 1 ]; then
+    echo "Explicit symbol mode: per-symbol config path (may differ from the date suffix when fallbacks apply)."
+    while IFS="$(printf '\t')" read -r rsym rcfg || [ -n "$rsym" ]; do
+      [ -z "$rsym" ] && continue
+      echo "  $rsym  $rcfg"
+    done <<EOF
+$RESOLVED_EXPLICIT
+EOF
+  fi
   echo "Repo root: $REPO_ROOT"
   echo "----"
 } >"$SUMMARY_FILE"
@@ -406,12 +495,20 @@ lowercase() {
 }
 
 run_one() {
-  # $1 = symbol (e.g. ASTS); writes per-symbol log under $BATCH_DIR and appends
-  # an [OK] / [FAIL] line to $SUMMARY_FILE. Returns the underlying exit code.
+  # $1 = symbol (e.g. ASTS); optional $2 = repo-relative config path (explicit list
+  # with per-symbol resolution). Otherwise configs/<lower>_<CONFIG_DATE>.yaml.
+  # Writes per-symbol log under $BATCH_DIR and appends an [OK] / [FAIL] line to
+  # $SUMMARY_FILE. Returns the underlying exit code.
   local symbol="$1"
+  local cfg_override="${2-}"
   local lower
   lower="$(lowercase "$symbol")"
-  local config="configs/${lower}_${CONFIG_DATE}.yaml"
+  local config
+  if [ -n "$cfg_override" ]; then
+    config="$cfg_override"
+  else
+    config="configs/${lower}_${CONFIG_DATE}.yaml"
+  fi
   local log_file="$BATCH_DIR/${lower}.log"
 
   if [ ! -f "$config" ]; then
@@ -467,11 +564,12 @@ run_one() {
 # Parallel worker: run_one then persist exit code for parent aggregation (bash 3.2-safe).
 run_one_parallel_worker() {
   local sym="$1"
+  local cfg="${2-}"
   local lower
   lower="$(lowercase "$sym")"
   local rc
   set +e
-  run_one "$sym"
+  run_one "$sym" "$cfg"
   rc=$?
   set -e
   echo "$rc" >"$BATCH_DIR/.exit.$lower"
@@ -480,11 +578,22 @@ run_one_parallel_worker() {
 OVERALL_RC=0
 
 if [ "$MODE" = "sequential" ]; then
-  for sym in $SYMBOLS; do
-    if ! run_one "$sym"; then
-      OVERALL_RC=1
-    fi
-  done
+  if [ "$EXPLICIT_SYMBOL_SOURCE" -eq 1 ]; then
+    while IFS="$(printf '\t')" read -r sym cfg || [ -n "$sym" ]; do
+      [ -z "$sym" ] && continue
+      if ! run_one "$sym" "$cfg"; then
+        OVERALL_RC=1
+      fi
+    done <<EOF
+$RESOLVED_EXPLICIT
+EOF
+  else
+    for sym in $SYMBOLS; do
+      if ! run_one "$sym"; then
+        OVERALL_RC=1
+      fi
+    done
+  fi
 else
   echo "WARNING: --parallel mode shares one API key per provider across $(echo "$SYMBOLS" | wc -w | tr -d ' ') symbols." >&2
   echo "         Expect rate-limit pushback on Anthropic/OpenAI/Gemini/Grok and longer per-symbol wall time." >&2
@@ -494,20 +603,40 @@ else
   # variable, so wrap every expansion in the `${arr[@]+"${arr[@]}"}` idiom
   # (expands to the elements if set, to nothing if empty/unset).
   running_pids=()
-  for sym in $SYMBOLS; do
-    while [ "${#running_pids[@]}" -ge "$JOBS" ]; do
-      new_pids=()
-      for p in ${running_pids[@]+"${running_pids[@]}"}; do
-        if kill -0 "$p" 2>/dev/null; then
-          new_pids=(${new_pids[@]+"${new_pids[@]}"} "$p")
-        fi
+  if [ "$EXPLICIT_SYMBOL_SOURCE" -eq 1 ]; then
+    while IFS="$(printf '\t')" read -r sym cfg || [ -n "$sym" ]; do
+      [ -z "$sym" ] && continue
+      while [ "${#running_pids[@]}" -ge "$JOBS" ]; do
+        new_pids=()
+        for p in ${running_pids[@]+"${running_pids[@]}"}; do
+          if kill -0 "$p" 2>/dev/null; then
+            new_pids=(${new_pids[@]+"${new_pids[@]}"} "$p")
+          fi
+        done
+        running_pids=(${new_pids[@]+"${new_pids[@]}"})
+        [ "${#running_pids[@]}" -ge "$JOBS" ] && sleep 1
       done
-      running_pids=(${new_pids[@]+"${new_pids[@]}"})
-      [ "${#running_pids[@]}" -ge "$JOBS" ] && sleep 1
+      run_one_parallel_worker "$sym" "$cfg" &
+      running_pids=(${running_pids[@]+"${running_pids[@]}"} "$!")
+    done <<EOF
+$RESOLVED_EXPLICIT
+EOF
+  else
+    for sym in $SYMBOLS; do
+      while [ "${#running_pids[@]}" -ge "$JOBS" ]; do
+        new_pids=()
+        for p in ${running_pids[@]+"${running_pids[@]}"}; do
+          if kill -0 "$p" 2>/dev/null; then
+            new_pids=(${new_pids[@]+"${new_pids[@]}"} "$p")
+          fi
+        done
+        running_pids=(${new_pids[@]+"${new_pids[@]}"})
+        [ "${#running_pids[@]}" -ge "$JOBS" ] && sleep 1
+      done
+      run_one_parallel_worker "$sym" &
+      running_pids=(${running_pids[@]+"${running_pids[@]}"} "$!")
     done
-    run_one_parallel_worker "$sym" &
-    running_pids=(${running_pids[@]+"${running_pids[@]}"} "$!")
-  done
+  fi
 
   wait
 
