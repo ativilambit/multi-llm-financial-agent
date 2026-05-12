@@ -487,14 +487,65 @@ async def test_gemini_provider_assembles_request_and_parses_usage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gemini_provider_thinking_budget_zero_sets_thinking_config() -> None:
+async def test_gemini3_maps_thinking_budget_zero_to_minimum() -> None:
     fake = _FakeGeminiClient()
     p = GeminiProvider(model="gemini-3.1-pro-preview", client=fake)  # type: ignore[arg-type]
     await p.generate("hello", enable_web_search=False, thinking_budget=0)
     m = fake.aio.models
     assert m.last_config is not None
     assert m.last_config.thinking_config is not None
+    assert m.last_config.thinking_config.thinking_budget == 1024
+
+
+@pytest.mark.asyncio
+async def test_gemini25_keeps_thinking_budget_zero_on_first_attempt() -> None:
+    fake = _FakeGeminiClient()
+    p = GeminiProvider(model="gemini-2.5-flash", client=fake)  # type: ignore[arg-type]
+    await p.generate("hello", enable_web_search=False, thinking_budget=0)
+    m = fake.aio.models
+    assert m.last_config is not None
+    assert m.last_config.thinking_config is not None
     assert m.last_config.thinking_config.thinking_budget == 0
+
+
+class _FakeGeminiAioModelsRejectZeroOnce(_FakeGeminiAioModels):
+    def __init__(self) -> None:
+        super().__init__()
+        self.generate_calls = 0
+
+    async def generate_content(self, *, model: str, contents: str, config: Any = None) -> Any:
+        self.generate_calls += 1
+        self.last_model = model
+        self.last_contents = contents
+        self.last_config = config
+        tb = None
+        if config is not None and getattr(config, "thinking_config", None) is not None:
+            tb = config.thinking_config.thinking_budget
+        if self.generate_calls == 1 and tb == 0:
+            import httpx
+            from google.genai import errors as ge
+
+            req = httpx.Request("POST", "https://example.test/gen")
+            resp = httpx.Response(
+                400,
+                request=req,
+                json={"error": {"message": "Budget 0 is invalid. This model only works in thinking mode."}},
+            )
+            raise ge.ClientError(400, {"error": {"message": "Budget 0 is invalid"}}, resp)
+        return _FakeGeminiGenerateContentResponse()
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_retries_after_thinking_budget_zero_rejected() -> None:
+    fake = _FakeGeminiClient()
+    fake.aio.models = _FakeGeminiAioModelsRejectZeroOnce()
+    p = GeminiProvider(model="gemini-2.5-flash", client=fake)  # type: ignore[arg-type]
+    resp = await p.generate("hello", enable_web_search=False, thinking_budget=0)
+    assert resp.text == "gemini-answer"
+    assert fake.aio.models.generate_calls == 2
+    assert fake.aio.models.last_config is not None
+    assert fake.aio.models.last_config.thinking_config is not None
+    assert fake.aio.models.last_config.thinking_config.thinking_budget == 1024
 
 
 @pytest.mark.asyncio

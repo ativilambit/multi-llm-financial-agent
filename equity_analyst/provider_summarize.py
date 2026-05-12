@@ -8,6 +8,10 @@ from google import genai
 from google.genai import types
 
 from equity_analyst.prompt_parts import _load_prompt_file
+from equity_analyst.providers.gemini_provider import (
+    gemini_thinking_budget_invalid_client_error,
+    thinking_budget_candidates,
+)
 from equity_analyst.retry import async_retry_call
 from equity_analyst.types import ProviderResponse
 
@@ -69,21 +73,43 @@ async def _generate_summary(
     owned = client is None
     c = client or genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     try:
-        config = types.GenerateContentConfig(
-            system_instruction=summarize_system_prompt(),
-            max_output_tokens=max_output_tokens,
-            # Gemini 3 shares max_output_tokens with internal "thinking"; disable so the
-            # completion budget is available for the visible summary (~50% retention target).
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        )
+        budgets = thinking_budget_candidates(model=model, requested=0)
 
         async def _call() -> str:
-            msg = await c.aio.models.generate_content(
-                model=model,
-                contents=user_message,
-                config=config,
-            )
-            return (msg.text or "").strip()
+            last_failure: BaseException | None = None
+            for attempt_i, tb in enumerate(budgets):
+                cfg = types.GenerateContentConfig(
+                    system_instruction=summarize_system_prompt(),
+                    max_output_tokens=max_output_tokens,
+                    thinking_config=types.ThinkingConfig(thinking_budget=tb),
+                )
+                try:
+                    msg = await c.aio.models.generate_content(
+                        model=model,
+                        contents=user_message,
+                        config=cfg,
+                    )
+                    if attempt_i > 0:
+                        logger.info(
+                            "gemini_summarizer: succeeded after thinking_budget retries model=%s final=%s",
+                            model,
+                            tb,
+                        )
+                    return (msg.text or "").strip()
+                except Exception as exc:
+                    last_failure = exc
+                    if (
+                        not gemini_thinking_budget_invalid_client_error(exc)
+                        or attempt_i == len(budgets) - 1
+                    ):
+                        raise
+                    logger.warning(
+                        "gemini_summarizer: thinking_budget=%s rejected; retrying model=%s detail=%s",
+                        tb,
+                        model,
+                        exc,
+                    )
+            raise last_failure if last_failure is not None else RuntimeError("thinking budget loop empty")
 
         return await async_retry_call(
             _call,

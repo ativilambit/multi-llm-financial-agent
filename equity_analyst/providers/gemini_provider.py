@@ -23,6 +23,60 @@ DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 _FLASH_MIN_CACHE_TOKENS = 1024
 _PRO_MIN_CACHE_TOKENS = 4096
 
+# Gemini 3+ thinking-only models reject thinking_budget=0 ("Budget 0 is invalid").
+_GEMINI_MIN_THINKING_BUDGET_ENV = "GEMINI_MIN_THINKING_BUDGET"
+_DEFAULT_MIN_THINKING_BUDGET_FOR_THINKING_ONLY = 1024
+_THINKING_INVALID_ESCALATION = 8192
+
+
+def gemini_model_requires_nonzero_thinking_budget(model: str) -> bool:
+    """True for model ids that only run in thinking mode (cannot use thinking_budget=0)."""
+    return "gemini-3" in model.lower()
+
+
+def gemini_min_thinking_budget_for_thinking_only_models() -> int:
+    """Minimum thinking budget when the API forbids zero (override via GEMINI_MIN_THINKING_BUDGET)."""
+    raw = os.environ.get(_GEMINI_MIN_THINKING_BUDGET_ENV, str(_DEFAULT_MIN_THINKING_BUDGET_FOR_THINKING_ONLY))
+    try:
+        n = int(raw)
+    except ValueError:
+        n = _DEFAULT_MIN_THINKING_BUDGET_FOR_THINKING_ONLY
+    return max(1, n)
+
+
+def thinking_budget_candidates(*, model: str, requested: int | None) -> list[int | None]:
+    """Ordered thinking budgets to try for ``generate`` (None = omit ``thinking_config``)."""
+    if requested is None:
+        return [None]
+    if requested != 0:
+        return [requested]
+    if gemini_model_requires_nonzero_thinking_budget(model):
+        d = gemini_min_thinking_budget_for_thinking_only_models()
+        if d >= _THINKING_INVALID_ESCALATION:
+            return [d]
+        return [d, _THINKING_INVALID_ESCALATION]
+    seq = [0, gemini_min_thinking_budget_for_thinking_only_models(), _THINKING_INVALID_ESCALATION]
+    out: list[int | None] = []
+    for x in seq:
+        if out and out[-1] == x:
+            continue
+        out.append(x)
+    return out
+
+
+def gemini_thinking_budget_invalid_client_error(exc: BaseException) -> bool:
+    try:
+        from google.genai import errors as ge
+
+        if not isinstance(exc, ge.ClientError):
+            return False
+        if int(getattr(exc, "code", 0) or 0) != 400:
+            return False
+    except Exception:
+        return False
+    msg = str(exc).lower()
+    return "budget 0" in msg or "thinking mode" in msg
+
 
 def gemini_explicit_cache_min_input_tokens(model: str) -> int:
     """Minimum cached input tokens per Gemini explicit caching docs (by model family)."""
@@ -117,10 +171,6 @@ class GeminiProvider(LLMProvider):
         gen_cfg: dict[str, Any] = {}
         if max_output_tokens is not None:
             gen_cfg["max_output_tokens"] = max_output_tokens
-        if thinking_budget is not None:
-            # Gemini 3 shares max_output_tokens with internal "thinking"; set an explicit
-            # budget so callers can reserve the completion cap for visible output (JSON, etc.).
-            gen_cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
 
         contents: str
         uses_explicit_cache = False
@@ -167,23 +217,54 @@ class GeminiProvider(LLMProvider):
         if not uses_explicit_cache and enable_web_search:
             gen_cfg["tools"] = [types.Tool(google_search=types.GoogleSearch())]
 
-        config: types.GenerateContentConfig | None = (
-            types.GenerateContentConfig(**gen_cfg) if gen_cfg else None
-        )
-        logger.debug(
-            "Gemini request shape model=%s web_search=%s cached_content=%s prompt_chars=%s contents_chars=%s",
-            self._model,
-            enable_web_search,
-            getattr(config, "cached_content", None) if config is not None else None,
-            len(prompt),
-            len(contents),
-        )
-        logger.info("Calling provider %s", self.name)
-        msg = await self._client.aio.models.generate_content(
-            model=self._model,
-            contents=contents,
-            config=config,
-        )
+        thinking_seq = thinking_budget_candidates(model=self._model, requested=thinking_budget)
+        msg: Any | None = None
+        for attempt_i, tb in enumerate(thinking_seq):
+            trial_cfg = dict(gen_cfg)
+            if tb is not None:
+                trial_cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=tb)
+            else:
+                trial_cfg.pop("thinking_config", None)
+            config: types.GenerateContentConfig | None = (
+                types.GenerateContentConfig(**trial_cfg) if trial_cfg else None
+            )
+            logger.debug(
+                "Gemini request shape model=%s web_search=%s cached_content=%s "
+                "prompt_chars=%s contents_chars=%s thinking_budget=%s attempt=%s",
+                self._model,
+                enable_web_search,
+                getattr(config, "cached_content", None) if config is not None else None,
+                len(prompt),
+                len(contents),
+                tb,
+                attempt_i,
+            )
+            logger.info("Calling provider %s", self.name)
+            try:
+                msg = await self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                last = attempt_i == len(thinking_seq) - 1
+                if not gemini_thinking_budget_invalid_client_error(exc) or last:
+                    raise
+                logger.warning(
+                    "Gemini generate_content rejected thinking_budget=%s; will retry (%s/%s) detail=%s",
+                    tb,
+                    attempt_i + 1,
+                    len(thinking_seq) - 1,
+                    exc,
+                )
+                continue
+            if attempt_i > 0:
+                logger.info(
+                    "Gemini generate succeeded after thinking_budget retries final_budget=%s",
+                    tb,
+                )
+            break
+        assert msg is not None
 
         text = (msg.text or "").strip()
         um = msg.usage_metadata

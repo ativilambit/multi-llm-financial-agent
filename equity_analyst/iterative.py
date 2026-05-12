@@ -39,7 +39,11 @@ from equity_analyst.provider_runtime import (
     run_error_record,
 )
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
-from equity_analyst.providers.gemini_provider import GeminiProvider
+from equity_analyst.providers.gemini_provider import (
+    DEFAULT_GEMINI_MODEL,
+    GeminiProvider,
+    gemini_model_requires_nonzero_thinking_budget,
+)
 from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
@@ -1191,13 +1195,21 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     force_tool_use=False,
                 )
             if isinstance(verifier, GeminiProvider):
-                # Gemini 3 shares max_output_tokens with internal "thinking"; disable so the
-                # budget applies to visible JSON. TODO: consider structured output
-                # (response_mime_type=application/json + response_schema) for stricter parsing.
+                # Gemini 3 shares max_output_tokens with internal "thinking"; callers pass
+                # thinking_budget=0 to reserve visible completion budget. Gemini 3 rejects
+                # thinking_budget=0 — GeminiProvider maps it to a positive budget; raise the
+                # completion cap so JSON still fits.
+                vm = v_model if isinstance(v_model, str) and v_model.strip() else None
+                resolved_verifier_model = vm or DEFAULT_GEMINI_MODEL
+                eff_vmt = (
+                    max(vmt, 32_768)
+                    if gemini_model_requires_nonzero_thinking_budget(resolved_verifier_model)
+                    else vmt
+                )
                 return await verifier.generate(
                     prompt,
                     enable_web_search=state["enable_web_search"],
-                    max_output_tokens=vmt,
+                    max_output_tokens=eff_vmt,
                     cacheable_prefix=None,
                     thinking_budget=0,
                 )
