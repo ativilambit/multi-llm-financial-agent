@@ -35,6 +35,28 @@ from tests.test_providers import _FakeOpenAIClient
 _FANOUT_CALL_COUNTS: defaultdict[str, int] = defaultdict(int)
 
 
+def test_build_initial_refinement_state_sets_fan_out_retry_attempts() -> None:
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "d",
+            "today_session": "s",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        },
+    )
+    assert cfg.retry_max_attempts_fan_out == 5
+    assert cfg.retry_max_attempts == 3
+    out = Path("/tmp/nonexistent_iterative_retry_test")
+    rendered = RenderedPrompt(template_path="t", text="u", context={}, user_message_text="u")
+    st = build_initial_refinement_state(cfg=cfg, rendered=rendered, output_dir=out)
+    assert st["retry_max_attempts_fan_out"] == 5
+    assert st["retry_max_attempts"] == 3
+
+
 def test_verifier_instruction_accepts_dual_sd_anchors() -> None:
     assert "same-day intraday" in VERIFIER_INSTRUCTION_PREFIX
     assert "prior-close" in VERIFIER_INSTRUCTION_PREFIX

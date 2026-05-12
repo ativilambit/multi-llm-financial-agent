@@ -310,6 +310,12 @@ class RunConfig(BaseModel):
     synthesizer_max_output_tokens: int = Field(default=24_000, ge=1024, le=128_000)
 
     retry_max_attempts: int = Field(default=3, ge=1, le=20)
+    retry_max_attempts_fan_out: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Max API retries per provider in iterative fan_out only; other nodes use retry_max_attempts.",
+    )
     retry_base_delay_s: float = Field(default=2.0, gt=0, le=120.0)
     synthesizer_max_input_tokens: int = Field(default=100_000, ge=4_000, le=900_000)
 
@@ -714,6 +720,34 @@ class RunConfig(BaseModel):
                     self.facts_packet_max_output_tokens,
                 )
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _retry_max_attempts_fan_out_env_fallback(self) -> Self:
+        """Env override when ``retry_max_attempts_fan_out`` was not set explicitly in YAML."""
+        raw = os.environ.get("RETRY_MAX_ATTEMPTS_FAN_OUT")
+        if (
+            raw is None
+            or not str(raw).strip()
+            or "retry_max_attempts_fan_out" in self.model_fields_set
+        ):
+            return self
+        try:
+            n = int(str(raw).strip())
+        except ValueError:
+            logger.warning(
+                "Invalid RETRY_MAX_ATTEMPTS_FAN_OUT=%r (expected integer 1-20); using default %s.",
+                raw,
+                self.retry_max_attempts_fan_out,
+            )
+            return self
+        if n < 1 or n > 20:
+            logger.warning(
+                "Invalid RETRY_MAX_ATTEMPTS_FAN_OUT=%s (expected 1-20); using default %s.",
+                n,
+                self.retry_max_attempts_fan_out,
+            )
+            return self
+        return self.model_copy(update={"retry_max_attempts_fan_out": n})
 
     @model_validator(mode="after")
     def _verifier_max_output_tokens_env_fallback(self) -> Self:

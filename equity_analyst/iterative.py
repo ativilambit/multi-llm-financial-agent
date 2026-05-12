@@ -933,6 +933,7 @@ class RefinementState(TypedDict, total=False):
     synthesizer_max_output_tokens: int
     request_timeout_s: float
     retry_max_attempts: int
+    retry_max_attempts_fan_out: NotRequired[int]
     retry_base_delay_s: float
     synthesizer_max_input_tokens: int
     summarize_oversized_providers: bool
@@ -1409,7 +1410,8 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
             cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
             cfg_mot = int(state.get("max_output_tokens", 16_000))
-            retry_max = int(state.get("retry_max_attempts", 3))
+            retry_default = int(state.get("retry_max_attempts", 3))
+            retry_max = int(state.get("retry_max_attempts_fan_out", retry_default))
             retry_base = float(state.get("retry_base_delay_s", 2.0))
             gemini_cache_index: GeminiCacheIndex | None = (
                 GeminiCacheIndex() if state.get("prompt_cache_enabled", True) else None
@@ -2024,6 +2026,7 @@ def build_initial_refinement_state(
         "timing_events": [],
         "error_events": [],
         "retry_max_attempts": cfg.retry_max_attempts,
+        "retry_max_attempts_fan_out": cfg.retry_max_attempts_fan_out,
         "retry_base_delay_s": float(cfg.retry_base_delay_s),
         "synthesizer_max_input_tokens": cfg.synthesizer_max_input_tokens,
         "summarize_oversized_providers": cfg.summarize_oversized_providers,

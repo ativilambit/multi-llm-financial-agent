@@ -212,6 +212,14 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | **Summarizer max output** | `provider_summarize._effective_summarizer_max_output_tokens`: **`max(configured, ceil(55% × input_estimate) + 512)`**, capped at **128000**; uses **`thinking_budget_candidates(..., requested=0)`** with the same invalid-budget retry loop as the main provider. |
 | **Web search** | Each provider’s `web_search` flag is respected via `provider_runtime.effective_web_search` / synthesizer equivalents; stock configs keep **true** on grounded steps. |
 
+### Anthropic-specific behavior (`equity_analyst/retry.py`, fan-out in `iterative.py`)
+
+| Topic | Behavior |
+| --- | --- |
+| **529 / `overloaded_error`** | Anthropic may return HTTP **529** or a JSON body with `error.type: overloaded_error` (including streaming paths that raise the base `APIStatusError`). These are treated as **retryable** with backoff; `retry-after` headers are honored up to **90s** for overload-like errors (else **60s** cap). |
+| **Other retryable API error types** | `rate_limit_error`, `api_error`, `server_error`, and `service_unavailable_error` in the error body are retryable when surfaced as `APIStatusError`. **`invalid_request_error`** is **not** retried. |
+| **Fan-out attempts** | Iterative **`fan_out`** uses **`RunConfig.retry_max_attempts_fan_out`** (default **5**), separate from **`retry_max_attempts`** (default **3**) used for synthesize/verify and other callers. Override via env **`RETRY_MAX_ATTEMPTS_FAN_OUT`** when the YAML key is unset. |
+
 ---
 
 ## 6. Configuration knobs
@@ -239,6 +247,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `historical_quarters` | — | 11 | Historical earnings table depth in template. |
 | `short_interest_lookbacks` | — | `[]` | Rendered into prompt short-interest section. |
 | `facts_packet_max_output_tokens` | `FACTS_PACKET_MAX_OUTPUT_TOKENS` | 4096 | Facts extractor completion budget. |
+| `retry_max_attempts_fan_out` | `RETRY_MAX_ATTEMPTS_FAN_OUT` | **5** | Per-provider API retries in iterative **`fan_out`** only (see Anthropic matrix in §5). |
 
 **Iterative iteration count:** CLI **`--max-iterations`** (default **3**), not a `RunConfig` field.
 

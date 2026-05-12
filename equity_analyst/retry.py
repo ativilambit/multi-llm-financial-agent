@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import email.utils
+import json
 import logging
 import random
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 
@@ -20,6 +22,88 @@ try:
     _GENAI_ERROR_TYPES: tuple[type[BaseException], ...] = (_genai_errors.APIError,)
 except Exception:  # pragma: no cover - optional dependency
     _GENAI_ERROR_TYPES = ()
+
+AnthropicAPIStatusError: Any = None
+with contextlib.suppress(ImportError):  # pragma: no cover - optional dependency
+    from anthropic import APIStatusError as AnthropicAPIStatusError
+
+
+_ANTHROPIC_RETRYABLE_ERROR_TYPES = frozenset(
+    {
+        "overloaded_error",
+        "rate_limit_error",
+        "api_error",
+        "server_error",
+        "service_unavailable_error",
+    },
+)
+
+
+def _dict_from_anthropic_body(body: object) -> dict[str, Any] | None:
+    if isinstance(body, dict):
+        return body
+    if isinstance(body, str):
+        s = body.strip()
+        if not s.startswith("{"):
+            return None
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _anthropic_error_type_from_body(body: object) -> str | None:
+    m = _dict_from_anthropic_body(body)
+    if m is None:
+        return None
+    err = m.get("error")
+    if isinstance(err, dict):
+        t = err.get("type")
+        if isinstance(t, str):
+            return t
+    return None
+
+
+def _anthropic_request_id_from_body(body: object) -> str | None:
+    m = _dict_from_anthropic_body(body)
+    if m is None:
+        return None
+    rid = m.get("request_id")
+    return rid if isinstance(rid, str) else None
+
+
+def _is_anthropic_api_status_error(exc: BaseException) -> bool:
+    cls = AnthropicAPIStatusError
+    return cls is not None and isinstance(exc, cls)
+
+
+def _anthropic_overload_like_exception(exc: BaseException) -> bool:
+    if not _is_anthropic_api_status_error(exc):
+        return False
+    body = getattr(exc, "body", None)
+    if _anthropic_error_type_from_body(body) == "overloaded_error":
+        return True
+    return getattr(exc, "status_code", None) == 529
+
+
+def _retry_delay_cap_seconds(exc: BaseException) -> float:
+    return 90.0 if _anthropic_overload_like_exception(exc) else 60.0
+
+
+def format_retry_exception_reason(exc: BaseException) -> str:
+    if _is_anthropic_api_status_error(exc):
+        et = _anthropic_error_type_from_body(getattr(exc, "body", None))
+        if et:
+            return f"{type(exc).__name__}({et})"
+    return type(exc).__name__
+
+
+def _retry_request_id_for_log(exc: BaseException) -> str | None:
+    if not _is_anthropic_api_status_error(exc):
+        return None
+    return _anthropic_request_id_from_body(getattr(exc, "body", None))
 
 
 def _retryable_types() -> tuple[type[BaseException], ...]:
@@ -80,7 +164,7 @@ def _retryable_types() -> tuple[type[BaseException], ...]:
 
 _RETRYABLE = _retryable_types()
 
-_RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+_RETRYABLE_STATUS = frozenset({429, 502, 503, 504, 529})
 
 
 def is_retryable_exception(exc: BaseException) -> bool:
@@ -93,15 +177,29 @@ def is_retryable_exception(exc: BaseException) -> bool:
         resp = getattr(exc, "response", None)
         resp_status = getattr(resp, "status_code", None) if resp is not None else None
         return resp_status in _RETRYABLE_STATUS
+    if _is_anthropic_api_status_error(exc):
+        body = getattr(exc, "body", None)
+        et = _anthropic_error_type_from_body(body)
+        if et in _ANTHROPIC_RETRYABLE_ERROR_TYPES:
+            return True
+        if et == "invalid_request_error":
+            return False
     status = getattr(exc, "status_code", None)
-    return status in _RETRYABLE_STATUS
+    if status in _RETRYABLE_STATUS:
+        return True
+    if _is_anthropic_api_status_error(exc):
+        body = getattr(exc, "body", None)
+        et = _anthropic_error_type_from_body(body)
+        if et is not None:
+            return False
+    return False
 
 
-def _parse_retry_after_seconds(value: str) -> float | None:
+def _parse_retry_after_seconds(value: str, *, max_seconds: float = 60.0) -> float | None:
     try:
         sec = float(value.strip())
         if sec > 0:
-            return min(60.0, sec)
+            return min(max_seconds, sec)
     except ValueError:
         try:
             when = email.utils.parsedate_to_datetime(value)
@@ -109,7 +207,7 @@ def _parse_retry_after_seconds(value: str) -> float | None:
                 when = when.replace(tzinfo=UTC)
             delta = (when - datetime.now(UTC)).total_seconds()
             if delta > 0:
-                return float(min(60.0, delta))
+                return float(min(max_seconds, delta))
         except (TypeError, ValueError, OSError):
             return None
     return None
@@ -163,21 +261,22 @@ def _retry_after_seconds_from_genai_details(details: object) -> float | None:
 
 
 def retry_after_seconds_from_exception(exc: BaseException) -> float | None:
+    cap = _retry_delay_cap_seconds(exc)
     resp = getattr(exc, "response", None)
     if resp is not None:
         headers = getattr(resp, "headers", None)
         if headers is not None:
             raw = headers.get("retry-after") or headers.get("Retry-After")
             if raw:
-                parsed = _parse_retry_after_seconds(str(raw))
+                parsed = _parse_retry_after_seconds(str(raw), max_seconds=cap)
                 if parsed is not None:
                     return parsed
     ra = getattr(exc, "retry_after", None)
     if isinstance(ra, (int, float)) and ra > 0:
-        return float(min(60.0, float(ra)))
+        return float(min(cap, float(ra)))
     rdelay = getattr(exc, "retry_delay", None)
     if isinstance(rdelay, (int, float)) and rdelay > 0:
-        return float(min(60.0, float(rdelay)))
+        return float(min(cap, float(rdelay)))
     details_sleep = _retry_after_seconds_from_genai_details(getattr(exc, "details", None))
     if details_sleep is not None:
         return details_sleep
@@ -185,10 +284,11 @@ def retry_after_seconds_from_exception(exc: BaseException) -> float | None:
 
 
 def _sleep_seconds(*, attempt: int, base_delay_s: float, exc: BaseException) -> float:
+    cap = _retry_delay_cap_seconds(exc)
     header_sleep = retry_after_seconds_from_exception(exc)
     if header_sleep is not None:
         return float(header_sleep + random.uniform(0, 0.5))
-    exp = min(60.0, float(base_delay_s) * (2**attempt))
+    exp = min(cap, float(base_delay_s) * (2**attempt))
     return float(exp + random.uniform(0, 0.5))
 
 
@@ -208,13 +308,26 @@ async def async_retry_call(
             if attempt >= max_attempts - 1 or not is_retryable_exception(exc):
                 raise
             sleep_s = _sleep_seconds(attempt=attempt, base_delay_s=base_delay_s, exc=exc)
-            logger.info(
-                "retrying provider=%s attempt=%s/%s reason=%s sleep_s=%.2f",
-                provider,
-                attempt + 2,
-                max_attempts,
-                type(exc).__name__,
-                sleep_s,
-            )
+            reason = format_retry_exception_reason(exc)
+            rid = _retry_request_id_for_log(exc)
+            if rid:
+                logger.info(
+                    "retrying provider=%s attempt=%s/%s reason=%s request_id=%s sleep_s=%.2f",
+                    provider,
+                    attempt + 2,
+                    max_attempts,
+                    reason,
+                    rid,
+                    sleep_s,
+                )
+            else:
+                logger.info(
+                    "retrying provider=%s attempt=%s/%s reason=%s sleep_s=%.2f",
+                    provider,
+                    attempt + 2,
+                    max_attempts,
+                    reason,
+                    sleep_s,
+                )
             await asyncio.sleep(sleep_s)
     raise RuntimeError("async_retry_call: exhausted attempts without return or raise")

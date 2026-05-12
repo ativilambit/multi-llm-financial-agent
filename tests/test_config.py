@@ -697,6 +697,22 @@ def _minimal_run_config_dict() -> dict[str, Any]:
     }
 
 
+def test_retry_max_attempts_fan_out_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RETRY_MAX_ATTEMPTS_FAN_OUT", "7")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.retry_max_attempts_fan_out == 7
+    monkeypatch.delenv("RETRY_MAX_ATTEMPTS_FAN_OUT", raising=False)
+
+
+def test_retry_max_attempts_fan_out_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RETRY_MAX_ATTEMPTS_FAN_OUT", "7")
+    d = _minimal_run_config_dict()
+    d["retry_max_attempts_fan_out"] = 4
+    cfg = RunConfig.model_validate(d)
+    assert cfg.retry_max_attempts_fan_out == 4
+    monkeypatch.delenv("RETRY_MAX_ATTEMPTS_FAN_OUT", raising=False)
+
+
 def test_final_report_full_synthesis_defaults_true() -> None:
     cfg = RunConfig.model_validate(_minimal_run_config_dict())
     assert cfg.final_report_full_synthesis is True
