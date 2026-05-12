@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- Facts packet validator loosened - accepts well-formed packets even when tail heuristic flags them; only falls back to "unknown" template when output is genuinely broken.
 - Facts packet default raised from 2048 to 4096 tokens to fit the richer 1σ/2σ/3σ prompt.
 - Facts packet extractor now validates output and retries once on truncation; falls back to a minimal template if both attempts truncate.
 - **Config / iterative** Wire `FACTS_PACKET_MAX_OUTPUT_TOKENS` (and `FACTS_PACKET_ENABLED` / `CONDITIONAL_FANOUT_ENABLED` if not already env-bound) for `.env`-based tuning; default `facts_packet_max_output_tokens` raised from 2048 to **4096** to accommodate the richer 1σ/2σ/3σ prompt; facts extractor validates output, **retries once** with doubled budget (cap 16k) when `MAX_TOKENS` or truncation heuristics fire, then falls back to the minimal template if both attempts fail.

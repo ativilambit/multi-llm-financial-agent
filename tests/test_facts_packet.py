@@ -37,6 +37,60 @@ _GOOD_MARKDOWN = f"""# Market facts (frozen from iteration 1)
 
 """
 
+def _good_facts_min_chars(min_chars: int = 1600) -> str:
+    """Gate (a) requires >=1500 non-whitespace chars; pad the canonical good fixture."""
+    pad = "- Test padding line (synthetic context only; no trade signal).\n"
+    s = _GOOD_MARKDOWN.rstrip() + "\n"
+    while len(s.strip()) < min_chars:
+        s += pad
+    return s
+
+
+def _long_packet_colon_tail(min_chars: int = 2000) -> str:
+    """Legitimate packet whose last visible character is ':' (header-style line), still passes gate (a)."""
+    tail = "- Narrative anchor versus prior close Range:"
+    pad = "- Test padding line (synthetic context only; no trade signal).\n"
+    body = _good_facts_min_chars(min_chars).rstrip() + "\n" + tail + "\n"
+    while len(body.strip()) < min_chars:
+        body = pad + body
+    assert body.rstrip().endswith(":")
+    assert len(body.strip()) >= min_chars
+    return body
+
+
+def _eight_section_retry_first_attempt() -> str:
+    """<1500 chars but 8/8 sections, no gate (b), no trailing newline → RETRY once."""
+    lines = [
+        "# Market facts (frozen from iteration 1)",
+        "",
+        "- Last verified close: $97.02",
+        "- IV / implied moves: see nested",
+        "  - Post-Earnings IV: ~62%",
+        f"  - Forward 1{_SIGMA} Move: ±1%",
+        "- Analyst targets: $100",
+        "- Session range: $90-$100",
+        "- PCR: 0.5",
+        "- Short interest: 1%",
+        "- Historical Earnings Reactions: mixed",
+        "- Key Qualitative Anchors: test",
+    ]
+    body = "\n".join(lines)
+    pad = "- Padding (synthetic): context only.\n"
+    while len(body) < 1200:
+        body += pad
+    body = body[:1350].rstrip("\n")
+    return body + "Z"
+
+
+_THIN_TWO_SECTION = (
+    "# Market facts (frozen from iteration 1)\n\n"
+    "- Last verified close: $10\n"
+    "- IV / implied moves:\n"
+    "  - Post-Earnings IV: ~10%\n"
+    + "- Synthetic filler for padding only\n" * 6
+)
+
+
 _BAD_TRUNCATED = f"""# Market facts (frozen from iteration 1)
 
 ±$11.22)
@@ -132,7 +186,8 @@ def _facts_cfg(**kwargs: Any) -> RunConfig:
 async def test_extract_facts_packet_success_no_retry_no_truncation_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    stub = _StubFactsExtractor([(_GOOD_MARKDOWN, None)])
+    good = _good_facts_min_chars(1600)
+    stub = _StubFactsExtractor([(good, None)])
     stub_reg = ProviderRegistry()
     stub_reg.register("gemini", lambda **_: stub)
     monkeypatch.setattr(
@@ -145,7 +200,7 @@ async def test_extract_facts_packet_success_no_retry_no_truncation_warning(
     assert "# Market facts (frozen from iteration 1)" in text
     assert f"Forward 3{_SIGMA} Move (May 12): ±39.6% (±$33.66)" in text
     assert text.endswith("\n")
-    assert "looks truncated/malformed" not in caplog.text
+    assert "decision=ACCEPT" in caplog.text
     assert "Facts packet extracted chars=" in caplog.text
     assert stub.max_output_tokens_per_call == [512]
 
@@ -166,7 +221,8 @@ async def test_extract_facts_packet_truncated_retries_then_fallback(
     with caplog.at_level(logging.WARNING, logger="equity_analyst.facts_packet"):
         text = await extract_facts_packet(synthesis_text="Some synthesis", symbol="MNDY", config=cfg)
     assert "facts_packet: output_chars=" in caplog.text
-    assert "looks truncated/malformed" in caplog.text
+    assert "decision=RETRY" in caplog.text
+    assert "decision=FALLBACK" in caplog.text
     assert "treat facts as unknown" in text or "remained malformed after retry" in text
     assert stub.max_output_tokens_per_call == [512, 1024]
 
@@ -176,7 +232,8 @@ async def test_extract_facts_packet_truncated_retries_on_heuristic_then_succeeds
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Bad shape alone (no MAX_TOKENS signal) still triggers one doubled-budget retry."""
-    stub = _StubFactsExtractor([(_BAD_TRUNCATED, None), (_GOOD_MARKDOWN, None)])
+    good = _good_facts_min_chars(1600)
+    stub = _StubFactsExtractor([(_BAD_TRUNCATED, None), (good, None)])
     stub_reg = ProviderRegistry()
     stub_reg.register("gemini", lambda **_: stub)
     monkeypatch.setattr(
@@ -184,11 +241,77 @@ async def test_extract_facts_packet_truncated_retries_on_heuristic_then_succeeds
         classmethod(lambda cls: stub_reg),
     )
     cfg = _facts_cfg(facts_packet_max_output_tokens=512)
-    with caplog.at_level(logging.WARNING, logger="equity_analyst.facts_packet"):
+    with caplog.at_level(logging.INFO, logger="equity_analyst.facts_packet"):
         text = await extract_facts_packet(synthesis_text="Some synthesis", symbol="MNDY", config=cfg)
     assert "facts_packet: output_chars=" in caplog.text
-    assert "looks truncated/malformed" in caplog.text
+    assert "decision=RETRY" in caplog.text
+    assert "decision=ACCEPT" in caplog.text
     assert f"Forward 3{_SIGMA} Move (May 12): ±39.6% (±$33.66)" in text
+    assert stub.max_output_tokens_per_call == [512, 1024]
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_packet_long_colon_tail_accepted_no_retry(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Gate (a) accepts long packets whose last character is ':' (no misleading colon tail reject)."""
+    md = _long_packet_colon_tail(2000)
+    stub = _StubFactsExtractor([(md, None)])
+    stub_reg = ProviderRegistry()
+    stub_reg.register("gemini", lambda **_: stub)
+    monkeypatch.setattr(
+        "equity_analyst.facts_packet.ProviderRegistry.default",
+        classmethod(lambda cls: stub_reg),
+    )
+    cfg = _facts_cfg()
+    with caplog.at_level(logging.INFO, logger="equity_analyst.facts_packet"):
+        text = await extract_facts_packet(synthesis_text="Some synthesis", symbol="MNDY", config=cfg)
+    assert len(text.strip()) >= 2000
+    assert text.rstrip().endswith(":")
+    assert "decision=ACCEPT" in caplog.text
+    assert stub.max_output_tokens_per_call == [512]
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_packet_rich_tail_retries_then_accepts(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """8/8 sections but < gate (a) length and missing EOF newline → RETRY once, then padded good → ACCEPT."""
+    good = _good_facts_min_chars(1600)
+    stub = _StubFactsExtractor([(_eight_section_retry_first_attempt(), None), (good, None)])
+    stub_reg = ProviderRegistry()
+    stub_reg.register("gemini", lambda **_: stub)
+    monkeypatch.setattr(
+        "equity_analyst.facts_packet.ProviderRegistry.default",
+        classmethod(lambda cls: stub_reg),
+    )
+    cfg = _facts_cfg(facts_packet_max_output_tokens=512)
+    with caplog.at_level(logging.INFO, logger="equity_analyst.facts_packet"):
+        text = await extract_facts_packet(synthesis_text="Some synthesis", symbol="MNDY", config=cfg)
+    assert "decision=RETRY" in caplog.text
+    assert "decision=ACCEPT" in caplog.text
+    assert stub.max_output_tokens_per_call == [512, 1024]
+    assert f"Forward 3{_SIGMA} Move (May 12): ±39.6% (±$33.66)" in text
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_packet_two_section_short_emits_fallback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    thin = _THIN_TWO_SECTION
+    assert len(thin.strip()) < 800
+    stub = _StubFactsExtractor([(thin, None), (thin, None)])
+    stub_reg = ProviderRegistry()
+    stub_reg.register("gemini", lambda **_: stub)
+    monkeypatch.setattr(
+        "equity_analyst.facts_packet.ProviderRegistry.default",
+        classmethod(lambda cls: stub_reg),
+    )
+    cfg = _facts_cfg(facts_packet_max_output_tokens=512)
+    with caplog.at_level(logging.INFO):
+        text = await extract_facts_packet(synthesis_text="Some synthesis", symbol="MNDY", config=cfg)
+    assert "treat facts as unknown" in text
+    assert "Post-Earnings IV: unknown" in text
     assert stub.max_output_tokens_per_call == [512, 1024]
 
 
