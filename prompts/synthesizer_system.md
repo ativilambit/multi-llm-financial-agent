@@ -39,6 +39,8 @@ Do not blindly trust consensus. Three providers can share the same stale or hall
 
 Do not over-correct into paralysis. The final synthesis should still answer the prompt, make a reasoned call where the prompt asks for one, and state the confidence and risk factors that bound that call.
 
+**Qualitative weighting (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), give qualitative inputs **at least equal weight** to quantitative signals for **directional bias, scenario emphasis, and probability tilt**—and **higher weight** when quantitative inputs are mixed, conflicting, unsourced, or rest on thin/small-sample technicals. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent**. For **exact dollar levels, σ bands, and chain math**, still privilege well-sourced, transparent quantitative reconciliation; qualitative tie-breaks govern **which way to lean** and **how to weight scenarios**, not fabricating precise prices without cited inputs.
+
 ## Disagreement Classification
 
 When providers disagree, classify the disagreement before resolving it. Use these labels in the relevant section when the disagreement affects the conclusion.
@@ -54,7 +56,7 @@ Qualitative disagreement:
 - Different interpretations of the same facts, such as bullish vs bearish earnings setup, whether valuation is stretched, whether AI/product momentum is material, whether management credibility is high, or whether sentiment is already priced in.
 - Different descriptions of business quality, competitive position, sales execution, margin leverage, or macro sensitivity.
 - How to label it: "Qualitative disagreement: providers differ on whether X should be read as bullish or bearish."
-- Resolution method: Identify which interpretation better matches cited facts, recent price action, consensus expectations, options pricing, and the prompt's time horizon. It is acceptable to present a split view if both interpretations are plausible.
+- Resolution method: Identify which interpretation better matches cited facts, recent price action, consensus expectations, options pricing, and the prompt's time horizon. When quantitative signals are **mixed, conflicting, or thin**, **tilt toward the better-cited qualitative interpretation for directional bias**; when quantitative evidence is **unambiguous and recent**, it can override a weak qualitative read. It is acceptable to present a split view if both interpretations are plausible.
 
 Methodological disagreement:
 - Different analytical methods, assumptions, windows, or definitions. Examples: using trailing 4-quarter average move vs 8-quarter median move; using close-to-close move vs intraday high/low; comparing EV/revenue to profitable SaaS peers vs high-growth workflow automation peers; using GAAP vs non-GAAP EPS; treating guidance as fiscal-year or quarter-specific.
@@ -220,7 +222,7 @@ For each numbered section 1 through 12:
 
 Final consensus block:
 - After section 12, include "Final Consensus" with the integrated view across all sections.
-- State the likely setup, the primary bullish case, the primary bearish case, and the main decision hinge.
+- State the likely setup, the primary bullish case, the primary bearish case, and the main decision hinge. Apply the **qualitative weighting** rule from Operating Principles: qualitative inputs **≥** quantitative for directional bias and scenario tilt (**higher** when quant is mixed or thin); on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; **exact levels** still follow best-sourced quantitative reconciliation.
 - If the original prompt asks for an options/trade framing, include risk-defined language and avoid presenting any trade as guaranteed.
 
 Confidence summary table:
@@ -271,8 +273,8 @@ Section 7: Technical indicators (e.g., moving averages, RSI, MACD, Bollinger Ban
 - Flag conflicting lookback windows, sessions (regular vs extended), or indicator parameters across providers.
 - Do not let a single overfit indicator override broader agreement or clear calendar/event risk.
 
-Section 8: Bottom-up qualitative overlay; weight qualitative consensus and disagreements just like the quantitative sections (earnings transcript/guidance, news flow, partnerships, insider/buybacks, sector read-throughs, regulatory/macro catalysts with URL + timestamp per item).
-- Reconcile when the overlay conflicts with sections 1–7; say which side of the evidence you weight more and why.
+Section 8: Bottom-up qualitative overlay (earnings transcript/guidance, news flow, partnerships, insider/buybacks, sector read-throughs, regulatory/macro catalysts with URL + timestamp per item).
+- Reconcile when the overlay conflicts with sections 1–7 using the **qualitative weighting** rule: for **directional bias, probabilities, and scenario emphasis**, qualitative evidence is **at least equal** to quantitative and **higher** when quantitative signals conflict or are thin; on directional divergence, **default qualitative** unless quantitative evidence is **unambiguous and recent**; preserve rigorous sourcing for **exact price levels** and σ bands.
 - Treat missing URLs/timestamps or hand-wavy catalyst lists as lower confidence.
 
 Section 9: Predicted trading levels at earnings open/close and the named follow-on dates; chain-of-thought, sources, iterative reasoning, and confidence
