@@ -881,6 +881,120 @@ async def test_refresh_facts_reruns_extractor(monkeypatch: Any, tmp_path: Path) 
     assert calls["n"] >= 2
 
 
+def test_parse_verifier_json_sections_to_revise() -> None:
+    raw = '{"verified":[],"contradicted":[],"unverifiable":[],"sections_to_revise":[9, 11, 3, 13, "2"]}'
+    out = parse_verifier_json(raw)
+    assert out["sections_to_revise"] == [9, 11, 3, 2]
+
+
+class _CaptureOpenAiFan(LLMProvider):
+    prompts: ClassVar[list[str]] = []
+
+    def __init__(self) -> None:
+        self.name = "openai"
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        _CaptureOpenAiFan.prompts.append(prompt)
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text="fan\n",
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_iteration_two_fan_out_prompt_includes_refinement_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _fake_facts(**kwargs: Any) -> str:
+        return "# Market facts (frozen)\n\n- PCR: 0.5\n"
+
+    monkeypatch.setattr("equity_analyst.iterative.extract_facts_packet", _fake_facts)
+
+    _CaptureOpenAiFan.prompts.clear()
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _CaptureOpenAiFan())
+    synth = _SynthCalls("gemini")
+    ver = _VerCalls("gemini")
+    reg.register("gemini", lambda **_: _GeminiSplit(synth, ver))
+    cfg = _base_cfg(
+        facts_packet_enabled=True,
+        conditional_fanout_enabled=False,
+    )
+    out = tmp_path / "refine-prompt"
+    out.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out), config={"configurable": {"thread_id": "refine-prompt"}})
+    assert len(_CaptureOpenAiFan.prompts) >= 2
+    second = _CaptureOpenAiFan.prompts[1]
+    assert "# REFINEMENT MODE" in second
+    assert "DO NOT re-derive" in second
+    assert "# Prior synthesis (round 1)" in second
+    assert "FACTS (frozen from iteration 1" in second
+
+
+class _CaptureOpenAiFan2(LLMProvider):
+    prompts: ClassVar[list[str]] = []
+
+    def __init__(self) -> None:
+        self.name = "openai"
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        enable_web_search: bool = True,
+        max_output_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> ProviderResponse:
+        _CaptureOpenAiFan2.prompts.append(prompt)
+        return ProviderResponse(
+            provider_name=self.name,
+            model="m",
+            text="fan\n",
+            usage=ProviderUsage(),
+            raw=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_refinement_mode_prompt_respects_config_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _fake_facts(**kwargs: Any) -> str:
+        return "# Market facts (frozen)\n\n- PCR: 0.5\n"
+
+    monkeypatch.setattr("equity_analyst.iterative.extract_facts_packet", _fake_facts)
+
+    _CaptureOpenAiFan2.prompts.clear()
+    reg = ProviderRegistry()
+    reg.register("openai", lambda **_: _CaptureOpenAiFan2())
+    synth = _SynthCalls("gemini")
+    ver = _VerCalls("gemini")
+    reg.register("gemini", lambda **_: _GeminiSplit(synth, ver))
+    cfg = _base_cfg(
+        facts_packet_enabled=True,
+        conditional_fanout_enabled=False,
+        refinement_mode_prompt_enabled=False,
+    )
+    out2 = tmp_path / "refine-off"
+    out2.mkdir()
+    app = compile_refinement_workflow(registry=reg, checkpointer=MemorySaver())
+    await app.ainvoke(_initial_state(cfg, out2), config={"configurable": {"thread_id": "refine-off"}})
+    assert len(_CaptureOpenAiFan2.prompts) >= 2
+    second = _CaptureOpenAiFan2.prompts[1]
+    assert "# REFINEMENT MODE" not in second
+
+
 def test_round_summary_short_text_passes_through() -> None:
     text = "Synthesis body shorter than max_chars."
     out = round_summary_for_changelog(text, iteration_index=1)

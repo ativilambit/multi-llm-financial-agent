@@ -443,15 +443,17 @@ flowchart TD
 
 ### Cost optimization (iterative)
 
-Two defaults-on behaviors reduce token and tool use on **iteration 2+** (see `RunConfig` / `run.json` `config`):
+Several defaults-on behaviors reduce token and tool use on **iteration 2+** (see `RunConfig` / `run.json` `config`):
 
 1. **Frozen facts packet (Strategy A)** — After round-1 synthesis, a compact **`facts_packet.md`** is written under the run directory (Gemini Flash extractor: `facts_packet_extractor_*`, `facts_packet_max_output_tokens`). Later fan-out rounds prepend a **FACTS (frozen from iteration 1 — do NOT re-fetch via web_search)** block so models lean on that snapshot instead of repeating the same market pulls. The verifier JSON may set **`"refresh_facts": true`** to re-extract from the **latest** synthesis before the next fan-out when figures are genuinely stale.
 
 2. **Conditional fan-out (Strategy B)** — From iteration 2 onward, **only the synthesizer** re-runs on verifier feedback (plus the optional refinement block) unless the verifier requests more provider work via **`"refan_out_providers": ["anthropic", ...]`** or **`"refan_out_all": true`**. Empty list / false means “synthesizer only” for that transition.
 
-**YAML / `RunConfig`:** `facts_packet_enabled` (default `true`), `conditional_fanout_enabled` (default `true`), plus extractor fields above.
+3. **Refinement-mode provider prompt** — When iteration 2+ **does** call fan-out providers again (full re-fan, partial `refan_out_providers`, or because `conditional_fanout_enabled` is false), the user message includes a **REFINEMENT MODE** prefix: prior-round synthesis, follow-up targets, optional verifier **`sections_to_revise`**, and explicit instructions to **quote FACTS verbatim** instead of re-deriving 1σ/2σ/3σ tables, IV, PCR, and other frozen primitives. Toggle with `refinement_mode_prompt_enabled` (default `true`) or env `REFINEMENT_MODE_PROMPT_ENABLED`.
 
-**Env:** `FACTS_PACKET_ENABLED`, `CONDITIONAL_FANOUT_ENABLED` (`1` / `true` / `yes` / `on` vs anything else treated as off when set), and `FACTS_PACKET_MAX_OUTPUT_TOKENS` (invalid values log a warning and keep the default). When a key is omitted from YAML, env applies; explicit YAML wins over env. Override via env: `FACTS_PACKET_MAX_OUTPUT_TOKENS=8192` in `.env` (default 4096, range 256–128000).
+**YAML / `RunConfig`:** `facts_packet_enabled` (default `true`), `conditional_fanout_enabled` (default `true`), `refinement_mode_prompt_enabled` (default `true`), plus extractor fields above.
+
+**Env:** `FACTS_PACKET_ENABLED`, `CONDITIONAL_FANOUT_ENABLED`, `REFINEMENT_MODE_PROMPT_ENABLED` (`1` / `true` / `yes` / `on` vs anything else treated as off when set), and `FACTS_PACKET_MAX_OUTPUT_TOKENS` (invalid values log a warning and keep the default). When a key is omitted from YAML, env applies; explicit YAML wins over env. Override via env: `FACTS_PACKET_MAX_OUTPUT_TOKENS=8192` in `.env` (default 4096, range 256–128000).
 
 **CLI:** `--facts-packet` / `--no-facts-packet`, `--conditional-fanout` / `--no-conditional-fanout` (Boolean optional actions; omit to keep YAML/env defaults).
 

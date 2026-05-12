@@ -106,7 +106,7 @@ Keep each of "verified", "contradicted", and "unverifiable" to at most 10 items;
 Prioritize material claims (figures, ratings, ratios) over narrative.
 
 Example (format only; replace with real claims from the excerpt):
-{"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": "", "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false}
+{"verified": ["Revenue grew 12% YoY per company filing"], "contradicted": [], "unverifiable": ["Third-party estimate of Q2 margin without a cited source"], "notes": "", "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false, "sections_to_revise": []}
 
 CRITICAL — your entire reply must be parseable as a single JSON object. No markdown code fences, no prose
 before or after the object, no commentary outside the JSON. One line or pretty-printed is fine.
@@ -117,8 +117,9 @@ Optional cost-control directives (defaults conservative — leave false/empty un
 - "refresh_facts" (boolean): true only if the frozen round-1 facts packet is materially stale or internally inconsistent with the synthesis excerpt.
 - "refan_out_providers" (array of strings): provider names to re-run in parallel fan-out next iteration (e.g. ["anthropic", "openai"]). Empty means do not request extra fan-out.
 - "refan_out_all" (boolean): true only if multiple provider lenses are required again; next iteration re-runs every configured fan-out provider.
+- "sections_to_revise" (array of integers 1-12): optional hint for which numbered equity-report sections the next provider pass should focus on (e.g. [9, 11]). Omit or use [] if unclear.
 
-When in doubt, use "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false.
+When in doubt, use "refresh_facts": false, "refan_out_providers": [], "refan_out_all": false, "sections_to_revise": [].
 """
 
 _OVERALL_CONFIDENCE_RE = re.compile(
@@ -402,6 +403,28 @@ def _attempt_truncated_json_repair(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _coerce_sections_to_revise(raw: Any) -> list[int]:
+    """Normalize verifier ``sections_to_revise`` into unique section numbers in 1..12."""
+    out: list[int] = []
+    if not isinstance(raw, list):
+        return out
+    for x in raw:
+        n: int | None = None
+        if isinstance(x, bool):
+            continue
+        if isinstance(x, int):
+            n = x
+        elif isinstance(x, float) and x == int(x):
+            n = int(x)
+        elif isinstance(x, str):
+            m = re.match(r"^\s*(\d{1,2})\b", x.strip())
+            if m:
+                n = int(m.group(1))
+        if n is not None and 1 <= n <= 12 and n not in out:
+            out.append(n)
+    return out
+
+
 def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) -> dict[str, Any]:
     result: dict[str, Any] = {
         "verified": _values_for_canonical_key(best_data, "verified"),
@@ -421,6 +444,7 @@ def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) ->
                 refan_list.append(s)
     result["refan_out_providers"] = refan_list
     result["refan_out_all"] = bool(best_data.get("refan_out_all"))
+    result["sections_to_revise"] = _coerce_sections_to_revise(best_data.get("sections_to_revise"))
     if truncated:
         result["_truncated"] = True
     return result
@@ -450,6 +474,7 @@ def parse_verifier_json(text: str) -> dict[str, Any]:
                 "refresh_facts": False,
                 "refan_out_providers": [],
                 "refan_out_all": False,
+                "sections_to_revise": [],
             }
     else:
         best_rank: tuple[int, int] = (-1, -1)
@@ -546,6 +571,7 @@ class RefinementState(TypedDict, total=False):
     iterative_config_snapshot: NotRequired[dict[str, Any]]
     facts_packet_enabled: NotRequired[bool]
     conditional_fanout_enabled: NotRequired[bool]
+    refinement_mode_prompt_enabled: NotRequired[bool]
     facts_packet_md: NotRequired[str]
 
 
@@ -585,13 +611,112 @@ def _fan_out_task_body(state: RefinementState) -> str:
     return base
 
 
+_REFINEMENT_PRIOR_SYNTHESIS_MAX_CHARS = 120_000
+
+
+def _prior_synthesis_for_provider_refine(text: str, *, prior_round: int) -> str:
+    """Full prior synthesis for provider refinement, abridged if it would dominate the context window."""
+    t = text.rstrip()
+    if len(t) <= _REFINEMENT_PRIOR_SYNTHESIS_MAX_CHARS:
+        return t
+    return round_summary_for_changelog(
+        t,
+        iteration_index=prior_round,
+        max_chars=50_000,
+    )
+
+
+def _sections_to_revise_markdown(sections: list[int]) -> str:
+    if not sections:
+        return (
+            "### Sections to revise\n\n"
+            "No explicit section list from the verifier — revise based on the follow-up targets below "
+            "and your judgment. Prefer minimal edits outside areas clearly implicated by those targets."
+        )
+    joined = ", ".join(str(s) for s in sections)
+    return (
+        f"### Sections to revise: [{joined}]\n\n"
+        "Focus substantive changes on these sections. For other sections (1-12 not listed), you may leave "
+        "them largely aligned with the prior synthesis — briefly confirm them or note only if you would "
+        "materially change them."
+    )
+
+
+def _refinement_mode_block(*, iteration: int, max_iterations: int) -> str:
+    """Markdown prefix for iteration 2+ when fan-out providers are actually invoked."""
+    return (
+        f"# REFINEMENT MODE (iteration {iteration} of {max_iterations})\n\n"
+        "You already have the frozen FACTS packet above and a prior synthesis. Your job is to **refine, not re-derive**.\n\n"
+        "Rules:\n"
+        "- DO NOT re-fetch market data — the FACTS packet above is authoritative for the static numbers "
+        "(last close, IV, PCR, short interest, 1-sigma / 2-sigma / 3-sigma implied moves, analyst targets, historical reactions).\n"
+        "- DO NOT re-derive market primitives (1-sigma / 2-sigma / 3-sigma ranges, IV, PCR, baseline anchors) that are already "
+        "provided in FACTS. Quote them directly.\n"
+        "- DO quote the relevant numbers verbatim from FACTS where they appear in your sections.\n"
+        "- DO focus your reasoning on the verifier's specific concerns, on the **follow-up verification targets** "
+        "below, and on revising or strengthening the sections called out under **Sections to revise**. Adjust "
+        "probabilities, ranges, qualitative emphasis, and conclusions accordingly.\n"
+        "- DO NOT re-write sections that did not get verifier flags or new disagreements. You may briefly confirm them.\n"
+    )
+
+
+def _compose_fan_out_user_body(
+    state: RefinementState,
+    *,
+    it_no: int,
+    skip_fanout: bool,
+) -> str:
+    """User message body for provider fan-out (before optional facts prefix)."""
+    core = state["original_prompt"]
+    followups = state.get("followup_questions") or []
+    extra = "\n\n".join(followups)
+    follow_block = (
+        f"\n\n### Follow-up verification targets\n{extra}"
+        if extra
+        else (
+            "\n\n### Follow-up verification targets\n\n"
+            "(No explicit bullet list in router output — still apply REFINEMENT MODE using the latest "
+            "verification concerns from the prior round.)\n"
+        )
+    )
+
+    refinement_on = (
+        bool(state.get("refinement_mode_prompt_enabled", True))
+        and it_no >= 2
+        and not skip_fanout
+        and bool(state.get("synthesis_history"))
+    )
+    if not refinement_on:
+        return f"{core}{follow_block}" if extra else core
+
+    static = EQUITY_ANALYST_SYSTEM_PROMPT
+    sep = f"{static}\n\n"
+    ver: dict[str, Any] = {}
+    if state.get("verification_history"):
+        ver = state["verification_history"][-1]
+    sec = _coerce_sections_to_revise(ver.get("sections_to_revise"))
+    sections_md = _sections_to_revise_markdown(sec)
+    prior_round = it_no - 1
+    prior_raw = state["synthesis_history"][-1]
+    prior_excerpt = _prior_synthesis_for_provider_refine(prior_raw, prior_round=prior_round)
+    refine = _refinement_mode_block(iteration=it_no, max_iterations=int(state["max_iterations"]))
+    middle = (
+        f"{refine}\n{sections_md}\n\n"
+        f"# Prior synthesis (round {prior_round})\n\n{prior_excerpt.strip()}"
+        f"{follow_block}\n\n"
+    )
+    if core.startswith(sep):
+        user_only = core[len(sep) :]
+        return f"{sep}{middle}{user_only}"
+    return f"{middle}{core}"
+
+
 def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
     async def fan_out(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
         round_idx = len(state.get("provider_responses", []))
         it_no = round_idx + 1
         max_it = state["max_iterations"]
-        task_body = _fan_out_task_body(state)
         facts_enabled = bool(state.get("facts_packet_enabled", True))
         conditional = bool(state.get("conditional_fanout_enabled", True))
         allowed_names = frozenset(str(n) for n in state["providers"])
@@ -628,16 +753,17 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         elif facts_enabled and it_no == 1:
             facts_label = "pending"
 
-        body = task_body
-        if facts_enabled and it_no >= 2 and facts_md:
-            body = facts_frozen_user_prefix(facts_markdown=facts_md) + task_body
-
         refan_all = bool(ver_for_directives.get("refan_out_all"))
         raw_refan = ver_for_directives.get("refan_out_providers") or []
         refan_set = {str(x).strip().lower() for x in raw_refan if str(x).strip()} & allowed_names
 
         skip_fanout = it_no >= 2 and conditional and not refan_all and not refan_set
         partial_fanout = it_no >= 2 and conditional and bool(refan_set) and not refan_all
+
+        task_body = _compose_fan_out_user_body(state, it_no=it_no, skip_fanout=skip_fanout)
+        body = task_body
+        if facts_enabled and it_no >= 2 and facts_md:
+            body = facts_frozen_user_prefix(facts_markdown=facts_md) + task_body
 
         fan_label = "full"
         if skip_fanout:
@@ -1305,6 +1431,7 @@ def build_initial_refinement_state(
         "iterative_config_snapshot": cfg.model_dump(mode="json"),
         "facts_packet_enabled": cfg.facts_packet_enabled,
         "conditional_fanout_enabled": cfg.conditional_fanout_enabled,
+        "refinement_mode_prompt_enabled": cfg.refinement_mode_prompt_enabled,
     }
 
 

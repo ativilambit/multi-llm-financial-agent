@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-11
 
+- **Iterative** Refinement-mode prompt — iter 2+ fan-out providers (when actually invoked) are told not to re-derive market primitives from the facts packet; refine sections flagged by the verifier (`sections_to_revise`) instead. Config: `refinement_mode_prompt_enabled` (default on); env `REFINEMENT_MODE_PROMPT_ENABLED`.
 - Pre-synthesis summarizer log prefix renamed to `pre_synthesis_summarize:` for clarity (was `synthesizer:`).
 - Pre-synthesis summarizer defaults to Gemini Flash (configurable via `OVERSIZED_SUMMARIZE_PROVIDER` / `OVERSIZED_SUMMARIZE_MODEL`).
 - Facts packet validator loosened - accepts well-formed packets even when tail heuristic flags them; only falls back to "unknown" template when output is genuinely broken.

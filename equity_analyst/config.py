@@ -195,6 +195,11 @@ class RunConfig(BaseModel):
         default=True,
         description="Iterative: after round 1, skip fan-out providers unless the verifier requests re-fan-out.",
     )
+    refinement_mode_prompt_enabled: bool = Field(
+        default=True,
+        description="Iterative: when iteration 2+ actually invokes fan-out providers, prepend REFINEMENT MODE "
+        "instructions plus prior-round synthesis so models quote FACTS and avoid re-deriving frozen primitives.",
+    )
     facts_packet_extractor_provider: str = Field(
         default="gemini",
         description="Registry key for the facts-packet extractor LLM (default fast/cheap).",
@@ -499,6 +504,13 @@ class RunConfig(BaseModel):
             and "conditional_fanout_enabled" not in self.model_fields_set
         ):
             updates["conditional_fanout_enabled"] = str(cf).strip().lower() in ("1", "true", "yes", "on")
+        rm = os.environ.get("REFINEMENT_MODE_PROMPT_ENABLED")
+        if (
+            rm is not None
+            and str(rm).strip()
+            and "refinement_mode_prompt_enabled" not in self.model_fields_set
+        ):
+            updates["refinement_mode_prompt_enabled"] = str(rm).strip().lower() in ("1", "true", "yes", "on")
         raw_m = os.environ.get("FACTS_PACKET_MAX_OUTPUT_TOKENS")
         if (
             raw_m is not None
