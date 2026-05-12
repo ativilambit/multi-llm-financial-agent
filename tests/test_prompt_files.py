@@ -40,12 +40,15 @@ def test_synthesizer_system_prompt_covers_same_day_sd_anchor() -> None:
 
 
 def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> None:
-    """Prompts instruct higher weight for qualitative inputs on directional calls."""
+    """Prompts instruct explicit 51:49 qualitative vs quantitative blend on directional calls."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    assert "**Weight qualitative factors strongly.**" in j2
-    assert "default to the qualitative side unless the quantitative evidence is unambiguous and recent" in j2
+    assert "51% qualitative : 49% quantitative" in j2
+    assert "51%" in j2 and "49%" in j2
+    assert "default to the qualitative side" in j2 and "unambiguous and recent" in j2
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     assert "**Qualitative weighting (directional bias vs price levels):**" in synth
+    assert "51% qualitative : 49% quantitative" in synth
+    assert "51%" in synth and "49%" in synth
     assert "**default to the qualitative side**" in synth
 
 
