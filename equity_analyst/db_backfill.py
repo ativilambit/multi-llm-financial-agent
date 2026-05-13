@@ -19,6 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from equity_analyst.config import env_from_persisted_run_json
 from equity_analyst.db_models import ProviderResponseRow, RunRow
 
 logger = logging.getLogger(__name__)
@@ -183,6 +184,7 @@ def build_run_row(*, run_id: str, run_dir: Path, data: dict[str, Any]) -> dict[s
         "run_id": run_id,
         "symbol": symbol,
         "earnings_date": earnings_date,
+        "env": env_from_persisted_run_json(data),
         "run_environment": run_environment,
         "started_at_utc": started_at,
         "finished_at_utc": finished_at,

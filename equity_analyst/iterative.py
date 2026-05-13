@@ -2957,7 +2957,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         snap_cfg = meta.get("config")
         if isinstance(snap_cfg, dict):
             with contextlib.suppress(Exception):
-                meta["run_profile"] = RunConfig.model_validate(snap_cfg).run_profile
+                rc = RunConfig.model_validate(snap_cfg)
+                meta["run_profile"] = rc.run_profile
+                meta["env"] = rc.env
         run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         logger.info("Iterative wall-clock timing summary: %s", timing_summary)
 

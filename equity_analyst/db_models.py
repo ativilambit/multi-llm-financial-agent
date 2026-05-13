@@ -31,6 +31,7 @@ class RunRow(Base):
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
     earnings_date: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_environment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    env: Mapped[str] = mapped_column(String(16), nullable=False, server_default="production")
 
     started_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -78,6 +79,8 @@ class RunRow(Base):
         Index("ix_runs_symbol", "symbol"),
         Index("ix_runs_earnings_date", "earnings_date"),
         Index("ix_runs_started_at_utc", "started_at_utc"),
+        Index("ix_runs_env", "env"),
+        CheckConstraint("env IN ('production','test')", name="ck_runs_env_values"),
     )
 
 

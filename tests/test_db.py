@@ -96,3 +96,12 @@ async def test_best_effort_insert_logs_warning(
 
     assert any("DB insert failed" in r.message for r in caplog.records)
 
+
+def test_postgres_metadata_writes_enabled_gate() -> None:
+    from equity_analyst.db_ops import postgres_metadata_writes_enabled
+
+    assert postgres_metadata_writes_enabled(run_profile="production", env="production") is True
+    assert postgres_metadata_writes_enabled(run_profile="dev", env="test") is True
+    assert postgres_metadata_writes_enabled(run_profile="production", env="test") is True
+    assert postgres_metadata_writes_enabled(run_profile="dev", env="production") is False
+

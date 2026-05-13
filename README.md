@@ -50,10 +50,10 @@ The Postgres DB layer is **additive**: it stores structured metadata for queryin
 - `outputs/<run-id>/prompts/` — per-LLM-call exports of the rendered system/user text, model caps, tool flags, and (for analyst fan-out) a JSON sidecar of the Jinja render context; see `prompts_index.md` inside that folder. Disable with **`EXPORT_PROMPTS=0`** if you want smaller run directories.
 - `outputs/<run-id>/synthesis.md` (and optional PDFs)
 - `outputs/<run-id>/outcome.json`
-- `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down, `db_enabled` is false, **`run_profile`** is not production, or the insert fails; see prediction extraction below)
+- `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down, `db_enabled` is false, writes are blocked by **profile + env** gating, or the insert fails; see prediction extraction below)
 - `outputs/outcomes_registry.jsonl`
 
-**Postgres persistence profile:** only runs with **`run_profile: production`** are written to Postgres (`runs`, `provider_responses`, `outcomes`, `predictions`). Local experiments default to **`dev`** (no Postgres writes; files and logs behave the same). Use **`python -m equity_analyst run ... --profile production`**, set **`EQUITY_RUN_PROFILE=production`** (or **`RUN_PROFILE`** if the former is unset), or put **`run_profile: production`** in YAML. Real multi-symbol batches via **`scripts/run_all_symbols.sh`** pass **`--profile production`** by default; use **`scripts/run_all_symbols.sh ... --env test`** (or **`python -m equity_analyst run ... --env test`**) for a **test tier**: **`run_profile=dev`** unless you add **`--profile production`**, and Postgres stays off unless YAML sets **`db_enabled: true`** or the shell sets **`DB_ENABLED=1`**. Outcome and prediction tooling reads **`run.json`**: top-level **`run_profile`**, else **`config.run_profile`**; older trees without either field are treated as **production** so existing cron/outcome flows keep working.
+**Postgres persistence:** rows are written when **`db_enabled`** is true (default), **`DATABASE_URL`** resolves, and either **`run_profile: production`** (typical scheduled batches) or **`RunConfig.env: test`** (CLI **`--env test`**, YAML **`env: test`**, or **`EQUITY_ENV=test`**). **`run_profile: dev`** with **`env: production`** skips Postgres (local smoke without polluting prod analytics). The **`runs.env`** column stores **`production`** or **`test`** so you can filter test-tier rows. Use **`python -m equity_analyst run ... --profile production`** (and **`--env production`**, the default) for prod-style runs; **`scripts/run_all_symbols.sh`** passes **`--profile production`** by default. For a **test tier**, use **`--env test`** (or **`scripts/run_all_symbols.sh ... --env test`**): defaults keep **`run_profile=dev`** unless **`--profile production`**, while Postgres stays on by default—use **`--no-db`**, YAML **`db_enabled: false`**, or **`DB_ENABLED=0`** to skip DB. **`run.json`** carries top-level **`run_profile`** and **`env`** (also inside **`config`**); outcome and prediction tooling prefers the top-level keys, then **`config`**, then legacy defaults (**production** profile, **production** env) for older trees.
 
 **T-0 horizon blend preset (`RunConfig.t0_blend_preset`):** only the **T-0** rows in the fenced horizon table use this **qual : quant** digit pair; **T−3..T−1** stays **55 : 45** and **T+1..T+5** stays **49 : 51**. Presets: **`default`** (49:51), **`quant_lean`** (40:60), **`quant_dominant`** (1:99), **`qual_dominant`** (99:1). Set in YAML, or override with **`EQUITY_T0_BLEND_PRESET`**, or **`python -m equity_analyst run ... --t0-blend <preset>`** (CLI wins over env and YAML for that field). The equity Jinja template and synthesizer system prompt are injected at render/synthesis time; the verifier rejects wrong T-0 literals for the active preset.
 
@@ -204,7 +204,7 @@ Environment keys (optional; typically set in `.env` or the shell):
 - `DRIVE_OAUTH_CLIENT_SECRETS_PATH` (path to Desktop OAuth client JSON; used by `drive_oauth_setup`)
 - `DRIVE_OAUTH_TOKEN_PATH` (saved refresh token JSON)
 - `RUN_ENVIRONMENT=production|test` (optional; routes uploads under the `prod` or `test` subfolder; overrides YAML `run_environment` when set)
-- `EQUITY_ENV=production|test` (optional; **`RunConfig.env`** deployment tier: **`test`** implies dev profile + no Postgres unless YAML `db_enabled: true` or `DB_ENABLED=1`; only applied when YAML omits `env`. When set to **`test`**, **`EQUITY_RUN_PROFILE` / `RUN_PROFILE`** are **not** applied so a shell profile cannot promote runs to production Postgres.)
+- `EQUITY_ENV=production|test` (optional; **`RunConfig.env`** deployment tier: **`test`** defaults **`run_profile=dev`** when YAML omits **`run_profile`** and **`--profile`** is not set; Postgres follows **`db_enabled`** like production. When set to **`test`**, **`EQUITY_RUN_PROFILE` / `RUN_PROFILE`** are **not** applied so a shell profile cannot promote runs to **`run_profile=production`** without YAML.)
 
 Per-run CLI overrides:
 
@@ -218,7 +218,7 @@ python -m equity_analyst run --config ... --env test
 python -m equity_analyst run --config ... --env production
 ```
 
-**Note:** **`--environment`** controls **Google Drive** child folders (`prod` / `test`). **`--env`** sets **`RunConfig.env`** (batch / deployment tier: **`test`** selects **`run_profile=dev`** unless **`--profile`** overrides, and disables Postgres unless you opt in with **`db_enabled: true`** in YAML or **`DB_ENABLED=1`**).
+**Note:** **`--environment`** controls **Google Drive** child folders (`prod` / `test`). **`--env`** sets **`RunConfig.env`**: **`test`** defaults **`run_profile=dev`** unless **`--profile`** overrides; Postgres uses the same **`db_enabled`** defaults as production (filter **`runs.env`**). Use **`--no-db`** / **`db_enabled: false`** / **`DB_ENABLED=0`** to skip DB.
 
 ### Caveats
 
@@ -655,7 +655,7 @@ Batch mode mirrors **`outcome-record-batch`**: Shape A parses `output_dir=` line
 
 **Postgres writes:** existing `predictions` rows for the run are **deleted** then re-inserted (idempotent reruns). Each row uses `source = 'llm_extracted'`.
 
-**Fallback file:** if Postgres is unavailable, `DATABASE_URL` is unset/invalid, **`db_enabled`** is false in the run’s config snapshot, **`run_profile`** is not **production**, or the insert fails, the tool logs a **WARNING** and writes **`predictions_extract.json`** next to `run.json` when at least one structured row was parsed.
+**Fallback file:** if Postgres is unavailable, `DATABASE_URL` is unset/invalid, **`db_enabled`** is false in the run’s config snapshot, **profile + env** gating skips writes, or the insert fails, the tool logs a **WARNING** and writes **`predictions_extract.json`** next to `run.json` when at least one structured row was parsed.
 
 **Auto-run after each completion (default off):** set **`prediction_extract_enabled: true`** in YAML (it is recorded in `run.json`), or pass **`--extract-predictions`** on `python -m equity_analyst run` (Boolean optional: `--no-extract-predictions` forces off for that invocation). When enabled, standard runs invoke extraction after synthesis; iterative runs invoke it at the end of **`finalize`** (after `synthesis.md` and `run.json` are written).
 

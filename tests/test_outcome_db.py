@@ -46,6 +46,7 @@ def test_outcome_record_upserts_db_when_available(monkeypatch: pytest.MonkeyPatc
         captured["outcome"] = outcome
         captured["database_url"] = database_url
         captured["run_profile"] = _kw.get("run_profile")
+        captured["env"] = _kw.get("env")
 
     monkeypatch.setattr("equity_analyst.db_ops.best_effort_upsert_outcome", _fake_upsert)
 
@@ -72,6 +73,7 @@ def test_outcome_record_upserts_db_when_available(monkeypatch: pytest.MonkeyPatc
     assert captured["outcome"]["earnings_day_close"] == 12.34
     assert captured["outcome"]["direction_vs_prior_close"] == "down"
     assert captured["run_profile"] == "production"
+    assert captured["env"] == "production"
 
 
 def test_outcome_record_still_writes_files_when_db_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -131,3 +133,46 @@ def test_outcome_record_skips_db_when_run_json_dev_profile(monkeypatch: pytest.M
     assert code == 0
     assert (run_dir / "outcome.json").is_file()
     assert called["n"] == 0
+
+
+def test_outcome_record_upserts_db_when_run_json_dev_but_env_test(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from equity_analyst import cli
+
+    monkeypatch.chdir(tmp_path)
+    run_dir = tmp_path / "outputs" / "CRCL_20260511T123456Z"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "dry_run": False,
+                "run_profile": "dev",
+                "env": "test",
+                "timestamp_utc": "2026-05-11T12:34:56+00:00",
+                "config": {
+                    "symbol": "CRCL",
+                    "today_date": "Mon May 11 2026",
+                    "today_session": "regular",
+                    "earnings_date": "Mon May 11 2026",
+                    "next_trading_day": "Tue May 12 2026",
+                    "followup_open_date": "Tue May 12 2026",
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    called = {"n": 0}
+
+    async def _fake_upsert(*_a: Any, **_kw: Any) -> None:
+        called["n"] += 1
+        assert _kw.get("run_profile") == "dev"
+        assert _kw.get("env") == "test"
+
+    monkeypatch.setattr("equity_analyst.db_ops.best_effort_upsert_outcome", _fake_upsert)
+
+    code = cli.main(["outcome-record", "--run-dir", str(run_dir), "--earnings-day-close", "1.0"])
+    assert code == 0
+    assert called["n"] == 1

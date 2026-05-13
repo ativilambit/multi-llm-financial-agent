@@ -136,8 +136,9 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="run_profile",
         choices=["production", "dev"],
         default=None,
-        help="Run profile: only production persists runs/responses/outcomes/predictions to Postgres. "
-        "Default from RunConfig / EQUITY_RUN_PROFILE / RUN_PROFILE (default dev).",
+        help="Run profile: with ``env=production``, only ``production`` persists to Postgres; "
+        "``dev`` skips DB (local smoke). With ``env=test``, ``dev`` still persists rows tagged "
+        "``runs.env=test``. Default from RunConfig / EQUITY_RUN_PROFILE / RUN_PROFILE (default dev).",
     )
     run.add_argument(
         "--t0-blend",
@@ -264,8 +265,9 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="equity_env",
         choices=["production", "test"],
         default=None,
-        help="Deployment tier: ``test`` uses ``run_profile=dev`` unless overridden by ``--profile``, and "
-        "disables Postgres unless YAML sets ``db_enabled: true`` or ``DB_ENABLED=1``. "
+        help="Deployment tier: ``test`` uses ``run_profile=dev`` unless overridden by ``--profile``; "
+        "Postgres follows ``db_enabled`` (default on). Rows use ``runs.env`` for filtering. "
+        "Use ``--no-db`` or YAML ``db_enabled: false`` / ``DB_ENABLED=0`` to skip DB. "
         "Overrides ``EQUITY_ENV`` and YAML ``env`` when set. Separate from ``--environment`` (Drive).",
     )
     run.add_argument(
@@ -563,7 +565,6 @@ def _print_outcome_batch_fail_line(*, symbol: str, message: str) -> None:
 
 
 def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> RunConfig:
-    base_cfg = cfg
     patch: dict[str, Any] = {}
     if getattr(args, "no_db", False):
         patch["db_enabled"] = False
@@ -618,12 +619,7 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
     if getattr(args, "conditional_fanout", None) is not None:
         patch["conditional_fanout_enabled"] = bool(args.conditional_fanout)
     merged = cfg if not patch else cfg.model_copy(update=patch)
-    return apply_cli_env_tier_overrides(
-        merged,
-        base_cfg=base_cfg,
-        run_profile_cli=getattr(args, "run_profile", None),
-        no_db=bool(getattr(args, "no_db", False)),
-    )
+    return apply_cli_env_tier_overrides(merged, run_profile_cli=getattr(args, "run_profile", None))
 
 
 def _load_cfg(args: argparse.Namespace) -> RunConfig:
@@ -688,6 +684,7 @@ async def _run_iterative_cli(
         "template_path": rendered.template_path,
         "config": cfg.model_dump(),
         "run_profile": cfg.run_profile,
+        "env": cfg.env,
         "started_at_utc": started_at_utc,
         "max_iterations": args.max_iterations,
         "confidence_threshold": args.confidence_threshold,
@@ -951,6 +948,7 @@ def main(argv: list[str] | None = None) -> int:
                         data = json.loads(run_json.read_text(encoding="utf-8"))
                         data["finished_at_utc"] = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
                         data["run_profile"] = cfg.run_profile
+                        data["env"] = cfg.env
                         run_json.write_text(
                             json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                         )

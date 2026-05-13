@@ -943,14 +943,14 @@ def test_env_defaults_production() -> None:
     assert cfg.env == "production"
 
 
-def test_env_yaml_test_sets_dev_and_db_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_yaml_test_sets_dev_keeps_db_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DB_ENABLED", raising=False)
     d = _minimal_run_config_dict()
     d["env"] = "test"
     cfg = RunConfig.model_validate(d)
     assert cfg.env == "test"
     assert cfg.run_profile == "dev"
-    assert cfg.db_enabled is False
+    assert cfg.db_enabled is True
 
 
 def test_env_yaml_test_keeps_explicit_run_profile() -> None:
@@ -969,6 +969,15 @@ def test_env_yaml_test_keeps_db_when_yaml_explicit(monkeypatch: pytest.MonkeyPat
     d["db_enabled"] = True
     cfg = RunConfig.model_validate(d)
     assert cfg.db_enabled is True
+
+
+def test_env_yaml_test_respects_db_disabled_in_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    d = _minimal_run_config_dict()
+    d["env"] = "test"
+    d["db_enabled"] = False
+    cfg = RunConfig.model_validate(d)
+    assert cfg.db_enabled is False
 
 
 def test_equity_env_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:

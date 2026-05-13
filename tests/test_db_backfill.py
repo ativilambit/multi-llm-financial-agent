@@ -86,6 +86,7 @@ def test_build_run_row_full_metadata(tmp_path: Path) -> None:
     assert row["symbol"] == "CRCL"
     assert row["earnings_date"] == "Mon May 11 2026"
     assert row["run_environment"] == "test"
+    assert row["env"] == "production"
     assert row["iterative"] is False
     assert row["iterations_completed"] is None
     assert row["synthesizer_provider"] == "openai"
@@ -94,6 +95,20 @@ def test_build_run_row_full_metadata(tmp_path: Path) -> None:
     assert row["finished_at_utc"] is not None
     assert row["synthesis_path"] == "outputs/CRCL_20260511T023700Z/synthesis.md"
     assert row["config_snapshot"]["config"]["symbol"] == "CRCL"
+
+
+def test_build_run_row_env_from_top_level(tmp_path: Path) -> None:
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    run_dir = _write_standard_run(
+        outputs,
+        run_id="ZZ_20260511T000000Z",
+        symbol="ZZ",
+        extras={"env": "test"},
+    )
+    data = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    row = build_run_row(run_id=run_dir.name, run_dir=run_dir, data=data)
+    assert row["env"] == "test"
 
 
 def test_build_run_row_handles_legacy_string_synthesizer(tmp_path: Path) -> None:
@@ -121,6 +136,7 @@ def test_build_run_row_handles_legacy_string_synthesizer(tmp_path: Path) -> None
     row = build_run_row(run_id=run_dir.name, run_dir=run_dir, data=data)
 
     assert row["symbol"] == "MNDY"
+    assert row["env"] == "production"
     # No started_at_utc → falls back to timestamp_utc.
     assert row["started_at_utc"] is not None
     assert row["finished_at_utc"] is None

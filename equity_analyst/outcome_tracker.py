@@ -14,7 +14,12 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from equity_analyst.config import RunProfile, run_profile_from_persisted_run_json
+from equity_analyst.config import (
+    RunEnvironment,
+    RunProfile,
+    env_from_persisted_run_json,
+    run_profile_from_persisted_run_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -330,20 +335,29 @@ def record_outcome_for_run_dir(
 
     if persist and db_upsert:
         persisted_profile: RunProfile = "production"
+        persisted_env: RunEnvironment = "production"
         try:
             rj = resolved_dir / "run.json"
             if rj.is_file():
-                persisted_profile = run_profile_from_persisted_run_json(
-                    json.loads(rj.read_text(encoding="utf-8"))
-                )
+                blob = json.loads(rj.read_text(encoding="utf-8"))
+                persisted_profile = run_profile_from_persisted_run_json(blob)
+                persisted_env = env_from_persisted_run_json(blob)
         except Exception:
             persisted_profile = "production"
+            persisted_env = "production"
 
-        if persisted_profile != "production":
-            logger.info("DB write skipped: run_profile=%s (not production)", persisted_profile)
+        from equity_analyst.db_ops import (
+            best_effort_upsert_outcome,
+            postgres_metadata_writes_enabled,
+        )
+
+        if not postgres_metadata_writes_enabled(run_profile=persisted_profile, env=persisted_env):
+            logger.info(
+                "DB write skipped: run_profile=%s env=%s (need production profile or test tier)",
+                persisted_profile,
+                persisted_env,
+            )
         else:
-            from equity_analyst.db_ops import best_effort_upsert_outcome
-
             with contextlib.suppress(Exception):
                 asyncio.run(
                     best_effort_upsert_outcome(
@@ -352,6 +366,7 @@ def record_outcome_for_run_dir(
                         outcome=outcome.model_dump(),
                         database_url=None,
                         run_profile=persisted_profile,
+                        env=persisted_env,
                     )
                 )
 

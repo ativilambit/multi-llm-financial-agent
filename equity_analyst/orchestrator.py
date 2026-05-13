@@ -129,6 +129,7 @@ class Orchestrator:
                     {
                         "dry_run": True,
                         "run_profile": self._config.run_profile,
+                        "env": self._config.env,
                         "started_at_utc": started_at_utc.isoformat(),
                         "finished_at_utc": datetime.now(tz=UTC).replace(microsecond=0).isoformat(),
                         "timestamp_utc": datetime.now(tz=UTC).isoformat(),
@@ -414,6 +415,7 @@ class Orchestrator:
             run_meta: dict[str, Any] = {
                 "dry_run": False,
                 "run_profile": self._config.run_profile,
+                "env": self._config.env,
                 "started_at_utc": started_at_utc.isoformat(),
                 "finished_at_utc": datetime.now(tz=UTC).replace(microsecond=0).isoformat(),
                 "timestamp_utc": datetime.now(tz=UTC).isoformat(),

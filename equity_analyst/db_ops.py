@@ -10,13 +10,18 @@ from typing import Any
 from sqlalchemy import delete, insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from equity_analyst.config import RunConfig, RunProfile
+from equity_analyst.config import RunConfig, RunEnvironment, RunProfile
 from equity_analyst.db import get_async_session, is_db_available
 from equity_analyst.db_models import OutcomeRow, PredictionRow, ProviderResponseRow, RunRow
 from equity_analyst.provider_runtime import is_failed_provider_response
 from equity_analyst.types import ProviderResponse
 
 logger = logging.getLogger(__name__)
+
+
+def postgres_metadata_writes_enabled(*, run_profile: RunProfile, env: RunEnvironment) -> bool:
+    """True when run/outcome/prediction rows may be written (subject to ``db_enabled`` and DB reachability)."""
+    return run_profile == "production" or env == "test"
 
 
 def _parse_dt_iso(v: Any) -> datetime | None:
@@ -72,8 +77,12 @@ async def best_effort_upsert_run_and_responses(
     if run_json_data.get("dry_run") is True:
         logger.info("DB write skipped: dry_run=True")
         return
-    if cfg.run_profile != "production":
-        logger.info("DB write skipped: run_profile=%s (not production)", cfg.run_profile)
+    if not postgres_metadata_writes_enabled(run_profile=cfg.run_profile, env=cfg.env):
+        logger.info(
+            "DB write skipped: run_profile=%s env=%s (need production profile or test tier)",
+            cfg.run_profile,
+            cfg.env,
+        )
         return
 
     if not await is_db_available(database_url=database_url):
@@ -102,6 +111,7 @@ async def best_effort_upsert_run_and_responses(
         "run_id": run_id,
         "symbol": cfg.symbol,
         "earnings_date": cfg.earnings_date,
+        "env": cfg.env,
         "run_environment": cfg.run_environment,
         "started_at_utc": started_at_utc,
         "finished_at_utc": finished_at_utc,
@@ -167,11 +177,16 @@ async def best_effort_upsert_outcome(
     outcome: dict[str, Any],
     database_url: str | None = None,
     run_profile: RunProfile = "production",
+    env: RunEnvironment = "production",
 ) -> None:
     if not cfg_db_enabled:
         return
-    if run_profile != "production":
-        logger.info("DB write skipped: run_profile=%s (not production)", run_profile)
+    if not postgres_metadata_writes_enabled(run_profile=run_profile, env=env):
+        logger.info(
+            "DB write skipped: run_profile=%s env=%s (need production profile or test tier)",
+            run_profile,
+            env,
+        )
         return
     if not await is_db_available(database_url=database_url):
         logger.warning("DB unavailable; skipping outcome upsert run_id=%s", run_id)
@@ -212,6 +227,7 @@ async def best_effort_replace_predictions(
     rows: list[dict[str, Any]],
     database_url: str | None = None,
     run_profile: RunProfile = "production",
+    env: RunEnvironment = "production",
 ) -> bool:
     """DELETE existing ``predictions`` for ``run_id`` then bulk INSERT ``rows``."""
     if not cfg_db_enabled:
@@ -219,8 +235,12 @@ async def best_effort_replace_predictions(
             "prediction_extract: DB writes disabled; skipping Postgres run_id=%s", run_id
         )
         return False
-    if run_profile != "production":
-        logger.info("DB write skipped: run_profile=%s (not production)", run_profile)
+    if not postgres_metadata_writes_enabled(run_profile=run_profile, env=env):
+        logger.info(
+            "DB write skipped: run_profile=%s env=%s (need production profile or test tier)",
+            run_profile,
+            env,
+        )
         return False
     if not await is_db_available(database_url=database_url):
         logger.warning("prediction_extract: DB unavailable run_id=%s", run_id)

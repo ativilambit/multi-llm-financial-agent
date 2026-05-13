@@ -268,6 +268,7 @@ async def test_run_prediction_extract_invokes_replace_twice_idempotent(
     first_kw = replace.await_args_list[0].kwargs
     assert first_kw["run_id"] == run_dir.name
     assert len(first_kw["rows"]) == 5
+    assert first_kw["env"] == "production"
 
 
 def test_parse_strips_markdown_fences() -> None:

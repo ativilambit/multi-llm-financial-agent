@@ -233,7 +233,7 @@ def test_cli_run_environment_override(tmp_path: Path) -> None:
     assert cfg2.run_environment == "production"
 
 
-def test_cli_equity_env_test_sets_dev_and_db_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_equity_env_test_sets_dev_keeps_db_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DB_ENABLED", raising=False)
     monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
     monkeypatch.delenv("RUN_PROFILE", raising=False)
@@ -267,7 +267,7 @@ def test_cli_equity_env_test_sets_dev_and_db_off(tmp_path: Path, monkeypatch: py
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.env == "test"
     assert cfg.run_profile == "dev"
-    assert cfg.db_enabled is False
+    assert cfg.db_enabled is True
 
 
 def test_cli_equity_env_test_keeps_profile_when_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -518,16 +518,17 @@ class RunConfig(BaseModel):
 
     run_profile: RunProfile = Field(
         default="dev",
-        description="Only ``production`` runs are persisted to Postgres (runs, provider_responses, outcomes, "
-        "predictions). ``dev`` keeps file artifacts only. Override with CLI ``--profile`` or env "
-        "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE``.",
+        description="Persistence profile: ``production`` allows Postgres writes when ``env`` is ``production``; "
+        "``dev`` still writes to Postgres when ``env`` is ``test`` (test-tier runs; filter ``runs.env``). "
+        "``dev`` + ``env=production`` skips Postgres (local smoke). Override with CLI ``--profile`` or env "
+        "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE`` (ignored when ``env=test`` unless YAML sets ``run_profile``).",
     )
     env: RunEnvironment = Field(
         default="production",
-        description="Deployment tier for a run: ``test`` selects dev-safe defaults (``run_profile=dev`` when not "
-        "overridden by CLI ``--profile``, and Postgres off unless YAML ``db_enabled: true`` or ``DB_ENABLED=1``). "
-        "Separate from ``run_environment`` (Drive upload folder routing). YAML ``env``, env ``EQUITY_ENV``, or "
-        "CLI ``--env`` (CLI wins).",
+        description="Deployment tier: ``test`` defaults ``run_profile=dev`` when not overridden by CLI "
+        "``--profile``; Postgres follows ``db_enabled`` (default on, same as production). Rows are tagged with "
+        "``runs.env``. Separate from ``run_environment`` (Drive upload folder routing). YAML ``env``, env "
+        "``EQUITY_ENV``, or CLI ``--env`` (CLI wins).",
     )
     t0_blend_preset: T0BlendPreset = Field(
         default="default",
@@ -847,20 +848,12 @@ class RunConfig(BaseModel):
 
     @model_validator(mode="after")
     def _env_tier_test_safe_defaults(self) -> Self:
-        """When ``env`` is ``test``, prefer dev profile and no Postgres unless explicitly opted in."""
+        """When ``env`` is ``test``, default ``run_profile`` to ``dev`` unless set explicitly in YAML."""
         if self.env != "test":
             return self
-        updates: dict[str, Any] = {}
-        if "run_profile" not in self.model_fields_set:
-            updates["run_profile"] = "dev"
-        explicit_db = ("db_enabled" in self.model_fields_set and self.db_enabled is True) or (
-            os.environ.get("DB_ENABLED") is not None
-            and str(os.environ.get("DB_ENABLED", "")).strip() != ""
-            and _env_flag_truthy("DB_ENABLED")
-        )
-        if not explicit_db:
-            updates["db_enabled"] = False
-        return self.model_copy(update=updates) if updates else self
+        if "run_profile" in self.model_fields_set:
+            return self
+        return self.model_copy(update={"run_profile": "dev"})
 
     @model_validator(mode="after")
     def _t0_blend_preset_env_fallback(self) -> Self:
@@ -1099,20 +1092,10 @@ class RunConfig(BaseModel):
         return float(self.request_timeout_s)
 
 
-def db_enabled_explicitly_opted_in(*, base_cfg: RunConfig) -> bool:
-    """True when Postgres should stay enabled for ``env=test`` (YAML or ``DB_ENABLED``)."""
-    if "db_enabled" in base_cfg.model_fields_set and base_cfg.db_enabled is True:
-        return True
-    raw = os.environ.get("DB_ENABLED")
-    return bool(raw is not None and str(raw).strip() != "" and _env_flag_truthy("DB_ENABLED"))
-
-
 def apply_cli_env_tier_overrides(
     merged: RunConfig,
     *,
-    base_cfg: RunConfig,
     run_profile_cli: str | None,
-    no_db: bool,
 ) -> RunConfig:
     """Re-apply ``env=test`` defaults after CLI patches (``model_copy`` does not re-run validators)."""
     if merged.env != "test":
@@ -1120,8 +1103,6 @@ def apply_cli_env_tier_overrides(
     updates: dict[str, Any] = {}
     if run_profile_cli is None:
         updates["run_profile"] = "dev"
-    if not no_db and not db_enabled_explicitly_opted_in(base_cfg=base_cfg):
-        updates["db_enabled"] = False
     return merged.model_copy(update=updates) if updates else merged
 
 
@@ -1140,6 +1121,23 @@ def run_profile_from_persisted_run_json(data: dict[str, Any]) -> RunProfile:
         v = cfg.get("run_profile")
         if isinstance(v, str) and v.strip().lower() in ("production", "dev"):
             return cast(RunProfile, v.strip().lower())
+    return "production"
+
+
+def env_from_persisted_run_json(data: dict[str, Any]) -> RunEnvironment:
+    """Resolve deployment tier from on-disk ``run.json`` for outcome/prediction DB gates.
+
+    Precedence: top-level ``env``, then ``config["env"]``. Legacy trees without either
+    default to ``production``.
+    """
+    top = data.get("env")
+    if isinstance(top, str) and top.strip().lower() in ("production", "test"):
+        return cast(RunEnvironment, top.strip().lower())
+    cfg = data.get("config")
+    if isinstance(cfg, dict):
+        v = cfg.get("env")
+        if isinstance(v, str) and v.strip().lower() in ("production", "test"):
+            return cast(RunEnvironment, v.strip().lower())
     return "production"
 
 
