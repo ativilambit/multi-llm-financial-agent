@@ -49,6 +49,10 @@ For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve 
 
 When the equity prompt included a **Verified options chain** table (`options_chain_markdown`), treat those strikes, expiries, IV, and straddle mids as **authoritative** for consolidation: prefer them **verbatim** over conflicting provider chain numbers. If providers disagree on chain inputs, defer to the verified table; still flag stale timestamps or missing fields if the table itself is thin.
 
+**Pre-computed σ bands (server):** When the synthesis prompt includes a **### Server-computed σ bands** section (from the equity run), treat those **±% half-widths**, **dollar bounds**, and **P(up)%** as **authoritative** — use them **verbatim** in the consolidated `sigma_summary` JSON and in sections 1 / 9 / 11; do not re-derive different σ % by averaging provider outputs.
+
+**Probabilities in the consolidated output** must use the same `Φ(μN/σ)` form with bounded `daily_drift_pct`. When providers disagree on drift, resolve toward the most-sourced value (**PEAD_avg** or **options_skew** preferred over **manual_override**). Recompute `prob_up_pct` from the consolidated drift and σ; do not average provider-emitted probabilities directly.
+
 **σ band construction — sanity rules (mandatory) — same as equity prompt:** When merging provider σ bands, enforce coherence, not ad hoc % picks.
 
 1. **No fake same-day implied move.** If **no options contract expires on the target session** for the ticker, the synthesis must **not** present a same-day "implied-move" σ band without relabeling: use the **nearest real weekly expiry**, state `"derived from <YYYY-MM-DD> weekly expiry"`, and scale by **√(target_DTE / chosen_expiry_DTE)** (constant IV); or **HV30 (annualized) × √(target_DTE / 252)** labeled `"HV30 √t scaling"`. **State explicitly** which path applies per session.

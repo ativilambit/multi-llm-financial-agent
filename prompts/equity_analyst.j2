@@ -51,6 +51,13 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 
 {% endif %}
 
+{% if computed_sigma_bands_available %}
+**Pre-computed σ bands (server-side, mandatory to use verbatim when available):**
+
+{{ computed_sigma_bands_markdown }}
+
+Use these dollar bounds and percentages **exactly as shown**. Do not recalculate σ bands from your own arithmetic — the server already applied variance-additive math (`σ(T+N) = √(event_jump² + N·daily_vol²)`) with verified inputs (`event_jump` from front weekly straddle, `daily_vol` from HV30 × IV-crush multiplier when applicable, `daily_drift_pct` bounded). The verifier will compare your σ outputs against this table and flag any deviation > 1 percentage point on the % half-widths.
+{% else %}
 **σ band construction — sanity rules (mandatory):**
 
 1. **No fake same-day implied move.** If **no options contract expires on the target session** for this ticker, you must **not** report an "implied-move" σ figure for that session. Instead:
@@ -108,6 +115,7 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 4. **Sanity check (state in output, variance-additive form).** After computing all post-event σ bands, output one line: `σ-scaling check (variance): σ²(T+N) − σ²(T+1) = X.XX (expected (N−1)·daily_vol² = Y.YY); within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`.
 
 5. **Reject implausible 0-DTE bands.** If 3σ width for any session is **< 5%** for a stock that has implied earnings move ≥ 15% pre-print, flag the calculation as likely missing an event-vol input and re-derive.
+{% endif %}
 {% if earnings_timing %}
 Earnings timing (from this brief): {{ earnings_timing }}. Anchor sections 1, 9, and 11 to this schedule; cross-check via web_search if it materially affects probabilities and flag any material conflict.
 
@@ -161,6 +169,23 @@ Do NOT collapse to just 1σ or omit 2σ/3σ; if data limits prevent precise calc
 | T+1 to T+5 (after the event, with intraday history) | **45 : 55** | Realized post-event action plus options remain the dominant anchor; qualitative narrative still informs the path. |
 
 Conduct a bottom-up review of {{ symbol }} using web_search — earnings transcript/guidance, 30/60/90d news, product/customer/partnerships, insider/buybacks, sector/competitors, supply-chain/end-markets, regulatory/macro — so **Qualitative evidence** is populated with traceable items. When you later produce probabilities and ranges, name which **sourced** qualitative items moved the call. Flag disagreement between this overlay and quantitative sections 1–7; resolve in **Horizon & blend application** / **Directional resolution** and in prediction sections using the rules above.
+
+**Probability computation (deterministic).** For each session in `sigma_summary.sessions`, your `prob_up_pct` must equal `Φ((daily_drift_pct × N) / one_sigma_half_width_pct)` computed under the **bounded** `daily_drift_pct` (see clamps below). The server **will recompute** this from your inputs and flag any session where the emitted probability deviates by >2 percentage points.
+
+**`daily_drift_pct` must be sourced**, not estimated from narrative. Choose one of:
+- **options_skew**: 25-delta call IV minus 25-delta put IV, mapped to ~0.5–1% drift per 100bps of skew.
+- **PT_consensus**: `(consensus_PT − current_price) / days_to_PT_horizon`. Cap at 0.30%/day.
+- **PEAD_avg**: average daily return over the first 5 sessions after each of the last 4 earnings windows (from `outcome_tracker`). Server-injected hints: `pead_avg_drift_pct` / `recent_momentum_drift_pct` when available.
+- **recent_momentum**: 5/10/20-day average daily return.
+- **manual_override**: only with explicit justification in `drift_source_value`. Server will still bound.
+
+The server clamps |drift| to ≤ 0.15%/day for most sources (≤ 0.30%/day for PT_consensus). Drift values outside these bounds will be clamped silently and the verifier will note the adjustment.
+
+**Do not** emit `prob_up_pct` values that imply implausible drift (e.g. 75% at T+5 with σ=14% requires drift > 0.27%/day; verifier will flag).
+
+{% if computed_probabilities_markdown %}
+{{ computed_probabilities_markdown }}
+{% endif %}
 
 9. **Prediction integration (mandatory):** Carry forward the **horizon-aware qualitative vs quantitative weighting in section 8** (pick the table row for each target session vs now and `same_day_intraday_available`; apply the mixed-quant qualitative tilt when needed; when views diverge on direction, default qualitative unless quantitative is unambiguous and recent). **Pure-quant rule:** **σ band widths** and any **option pricing** / chain figures remain quant-only; the blend applies to **where** likely closes sit within bands and to **scenario weights**, not to σ sizing or implied premiums. Predict the trading range of **{{ symbol }}** for: **open and close on the day of the earnings call**{% if earnings_timing %} (timed per **{{ earnings_timing }}**){% else %} (timed per the verified BMO/AMC schedule you sourced above){% endif %}, **open and close on the next trading day**, **close on the last trading day of that earnings week**, and **open and close roughly one trading week after the earnings call**. Use the Date anchors to map to concrete sessions. Ground scenarios in the **SD / range anchoring rule** and the **last verified close** / session range you already cited, to the best of your estimate, using all the financial knowledge and data available. For each named session/horizon, include **1σ, 2σ, and 3σ** price bands in the same exact format as section 1 (three lines: 1σ / 2σ / 3σ with $ range and ±%); do NOT collapse to 1σ only. Give the detailed reason and confidence level for this, along with step by step chain of thought and backup related data, and reasons why the upward or downward bias occurs. Also, share the source and verify the source, and predict in a manner on an iterative process to confirm the side picked is correct.
 

@@ -332,6 +332,10 @@ class Orchestrator:
                             oversized_summarize_max_input_tokens=self._config.oversized_summarize_max_input_tokens,
                             oversized_summarize_min_retention=self._config.oversized_summarize_min_retention,
                             oversized_summarize_fallback_provider=summarize_fallback_llm,
+                            computed_sigma_bands_markdown=(
+                                str(rendered.context.get("computed_sigma_bands_markdown") or "").strip()
+                                or None
+                            ),
                         ),
                         timeout=syn_timeout,
                     )

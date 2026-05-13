@@ -788,6 +788,197 @@ def parse_output_dirs_from_batch_summary(batch_summary_path: Path) -> list[Path]
     return ordered
 
 
+def parse_equity_session_date_hint(text: str) -> date | None:
+    """Parse a human-style session label (``Wed May 13 2026``) to a calendar date."""
+    dt = _parse_earnings_date_fuzzy(text.strip())
+    if dt is None:
+        return None
+    return dt.date()
+
+
+def _yfinance_earnings_report_dates(symbol: str, limit: int = 16) -> list[date] | None:
+    sym = symbol.strip().upper()
+    if not sym:
+        return None
+    try:
+        import yfinance as yf
+    except ImportError as exc:  # pragma: no cover
+        logger.warning("earnings_dates: yfinance not installed: %r", exc)
+        return None
+    try:
+        t = yf.Ticker(sym)
+    except Exception as exc:
+        logger.warning("earnings_dates: Ticker failed symbol=%s err=%r", sym, exc)
+        return None
+    out: list[date] = []
+    cal = getattr(t, "calendar", None)
+    if isinstance(cal, dict):
+        raw = cal.get("Earnings Date")
+        candidates: list[Any] = []
+        if hasattr(raw, "tolist"):
+            candidates = list(raw.tolist())  # type: ignore[union-attr]
+        elif isinstance(raw, (list, tuple)):
+            candidates = list(raw)
+        elif raw is not None:
+            candidates = [raw]
+        for item in candidates:
+            if hasattr(item, "date"):
+                try:
+                    out.append(cast(date, item.date()))
+                except Exception:
+                    continue
+            elif isinstance(item, datetime):
+                out.append(item.date())
+            elif isinstance(item, date):
+                out.append(item)
+    if not out:
+        edf = getattr(t, "earnings_dates", None)
+        if edf is not None and hasattr(edf, "index"):
+            try:
+                for ts in list(edf.index)[:limit]:
+                    if hasattr(ts, "date"):
+                        out.append(cast(date, ts.date()))
+                    elif isinstance(ts, date):
+                        out.append(ts)
+            except Exception:
+                out = []
+    if not out:
+        return None
+    uniq: list[date] = []
+    seen: set[date] = set()
+    for d in sorted(set(out)):
+        if d in seen:
+            continue
+        seen.add(d)
+        uniq.append(d)
+    return uniq[:limit]
+
+
+def _history_closes_sorted(symbol: str, *, period: str = "5y") -> list[tuple[date, float]] | None:
+    sym = symbol.strip().upper()
+    if not sym:
+        return None
+    try:
+        import yfinance as yf
+    except ImportError as exc:  # pragma: no cover
+        logger.warning("history_closes: yfinance not installed: %r", exc)
+        return None
+    try:
+        ticker = yf.Ticker(sym)
+        hist = ticker.history(period=period, auto_adjust=False)
+    except Exception as exc:
+        logger.warning("history_closes: yfinance.history failed symbol=%s err=%r", sym, exc)
+        return None
+    if hist is None or getattr(hist, "empty", True):
+        return None
+    rows: list[tuple[date, float]] = []
+    try:
+        for ts, row in hist.sort_index().iterrows():
+            c = _coerce_float_safe(row.get("Close"))
+            if c is None or c <= 0:
+                continue
+            if hasattr(ts, "date"):
+                d = cast(date, ts.date())
+            else:
+                continue
+            rows.append((d, float(c)))
+    except Exception as exc:
+        logger.warning("history_closes: iterate failed symbol=%s err=%r", sym, exc)
+        return None
+    return rows
+
+
+def _five_simple_returns_after_earnings(
+    closes_by_date: dict[date, float],
+    earnings_day: date,
+) -> list[float] | None:
+    """Five close-to-close % returns on the first five **weekday** sessions strictly after ``earnings_day``."""
+    ordered = sorted(closes_by_date)
+    rets: list[float] = []
+    prev: float | None = None
+    for d in ordered:
+        if d <= earnings_day:
+            prev = closes_by_date[d]
+            continue
+        if d.weekday() >= 5:
+            continue
+        c = closes_by_date[d]
+        if prev is None or prev <= 0:
+            prev = c
+            continue
+        rets.append((c / prev - 1.0) * 100.0)
+        prev = c
+        if len(rets) >= 5:
+            break
+    if len(rets) < 5:
+        return None
+    return rets
+
+
+def compute_pead_avg_drift_pct(symbol: str) -> float | None:
+    """Average of mean first-5-session daily % returns over the last four past earnings windows."""
+    eds = _yfinance_earnings_report_dates(symbol, limit=24)
+    if not eds:
+        return None
+    today = date.today()
+    past = sorted({d for d in eds if d < today}, reverse=True)[:4]
+    if len(past) < 4:
+        return None
+    bars = _history_closes_sorted(symbol)
+    if not bars:
+        return None
+    by_d = {d: c for d, c in bars}
+    per_window: list[float] = []
+    for ed in past:
+        rets = _five_simple_returns_after_earnings(by_d, ed)
+        if rets is None:
+            return None
+        per_window.append(sum(rets) / len(rets))
+    return float(sum(per_window) / len(per_window))
+
+
+def compute_realized_post_earnings_daily_vol_pct(symbol: str) -> float | None:
+    """Mean of (mean |r| over first 5 post-earnings sessions) across the last four past earnings windows."""
+    eds = _yfinance_earnings_report_dates(symbol, limit=24)
+    if not eds:
+        return None
+    today = date.today()
+    past = sorted({d for d in eds if d < today}, reverse=True)[:4]
+    if len(past) < 4:
+        return None
+    bars = _history_closes_sorted(symbol)
+    if not bars:
+        return None
+    by_d = {d: c for d, c in bars}
+    per_window: list[float] = []
+    for ed in past:
+        rets = _five_simple_returns_after_earnings(by_d, ed)
+        if rets is None:
+            return None
+        per_window.append(sum(abs(x) for x in rets) / len(rets))
+    return float(sum(per_window) / len(per_window))
+
+
+def compute_recent_momentum_drift_pct(symbol: str, lookback_days: int = 10) -> float | None:
+    """Mean simple daily % return over the last ``lookback_days`` NYSE-style weekdays with closes."""
+    bars = _history_closes_sorted(symbol, period="1y")
+    if not bars:
+        return None
+    weekdays = [(d, c) for d, c in bars if d.weekday() < 5]
+    if len(weekdays) < lookback_days + 1:
+        return None
+    tail = weekdays[-(lookback_days + 1) :]
+    rets: list[float] = []
+    for i in range(1, len(tail)):
+        a, b = tail[i - 1][1], tail[i][1]
+        if a <= 0:
+            continue
+        rets.append((b / a - 1.0) * 100.0)
+    if len(rets) < lookback_days:
+        return None
+    return float(sum(rets) / len(rets))
+
+
 def plan_shape_b_run_directories(
     outputs_dir: Path,
     symbols: list[str],

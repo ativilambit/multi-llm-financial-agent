@@ -201,6 +201,16 @@ def test_synthesizer_system_prompt_includes_per_provider_sigma_checks_paragraph(
     assert "surface the disagreement explicitly" in synth.lower() or "explicitly" in synth
 
 
+def test_equity_and_synthesizer_prompts_reference_server_computed_sigma_bands() -> None:
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "computed_sigma_bands_available" in j2
+    assert "computed_sigma_bands_markdown" in j2
+    assert "verbatim" in j2.lower()
+    assert "Pre-computed σ bands" in j2 or "pre-computed" in j2.lower()
+    assert "Server-computed σ bands" in synth
+
+
 def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_export() -> None:
     path = PROMPTS / "provider_summarize_system.md"
     assert path.is_file()

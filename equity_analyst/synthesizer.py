@@ -212,6 +212,7 @@ class Synthesizer:
         oversized_summarize_fallback_provider: LLMProvider | None = None,
         refinement_markdown: str | None = None,
         per_provider_sigma_checks_markdown: str | None = None,
+        computed_sigma_bands_markdown: str | None = None,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -276,11 +277,18 @@ class Synthesizer:
             if sigma_checks
             else ""
         )
+        csb = (computed_sigma_bands_markdown or "").strip()
+        csb_block = (
+            f"\n\n### Server-computed {_GS} bands (mandatory when present)\n\n{csb}\n"
+            if csb
+            else ""
+        )
         fixed_intro = (
             f"{_load_prompt_file('synthesizer_system.md')}\n\n"
             f"### Original user prompt\n{original_prompt}"
             f"{refine_block}"
-            f"{sigma_block}\n\n"
+            f"{sigma_block}"
+            f"{csb_block}\n\n"
             f"### Provider responses\n\n"
         )
         trimmed_bodies, _est_before, _est_after = _trim_healthy_bodies_to_token_budget(

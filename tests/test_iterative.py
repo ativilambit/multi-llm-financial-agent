@@ -510,7 +510,62 @@ def test_parse_sigma_summary_json_invalid_returns_none() -> None:
     assert sigma_summary_json_present_but_invalid(bad) is True
 
 
-def test_per_provider_sigma_check_uses_json_not_regex() -> None:
+def test_sigma_summary_schema_requires_drift_fields_when_probabilities_present() -> None:
+    bad = (
+        "```json\n"
+        '{"sigma_summary": {"anchor_price": 100, "anchor_type": "prior_close", "sessions": ['
+        '{"date": "2026-05-13", "label": "a", "N": 0, "one_sigma_half_width_pct": 10, '
+        '"three_sigma_half_width_pct": 30, "prob_up_pct": 55}]}}\n```'
+    )
+    assert parse_sigma_summary_json(bad) is None
+
+
+def test_per_provider_check_flags_prob_mismatch_beyond_2pp() -> None:
+    from equity_analyst.drift_bounds import computed_prob_up_pct
+
+    sg = chr(0x03C3)
+    w_json_late = (36.0 + 5.0 * 8.0**2) ** 0.5
+    mu = 0.10
+    expected_late = computed_prob_up_pct(mu, w_json_late, 5)
+    json_block = {
+        "sigma_summary": {
+            "anchor_price": 100.0,
+            "anchor_type": "prior_close",
+            "daily_drift_pct": mu,
+            "drift_source": "PEAD_avg",
+            "drift_source_value": "0.10%/day fixture",
+            "drift_citation": "test",
+            "sessions": [
+                {
+                    "date": "2026-05-13",
+                    "label": "T+1",
+                    "N": 1,
+                    "one_sigma_half_width_pct": 10.0,
+                    "three_sigma_half_width_pct": 30.0,
+                    "prob_up_pct": computed_prob_up_pct(mu, 10.0, 1),
+                },
+                {
+                    "date": "2026-05-19",
+                    "label": "week",
+                    "N": 5,
+                    "one_sigma_half_width_pct": w_json_late,
+                    "three_sigma_half_width_pct": 3.0 * w_json_late,
+                    "prob_up_pct": min(99.0, expected_late + 5.0),
+                },
+            ],
+        }
+    }
+    text = (
+        "event_jump=6% daily_vol=8%\n"
+        f"```json\n{json.dumps(json_block, indent=2)}\n```\n"
+        "Wednesday, May 13 (post-earnings):\n"
+        f"  - 3{sg}: $90 - $110 (±30.0%)\n"
+        "Tuesday, May 19 (~1 week):\n"
+        f"  - 3{sg}: $40 - $160 (±{3.0 * w_json_late:.3f}%)\n"
+    )
+    r = per_provider_sigma_variance_check(text, earnings_date="2026-05-13", provider_label="openai")
+    assert r["passed"] is False
+    assert any("prob_up=" in f and "computed=" in f for f in r["followups"])
     """When valid sigma_summary JSON is present, verifier uses JSON half-widths, not markdown ±%%."""
     sg = chr(0x03C3)
     w_json = 10.0
@@ -808,6 +863,35 @@ def test_augment_verifier_flags_expiry_not_in_verified_chain() -> None:
     assert out["sigma_band_sessions"][0]["session"] == "May 13"
     assert out["sigma_band_sessions"][0]["sigma_scaling_check_passed"] is False
     assert out["sigma_scaling_aggregate_passed"] is False
+
+
+def test_augment_verifier_uses_strict_sigma_table_when_present() -> None:
+    syn = (
+        "```json\n"
+        '{"sigma_summary": {"anchor_price": 179.11, "anchor_type": "prior_close", "sessions": ['
+        '{"date": "2026-05-13", "label": "T0", "N": 0, "one_sigma_half_width_pct": 20.0, '
+        '"three_sigma_half_width_pct": 60.0}]}}\n```\n'
+    )
+    base = parse_verifier_json(
+        '{"verified":[],"contradicted":[],"unverifiable":[],'
+        '"refresh_facts":false,"refan_out_providers":[],"refan_out_all":false}'
+    )
+    tbl = {
+        "sessions": [
+            {
+                "session_date": "2026-05-13",
+                "one_sigma_half_width_pct": 11.31,
+                "three_sigma_half_width_pct": 33.93,
+            },
+        ],
+    }
+    out = augment_verifier_result_with_sigma_structural_checks(
+        syn,
+        base,
+        computed_sigma_bands_table=tbl,
+        earnings_date=date(2026, 5, 13),
+    )
+    assert any("1σ half-width" in u for u in out["unverifiable"])
 
 
 def test_verifier_flags_provider_not_applying_iv_crush_multiplier() -> None:

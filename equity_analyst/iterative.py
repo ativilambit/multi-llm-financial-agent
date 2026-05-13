@@ -21,6 +21,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from equity_analyst.config import ProviderConfig, RunConfig, RunEnvironment, SynthesizerConfig
+from equity_analyst.drift_bounds import (
+    PROB_UP_MISMATCH_TOLERANCE_PP,
+    bound_daily_drift,
+    computed_prob_up_pct,
+)
 from equity_analyst.drive_uploader import DriveAuthMode, maybe_upload_run_to_drive_raw
 from equity_analyst.facts_packet import (
     extract_facts_packet,
@@ -773,9 +778,75 @@ def sigma_sessions_payload_from_sigma_summary_model(
     for d in keys_sorted:
         sig_half, lbl = by_rows[d]
         n_inc = trading_sessions_inclusive(anchor_eff, d)
-        sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
+        sessions_payload.append(
+            {
+                "session": lbl,
+                "session_date": d.isoformat(),
+                "N": n_inc,
+                "sigma_pct": sig_half,
+            },
+        )
 
     return sessions_payload, len(sessions_payload), None
+
+
+def prob_up_followups_for_parsed_sigma_summary(
+    parsed: SigmaSummaryFileModel,
+    *,
+    earn_cal: date | None,
+    earnings_timing: str | None,
+    context_label: str,
+) -> tuple[list[str], str | None]:
+    """Compare emitted ``prob_up_pct`` vs bounded-drift Phi(mu N / sigma); returns follow-ups and optional clamp note."""
+    pl = parsed.sigma_summary
+    if not any(s.prob_up_pct is not None for s in pl.sessions):
+        return [], None
+    if pl.drift_source is None or pl.daily_drift_pct is None:
+        return [], None
+    mu_raw = float(pl.daily_drift_pct)
+    mu_bounded, drift_warn = bound_daily_drift(mu_raw, pl.drift_source)
+    sessions_payload, _, err = sigma_sessions_payload_from_sigma_summary_model(
+        parsed,
+        earn_cal=earn_cal,
+        earnings_timing=earnings_timing,
+    )
+    if err is not None:
+        return (
+            [
+                "Cite or verify: "
+                f"{context_label} sigma_summary includes prob_up_pct but session alignment failed ({err}).",
+            ],
+            drift_warn,
+        )
+    emitted_by_date: dict[date, float] = {}
+    for s in pl.sessions:
+        if s.prob_up_pct is None:
+            continue
+        if s.date not in emitted_by_date:
+            emitted_by_date[s.date] = float(s.prob_up_pct)
+
+    followups: list[str] = []
+    for row in sessions_payload:
+        raw_sd = row.get("session_date")
+        if not isinstance(raw_sd, str):
+            continue
+        try:
+            d_key = date.fromisoformat(raw_sd)
+        except ValueError:
+            continue
+        emitted = emitted_by_date.get(d_key)
+        if emitted is None:
+            continue
+        n_inc = int(row["N"])
+        sig_half = float(row["sigma_pct"])
+        expected = computed_prob_up_pct(mu_bounded, sig_half, n_inc)
+        if abs(emitted - expected) > PROB_UP_MISMATCH_TOLERANCE_PP:
+            followups.append(
+                "Cite or verify: "
+                f"{context_label} session {raw_sd} prob_up={emitted:.1f}% but computed={expected:.1f}% "
+                f"from drift={mu_bounded:+.4f}%/day sigma={sig_half:.2f}% N={n_inc}",
+            )
+    return followups, drift_warn
 
 
 def _legacy_sigma_variance_sessions(
@@ -827,6 +898,7 @@ def per_provider_sigma_variance_check(
     earnings_date: str | None = None,
     earnings_timing: str | None = None,
     enabled: bool = True,
+    provider_label: str | None = None,
 ) -> dict[str, Any]:
     """Parse one provider's text for variance-additive sigma literals and verify the identity.
 
@@ -922,9 +994,20 @@ def per_provider_sigma_variance_check(
         event_jump_pct=ej_lit,
         tolerance=tolerance,
     )
+    ctx = (provider_label or "Provider").strip() or "Provider"
+    drift_warn: str | None = None
+    if parsed is not None:
+        prob_fus, drift_warn = prob_up_followups_for_parsed_sigma_summary(
+            parsed,
+            earn_cal=earn_cal,
+            earnings_timing=earnings_timing,
+            context_label=ctx,
+        )
+        followups = list(followups) + list(prob_fus)
+
     passed = not followups
     reason = "" if passed else (followups[0] if followups else "variance identity drift")
-    return {
+    out: dict[str, Any] = {
         "passed": passed,
         "followups": followups,
         "event_jump": ej_lit,
@@ -934,6 +1017,9 @@ def per_provider_sigma_variance_check(
         "reason": reason,
         "sigma_check_source": source,
     }
+    if drift_warn:
+        out["drift_clamp_warning"] = drift_warn
+    return out
 
 
 def compute_severity_for_sigma_variance_results(
@@ -1114,6 +1200,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     hv30_annualized_pct: float | None = None,
     earnings_date: date | None = None,
     earnings_timing: str | None = None,
+    computed_sigma_bands_table: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     out = dict(result)
@@ -1144,7 +1231,22 @@ def augment_verifier_result_with_sigma_structural_checks(
         anchor if earnings_date is not None else None,
     )
 
-    if variance_mode and len(by_date_var) >= 1:
+    strict_tbl = (
+        isinstance(computed_sigma_bands_table, dict)
+        and isinstance(computed_sigma_bands_table.get("sessions"), list)
+        and len(computed_sigma_bands_table["sessions"]) > 0
+    )
+    if strict_tbl:
+        from equity_analyst.sigma_compute import verify_emitted_sigma_bands_match_computed
+
+        extras.extend(
+            verify_emitted_sigma_bands_match_computed(
+                synthesis_text,
+                computed_sigma_bands_table,
+                tolerance_pp=1.0,
+            ),
+        )
+    elif variance_mode and len(by_date_var) >= 1:
         assert ej_lit is not None and dv_lit is not None
         keys_sorted = sorted(by_date_var)
         anchor_eff = anchor if anchor is not None else keys_sorted[0]
@@ -1213,6 +1315,18 @@ def augment_verifier_result_with_sigma_structural_checks(
             symbol=symbol,
         ),
     )
+
+    syn_parsed = parse_sigma_summary_json(synthesis_text)
+    if syn_parsed is not None:
+        prob_extras, drift_note = prob_up_followups_for_parsed_sigma_summary(
+            syn_parsed,
+            earn_cal=earnings_date,
+            earnings_timing=earnings_timing,
+            context_label="synthesis",
+        )
+        extras.extend(prob_extras)
+        if drift_note:
+            extras.append(f"Note: {drift_note}")
 
     extras.extend(followups_from_unsourced_options_chain_numeric_claims(synthesis_text))
     merged = extras + [u for u in prior if u not in extras]
@@ -1709,6 +1823,7 @@ class RefinementState(TypedDict, total=False):
     equity_prompt_render_context: NotRequired[dict[str, Any]]
     earnings_date: NotRequired[str]
     earnings_timing: NotRequired[str | None]
+    computed_sigma_bands_table: NotRequired[dict[str, Any] | None]
 
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
@@ -2025,6 +2140,24 @@ def _compose_fan_out_user_body(
         f"# Prior synthesis (round {prior_round})\n\n{prior_excerpt.strip()}"
         f"{follow_block}\n\n"
     )
+    from equity_analyst.sigma_compute import format_computed_probabilities_reference_markdown
+
+    ed_ref = (state.get("earnings_date") or "").strip()
+    if not ed_ref:
+        eq_ctx_ref = state.get("equity_prompt_render_context")
+        if isinstance(eq_ctx_ref, dict):
+            ed_raw_ref = eq_ctx_ref.get("earnings_date")
+            if isinstance(ed_raw_ref, str) and ed_raw_ref.strip():
+                ed_ref = ed_raw_ref.strip()
+    et_ref = (state.get("earnings_timing") or "").strip() or None
+    if ed_ref:
+        prob_ref = format_computed_probabilities_reference_markdown(
+            prior_raw,
+            earnings_date=ed_ref,
+            earnings_timing=et_ref,
+        ).strip()
+        if prob_ref:
+            middle = prob_ref + "\n\n" + middle
     if core.startswith(sep):
         user_only = core[len(sep) :]
         return f"{sep}{middle}{user_only}"
@@ -2334,6 +2467,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 earnings_date=earn_date_s,
                 earnings_timing=earn_timing_fan,
                 enabled=sigma_check_enabled,
+                provider_label=name,
             )
             rec: dict[str, Any] = {"provider": name, "model": resp.model}
             rec.update(check)
@@ -2445,6 +2579,12 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         err_ev: list[dict[str, Any]] = []
         refinement = _build_synthesis_refinement_markdown(state) if round_idx >= 1 else None
         sigma_checks_md = build_per_provider_sigma_checks_markdown(state)
+        eq_ctx_syn = state.get("equity_prompt_render_context")
+        csb_md = ""
+        if isinstance(eq_ctx_syn, dict):
+            raw_csb = eq_ctx_syn.get("computed_sigma_bands_markdown")
+            if isinstance(raw_csb, str) and raw_csb.strip():
+                csb_md = raw_csb.strip()
         try:
             with prompt_call_context(node="synthesize", iteration=it_no):
                 result = await asyncio.wait_for(
@@ -2478,6 +2618,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         oversized_summarize_fallback_provider=summarize_fallback_llm,
                         refinement_markdown=refinement,
                         per_provider_sigma_checks_markdown=sigma_checks_md,
+                        computed_sigma_bands_markdown=csb_md or None,
                     ),
                     timeout=timeout_syn,
                 )
@@ -2707,6 +2848,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             hv30_annualized_pct=hv_p,
             earnings_date=earn_calendar,
             earnings_timing=earn_timing_s,
+            computed_sigma_bands_table=(
+                state.get("computed_sigma_bands_table")
+                if isinstance(state.get("computed_sigma_bands_table"), dict)
+                else None
+            ),
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -2932,6 +3078,11 @@ def build_initial_refinement_state(
         "equity_prompt_render_context": copy.deepcopy(rendered.context),
         "earnings_date": cfg.earnings_date,
         "earnings_timing": cfg.earnings_timing,
+        "computed_sigma_bands_table": (
+            rendered.context.get("computed_sigma_bands_table")
+            if isinstance(rendered.context.get("computed_sigma_bands_table"), dict)
+            else None
+        ),
     }
 
 

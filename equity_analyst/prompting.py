@@ -10,8 +10,16 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from equity_analyst.config import RunConfig
 from equity_analyst.options_chain import iv_crush_multiplier
-from equity_analyst.outcome_tracker import fetch_hv30_annualized_percent
+from equity_analyst.outcome_tracker import (
+    compute_pead_avg_drift_pct,
+    compute_recent_momentum_drift_pct,
+    fetch_hv30_annualized_percent,
+)
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
+from equity_analyst.sigma_compute import (
+    format_computed_probabilities_reference_markdown,
+    try_build_computed_sigma_bundle,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +124,7 @@ def _derived_context(cfg: RunConfig) -> dict[str, Any]:
     }
 
 
-def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
+def render_prompt(cfg: RunConfig, prompt_path: Path, *, prior_synthesis_text: str | None = None) -> RenderedPrompt:
     env = Environment(
         loader=FileSystemLoader(str(prompt_path.parent)),
         undefined=StrictUndefined,
@@ -181,6 +189,34 @@ def render_prompt(cfg: RunConfig, prompt_path: Path) -> RenderedPrompt:
     context["iv_crush_multiplier"] = iv_m
     context["hv30_annualized_pct"] = hv30_pct
     context["daily_vol_iv_adjusted"] = daily_iv_adj
+
+    pead_d = compute_pead_avg_drift_pct(cfg.symbol)
+    mom_d = compute_recent_momentum_drift_pct(cfg.symbol, lookback_days=10)
+    context["pead_avg_drift_pct"] = pead_d
+    context["recent_momentum_drift_pct"] = mom_d
+
+    sig_avail, sig_md, sig_tbl, _sig_tag = try_build_computed_sigma_bundle(
+        symbol=cfg.symbol,
+        anchor_price=cfg.current_price,
+        same_day_intraday_available=same_day_intraday_available,
+        earnings_date=cfg.earnings_date,
+        earnings_timing=cfg.earnings_timing,
+        target_dates=list(cfg.target_dates),
+        next_trading_day=cfg.next_trading_day,
+        oc_data=oc_data,
+    )
+    context["computed_sigma_bands_available"] = sig_avail
+    context["computed_sigma_bands_markdown"] = sig_md if sig_avail else ""
+    context["computed_sigma_bands_table"] = sig_tbl
+
+    prob_md = ""
+    if prior_synthesis_text:
+        prob_md = format_computed_probabilities_reference_markdown(
+            prior_synthesis_text,
+            earnings_date=cfg.earnings_date,
+            earnings_timing=cfg.earnings_timing,
+        )
+    context["computed_probabilities_markdown"] = prob_md
 
     user_message_text = template.render(**context)
     text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"

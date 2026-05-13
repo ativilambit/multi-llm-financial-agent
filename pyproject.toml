@@ -8,6 +8,8 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["RUF001", "RUF002"]
+"equity_analyst/drift_bounds.py" = ["RUF001", "RUF002"]
+"equity_analyst/sigma_compute.py" = ["RUF001", "RUF002"]
 
 [tool.ruff.format]
 quote-style = "double"

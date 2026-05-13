@@ -583,6 +583,49 @@ def iv_crush_multiplier(
     return float(ratio)
 
 
+def event_jump_implied_move_pct_from_prompt_dict(
+    oc_data: dict[str, Any],
+    *,
+    earnings_date: str,
+) -> float | None:
+    """Front **event-week** weekly ATM straddle / spot x 100 from verified ``options_chain_data``."""
+    if not oc_data.get("options_chain_available"):
+        return None
+    snap = options_chain_snapshot_from_prompt_dict(oc_data)
+    if snap is None:
+        return None
+    earn = _parse_earnings_calendar_date(earnings_date)
+    if earn is None:
+        logger.warning("event_jump_implied_move_pct: could not parse earnings_date=%r", earnings_date)
+        return None
+    rows = _selected_expiry_rows(snap)
+    dated: list[tuple[date, dict[str, Any]]] = []
+    for row in rows:
+        ds = str(row.get("expiry_date") or "")[:10]
+        try:
+            dated.append((date.fromisoformat(ds), row))
+        except ValueError:
+            continue
+    dated.sort(key=lambda t: t[0])
+    if not dated:
+        return None
+    event_row: dict[str, Any] | None = None
+    for d, row in dated:
+        if d >= earn:
+            event_row = row
+            break
+    if event_row is None:
+        return None
+    im = _coerce_float(event_row.get("implied_move_pct"))
+    if im is not None and im > 0:
+        return float(im)
+    spot = _coerce_float(oc_data.get("spot")) or snap.spot
+    straddle = _coerce_float(event_row.get("atm_straddle_mid"))
+    if straddle is not None and spot is not None and spot > 0 and straddle > 0:
+        return float(straddle / spot * 100.0)
+    return None
+
+
 def _failed_options_prompt_dict(symbol_u: str, fetch_error: str) -> dict[str, Any]:
     return {
         "options_chain_available": False,
