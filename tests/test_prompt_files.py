@@ -232,3 +232,31 @@ def test_synthesizer_prompt_has_mandatory_sigma_summary_block() -> None:
     assert "sigma_summary" in synth
     assert "one_sigma_half_width_pct" in synth
     assert "Percent vs decimal" in synth
+
+
+def test_section_9_requires_explicit_sigma_band_table_per_session() -> None:
+    """Section 9 must repeat full 1σ/2σ/3σ per session before prediction prose."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    assert "**σ-band table adjacency (mandatory):**" in j2
+    assert "repeat the full 1σ / 2σ / 3σ band table from section 1 verbatim" in j2
+    assert "three-line table immediately above" in j2
+    assert "prose-only shorthand" in j2
+    assert "*Prediction:*" in j2
+    assert "**Wed May 13, 2026 — earnings day (BMO)**" in j2
+    assert "- 3σ: $116.05 – $242.17 (±35.21%)" in j2
+
+
+def test_section_11_includes_sigma_band_context_per_session() -> None:
+    """Section 11 repeats full σ tables and pairs P(up) with 1σ on the same line."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    assert "**σ bands adjacent to probabilities (mandatory):**" in j2
+    assert "repeat the full 1σ / 2σ / 3σ band table from section 1 verbatim" in j2
+    assert "**Wed May 13 (T0)** — 1σ: $158.09 – $200.13 (±11.74%) | P(up): 50.5%" in j2
+    assert "not a substitute" in j2
+
+
+def test_synthesizer_system_requires_explicit_bands_in_sections_9_11() -> None:
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "**Sections 9 and 11 — σ band adjacency:**" in synth
+    assert "never** need to scroll back to section 1" in synth
+    assert "not** condensed prose-only references" in synth

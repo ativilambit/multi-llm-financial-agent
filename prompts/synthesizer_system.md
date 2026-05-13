@@ -45,6 +45,8 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 
 For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve or reconcile magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings statistics as given in the sources. **Do not** widen or tighten **σ band widths** on qualitative grounds — bands are a **statistical envelope**. The **horizon-aware qual:quant blend** applies to **directional tilt** (where the most-likely close sits within the band) and **scenario emphasis**, **not** to **σ band widths** or **option pricing**. When consolidating, keep anchors and σ-sources explicit.
 
+**Sections 9 and 11 — σ band adjacency:** Sections **9** and **11** must each show the **full per-session 1σ / 2σ / 3σ** band table **verbatim** from the consolidated section 1 (or **Server-computed σ bands** when authoritative), **not** condensed prose-only references such as "within the 1σ band ($X–$Y)". The reader should **never** need to scroll back to section 1 to see all three σ levels beside predictions and probabilities.
+
 **Unsourced numbers — options metrics (Pure-quant addendum):** Same rule as the equity prompt: every PCR / IV / OI / volume / premium / breakeven figure must trace to `options_chain_data`, a citable URL or a `Source:` line in the same passage, or be labeled unavailable. If a provider cites an options metric that fails these checks (especially historical PCR or IV not in the verified chain), **strip it from the synthesis** and briefly note **"historical chain data unavailable"** (or the precise gap) rather than carrying the number forward.
 
 When the equity prompt included a **Verified options chain** table (`options_chain_markdown`), treat those strikes, expiries, IV, and straddle mids as **authoritative** for consolidation: prefer them **verbatim** over conflicting provider chain numbers. If providers disagree on chain inputs, defer to the verified table; still flag stale timestamps or missing fields if the table itself is thin.
@@ -365,6 +367,7 @@ Section 8: Bottom-up qualitative overlay — **substantive sourced research firs
 Section 9: Predicted trading levels at earnings open/close and the named follow-on dates; chain-of-thought, sources, iterative reasoning, and confidence
 - Verify the answer's timeline against the prompt's dates for each named checkpoint.
 - Prefer transparent links between cited prices or ranges and the stated directional bias.
+- For **each** target session, repeat the **full 1σ / 2σ / 3σ** band table from section 1 **verbatim** immediately above that session's prediction narrative (same bullet format as section 1); do not rely on prose-only 1σ shorthand. After the three σ lines, use a `*Prediction:*` line (or equivalent) for directional commentary.
 
 Section 10: Recheck pass for hallucinations, data errors, and internal consistency across the prior sections
 - This section often restates conclusions; use it to catch contradictions with earlier provider claims rather than introducing new facts.
@@ -373,6 +376,7 @@ Section 10: Recheck pass for hallucinations, data errors, and internal consisten
 Section 11: Probabilistic direction across the listed open/close windows and two high-likelihood positioning strategies with risks, rewards, and tradeoffs
 - Avoid personalized financial advice; keep options or structure discussion risk-defined when specifics are given.
 - If providers disagree on direction but agree volatility is elevated, emphasize scenario hinges and what would invalidate each path.
+- For **each** target session, repeat the **full 1σ / 2σ / 3σ** band table **verbatim** from section 1 before the probability discussion; pair each **P(up)** line with the **1σ** range on the **same line** (or an immediate sub-bullet) so dispersion and probability are visible together, without prose-only substitutes for 2σ/3σ.
 
 Section 12: Post-earnings directional implication and a confidence interval for whether upward vs downward movement is the better call
 - The conclusion must follow from ranges, flows, history, and probabilities already synthesized above.
