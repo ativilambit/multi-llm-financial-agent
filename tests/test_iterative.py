@@ -53,11 +53,11 @@ def _fanout_sigma_literal_pass_suffix() -> str:
     """Minimal variance-clean literals + dated 3-sigma rows for integration fan-out stubs."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     return (
         "event_jump=6% daily_vol=8%\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -141,10 +141,10 @@ def test_sigma_band_sqrt_ratio_followups_within_tolerance_empty() -> None:
 
 
 def test_verify_variance_additive_sigma_bands_within_tolerance() -> None:
-    """1-sigma widths consistent with (N-1)*daily_vol^2 variance step for ej=6%, dv=8%."""
+    """1-sigma widths satisfy σ² ≈ ej² + N·daily_vol² (N=0 earnings row; ej=6%, dv=8%)."""
     sessions = [
-        {"session": "May 13", "N": 1, "sigma_pct": 10.0},
-        {"session": "May 19", "N": 5, "sigma_pct": (36.0 + 5.0 * 8.0**2) ** 0.5},
+        {"session": "May 13", "N": 0, "sigma_pct": 6.0},
+        {"session": "May 19", "N": 4, "sigma_pct": (36.0 + 4.0 * 8.0**2) ** 0.5},
     ]
     assert verify_variance_additive_sigma_band_sessions(sessions, 8.0, 6.0, tolerance=0.25) == []
 
@@ -152,8 +152,8 @@ def test_verify_variance_additive_sigma_bands_within_tolerance() -> None:
 def test_verify_variance_additive_sigma_bands_flags_inconsistent() -> None:
     """Wrong daily_vol vs stated 1-sigma levels should emit follow-ups."""
     sessions = [
-        {"session": "May 13", "N": 1, "sigma_pct": 10.0},
-        {"session": "May 19", "N": 5, "sigma_pct": (36.0 + 5.0 * 8.0**2) ** 0.5},
+        {"session": "May 13", "N": 0, "sigma_pct": 6.0},
+        {"session": "May 19", "N": 4, "sigma_pct": (36.0 + 4.0 * 8.0**2) ** 0.5},
     ]
     bad = verify_variance_additive_sigma_band_sessions(sessions, 2.0, 6.0, tolerance=0.25)
     assert bad
@@ -162,12 +162,12 @@ def test_verify_variance_additive_sigma_bands_flags_inconsistent() -> None:
 def test_per_provider_sigma_variance_check_passes_on_clean_text() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    # ej=6%, dv=8% with N=1 -> sigma=10% (3sigma=30%); N=5 -> sigma=sqrt(356)% -> 3sigma~56.604%
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    # ej=6%, dv=8% with N=0 -> sigma=6% (3sigma=18%); N=4 -> sigma=sqrt(292)% -> 3sigma~51.265%
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     provider_text = (
         "event_jump=6% daily_vol=8% (HV30 50.4% ann / sqrt(252))\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -186,7 +186,7 @@ def test_per_provider_sigma_variance_check_flags_inconsistent() -> None:
     provider_text = (
         "event_jump=6% daily_vol=8%\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         # Inconsistent — 3sigma=40% gives sigma=13.33; (13.33^2 - 100)=77.7 vs expected (5-1)*64=256
         f"  - 3{sg}: $30 - $170 ({pm}40.0%)\n"
@@ -215,11 +215,11 @@ def test_per_provider_sigma_variance_check_handles_missing_literals() -> None:
 def test_per_provider_sigma_check_extracts_with_colon_separator() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     provider_text = (
         "event_jump: 6% daily_vol: 8%/day\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -233,11 +233,11 @@ def test_per_provider_sigma_check_extracts_with_colon_separator() -> None:
 def test_per_provider_sigma_check_extracts_with_latex_escape() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     provider_text = (
         r"event\_jump = 6\% daily\_vol = 8\%/day" + "\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -251,11 +251,11 @@ def test_per_provider_sigma_check_extracts_with_latex_escape() -> None:
 def test_per_provider_sigma_check_extracts_with_whitespace_around_equals() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     provider_text = (
         "event_jump = 6% daily_vol = 8%\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -314,13 +314,13 @@ def test_per_provider_sigma_variance_excludes_pre_anchor_rows_for_nbis_style_log
     """Pre-earnings dated rows must not define N; BMO anchor is the earnings-day session."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "Monday, May 6 (pre-earnings drift):\n"
         f"  - 3{sg}: ({pm}99.0%)\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -333,11 +333,11 @@ def test_per_provider_sigma_variance_excludes_pre_anchor_rows_for_nbis_style_log
 def test_per_provider_sigma_variance_duplicate_session_date_first_row_wins() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: ({pm}30.0%)\n"
+        f"  - 3{sg}: ({pm}18.0%)\n"
         "Wednesday, May 13 (re-stated):\n"
         f"  - 3{sg}: ({pm}40.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
@@ -351,11 +351,11 @@ def test_per_provider_sigma_variance_duplicate_session_date_first_row_wins() -> 
 def test_per_provider_sigma_variance_gemini_style_month_day_year_header() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "May 13, 2026 (post-earnings):\n"
-        f"  - 3{sg}: ({pm}30.0%)\n"
+        f"  - 3{sg}: ({pm}18.0%)\n"
         "Tuesday, May 19, 2026:\n"
         f"  - 3{sg}: ({pm}{w3_late:.3f}%)\n"
     )
@@ -368,11 +368,11 @@ def test_per_provider_variance_check_handles_multi_row_per_date_openai_style() -
     """OpenAI-style duplicate calendar dates: only the first May 13 horizon feeds the identity."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "### Wednesday, May 13, 2026 — post-print open and close\n"
-        f"- 1{sg}: **$158 – $199 ({pm}10.0%)**\n"
+        f"- 1{sg}: **$158 – $199 ({pm}6.0%)**\n"
         f"- 3{sg}: **$118 – $239 ({pm}30.0%)**\n"
         "### Wednesday, May 13, 2026 — narrative reprise (same calendar date)\n"
         f"- 1{sg}: **$0 – $999 ({pm}50.0%)**\n"
@@ -392,7 +392,7 @@ def test_per_provider_variance_check_handles_multi_row_per_date_openai_style_bro
     text = (
         "event_jump=6% daily_vol=8%\n"
         "### Wednesday, May 13, 2026 — post-print open and close\n"
-        f"- 1{sg}: **$158 – $199 ({pm}10.0%)**\n"
+        f"- 1{sg}: **$158 – $199 ({pm}6.0%)**\n"
         f"- 3{sg}: **$118 – $239 ({pm}30.0%)**\n"
         "### Wednesday, May 13, 2026 — narrative reprise (same calendar date)\n"
         f"- 1{sg}: **$0 – $999 ({pm}50.0%)**\n"
@@ -413,7 +413,7 @@ def test_per_provider_variance_check_handles_anthropic_style_section_headers() -
     text = (
         "event_jump=6% daily_vol=8%\n"
         "### T0 — Wed May 13, 2026 (earnings day, BMO release ≈ 06:00 ET, call 08:00 ET)\n"
-        f"- 1{sg}: **$154 – $193 ({pm}10.0%)**\n"
+        f"- 1{sg}: **$154 – $193 ({pm}6.0%)**\n"
         f"- 3{sg}: **$114 – $232 ({pm}30.0%)**\n"
         "### T+5 — Wed May 20, 2026 (~1 trading week after print, open & close)\n"
         f"- 3{sg}: $40 - $160 ({pm}{w3_may20:.3f}%)\n"
@@ -430,7 +430,7 @@ def test_per_provider_variance_check_handles_anthropic_style_section_headers_bro
     text = (
         "event_jump=6% daily_vol=8%\n"
         "### T0 — Wed May 13, 2026 (earnings day, BMO release ≈ 06:00 ET, call 08:00 ET)\n"
-        f"- 1{sg}: **$154 – $193 ({pm}10.0%)**\n"
+        f"- 1{sg}: **$154 – $193 ({pm}6.0%)**\n"
         f"- 3{sg}: **$114 – $232 ({pm}30.0%)**\n"
         "### T+5 — Wed May 20, 2026 (~1 trading week after print, open & close)\n"
         f"- 3{sg}: $40 - $160 ({pm}{w3_may20 * 1.5:.3f}%)\n"
@@ -443,13 +443,13 @@ def test_per_provider_variance_check_handles_grok_style_out_of_order_sigma_lines
     """Grok-style bold month-first header with ``3σ`` line above ``1σ`` in the same block."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "**May 13 2026 (earnings day, BMO — open & close)**\n"
         f"3{sg}: $118 – $239 ({pm}30.0%)\n"
         f"2{sg}: filler line ({pm}20.0%)\n"
-        f"1{sg}: $158 – $199 ({pm}10.0%)\n"
+        f"1{sg}: $158 – $199 ({pm}6.0%)\n"
         "**May 19, 2026 (Tuesday — open & close)**\n"
         f"3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
     )
@@ -462,12 +462,12 @@ def test_per_provider_variance_check_handles_grok_style_out_of_order_sigma_lines
     """Inflated 3σ on the May 19 horizon fails the additive-variance check."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "**May 13 2026 (earnings day, BMO — open & close)**\n"
         f"3{sg}: $118 – $239 ({pm}30.0%)\n"
-        f"1{sg}: $158 – $199 ({pm}10.0%)\n"
+        f"1{sg}: $158 – $199 ({pm}6.0%)\n"
         "**May 19, 2026 (Tuesday — open & close)**\n"
         f"3{sg}: $40 - $160 ({pm}{w3_late * 1.12:.3f}%)\n"
     )
@@ -489,11 +489,11 @@ def test_per_provider_sigma_variance_prefers_explicit_one_sigma_half_width() -> 
     """Use explicit 1-sigma (+-pct) when present instead of 3-sigma/3 for the variance identity."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     text = (
         "event_jump=6% daily_vol=8%\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 1{sg}: ({pm}10.0%)\n"
+        f"  - 1{sg}: ({pm}6.0%)\n"
         f"  - 3{sg}: wide ({pm}90.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: ({pm}{w3_late:.3f}%)\n"
@@ -502,21 +502,23 @@ def test_per_provider_sigma_variance_prefers_explicit_one_sigma_half_width() -> 
     assert r["passed"] is True
 
 
-def test_per_provider_sigma_variance_amc_shifts_anchor_to_next_session() -> None:
+def test_per_provider_sigma_variance_amc_earnings_row_is_n_zero() -> None:
+    """AMC earnings calendar session is included at n=0 (raw jump), not dropped as pre-anchor."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
     text = (
         "event_jump=6% daily_vol=8%\n"
         "Wednesday, May 13:\n"
-        f"  - 3{sg}: ({pm}30.0%)\n"
+        f"  - 3{sg}: ({pm}18.0%)\n"
     )
     r = per_provider_sigma_variance_check(
         text,
         earnings_date="2026-05-13",
         earnings_timing="after market close (AMC)",
     )
-    assert r["passed"] is None
-    assert r["reason"] == "missing_post_anchor_rows"
+    assert r["applicable"] is True
+    assert r["passed"] is True
+    assert r["sessions"] == 1
 
 
 def test_parse_sigma_summary_json_valid() -> None:
@@ -568,9 +570,9 @@ def test_per_provider_check_flags_prob_mismatch_beyond_2pp() -> None:
     from equity_analyst.drift_bounds import computed_prob_up_pct
 
     sg = chr(0x03C3)
-    w_json_late = (36.0 + 5.0 * 8.0**2) ** 0.5
+    w_json_late = (36.0 + 4.0 * 8.0**2) ** 0.5
     mu = 0.10
-    expected_late = computed_prob_up_pct(mu, w_json_late, 5)
+    expected_late = computed_prob_up_pct(mu, w_json_late, 4)
     json_block = {
         "sigma_summary": {
             "anchor_price": 100.0,
@@ -582,16 +584,16 @@ def test_per_provider_check_flags_prob_mismatch_beyond_2pp() -> None:
             "sessions": [
                 {
                     "date": "2026-05-13",
-                    "label": "T+1",
-                    "N": 1,
-                    "one_sigma_half_width_pct": 10.0,
-                    "three_sigma_half_width_pct": 30.0,
-                    "prob_up_pct": computed_prob_up_pct(mu, 10.0, 1),
+                    "label": "T0",
+                    "N": 0,
+                    "one_sigma_half_width_pct": 6.0,
+                    "three_sigma_half_width_pct": 18.0,
+                    "prob_up_pct": computed_prob_up_pct(mu, 6.0, 0),
                 },
                 {
                     "date": "2026-05-19",
                     "label": "week",
-                    "N": 5,
+                    "N": 4,
                     "one_sigma_half_width_pct": w_json_late,
                     "three_sigma_half_width_pct": 3.0 * w_json_late,
                     "prob_up_pct": min(99.0, expected_late + 5.0),
@@ -612,8 +614,8 @@ def test_per_provider_check_flags_prob_mismatch_beyond_2pp() -> None:
     assert any("prob_up=" in f and "computed=" in f for f in r["followups"])
     """When valid sigma_summary JSON is present, verifier uses JSON half-widths, not markdown ±%%."""
     sg = chr(0x03C3)
-    w_json = 10.0
-    w_json_late = (36.0 + 5.0 * 8.0**2) ** 0.5
+    w_json = 6.0
+    w_json_late = (36.0 + 4.0 * 8.0**2) ** 0.5
     json_block = {
         "sigma_summary": {
             "anchor_price": 100.0,
@@ -621,15 +623,15 @@ def test_per_provider_check_flags_prob_mismatch_beyond_2pp() -> None:
             "sessions": [
                 {
                     "date": "2026-05-13",
-                    "label": "T+1",
-                    "N": 1,
+                    "label": "T0",
+                    "N": 0,
                     "one_sigma_half_width_pct": w_json,
-                    "three_sigma_half_width_pct": 30.0,
+                    "three_sigma_half_width_pct": 18.0,
                 },
                 {
                     "date": "2026-05-19",
                     "label": "week",
-                    "N": 5,
+                    "N": 4,
                     "one_sigma_half_width_pct": w_json_late,
                     "three_sigma_half_width_pct": 99.0,
                 },
@@ -659,8 +661,8 @@ def test_variance_identity_from_json_sessions() -> None:
     "anchor_price": 100.0,
     "anchor_type": "prior_close",
     "sessions": [
-      {"date": "2026-05-13", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 10.0, "three_sigma_half_width_pct": 30.0},
-      {"date": "2026-05-19", "label": "T+5", "N": 5, "one_sigma_half_width_pct": 18.868, "three_sigma_half_width_pct": 56.604}
+      {"date": "2026-05-13", "label": "T0", "N": 0, "one_sigma_half_width_pct": 6.0, "three_sigma_half_width_pct": 18.0},
+      {"date": "2026-05-19", "label": "T+4", "N": 4, "one_sigma_half_width_pct": 17.088007, "three_sigma_half_width_pct": 51.264021}
     ]
   }
 }
@@ -827,7 +829,7 @@ def test_render_per_provider_sigma_checks_markdown_three_providers() -> None:
 def test_verifier_does_not_use_sqrt_t_when_variance_additive_literals_present() -> None:
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     syn = f"""\
 event_jump=6% daily_vol=8%
 Wednesday, May 13 (post-earnings):
@@ -2140,11 +2142,11 @@ async def test_fan_out_records_per_provider_sigma_checks_in_state(tmp_path: Path
     """fan_out node must scan each provider's text and stash structured sigma-check results."""
     sg = chr(0x03C3)
     pm = chr(0x00B1)
-    w3_late = 3.0 * (36.0 + 5.0 * 8.0**2) ** 0.5
+    w3_late = 3.0 * (36.0 + 4.0 * 8.0**2) ** 0.5
     clean_body = (
         "event_jump=6% daily_vol=8% (HV30 50.4% ann / sqrt(252))\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $40 - $160 ({pm}{w3_late:.3f}%)\n"
         "OVERALL_CONFIDENCE: 0.5\n"
@@ -2152,7 +2154,7 @@ async def test_fan_out_records_per_provider_sigma_checks_in_state(tmp_path: Path
     failing_body = (
         "event_jump=6% daily_vol=8%\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "Tuesday, May 19 (~1 week):\n"
         f"  - 3{sg}: $30 - $170 ({pm}40.0%)\n"
         "OVERALL_CONFIDENCE: 0.5\n"
@@ -2209,7 +2211,7 @@ async def test_fan_out_logs_per_provider_sigma_variance_check_lines(
     clean_body = (
         "event_jump=6% daily_vol=8% (HV30 / sqrt(252))\n"
         "Wednesday, May 13 (post-earnings):\n"
-        f"  - 3{sg}: $90 - $110 ({pm}30.0%)\n"
+        f"  - 3{sg}: $90 - $110 ({pm}18.0%)\n"
         "OVERALL_CONFIDENCE: 0.5\n"
     )
     reg = ProviderRegistry()

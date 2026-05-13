@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import date
 
 import pytest
 
@@ -32,8 +34,43 @@ def test_compute_sigma_bands_server_side_variance_additive() -> None:
     assert t is not None
     by = {s.session_date.isoformat(): s for s in t.sessions}
     s_may19 = by["2026-05-19"]
-    expected = (36.0 + 5.0 * 8.0**2) ** 0.5
+    # N counts NYSE weekdays strictly after the earnings calendar date through the
+    # session date (inclusive); May 13 -> May 19 spans four such sessions.
+    expected = (36.0 + 4.0 * 8.0**2) ** 0.5
     assert s_may19.one_sigma_half_width_pct == pytest.approx(expected, rel=1e-6)
+
+
+def test_compute_sigma_bands_n_index_matches_calendar_diffusion() -> None:
+    """Earnings calendar row is n=0 (raw jump); later targets count weekdays after that date."""
+    ej, dv = 20.58, 3.18
+    t = compute_sigma_bands_server_side(
+        anchor_price=100.0,
+        anchor_type="prior_close",
+        earnings_date="2026-05-13",
+        earnings_timing="after market close (AMC)",
+        target_dates=["2026-05-13", "2026-05-14", "2026-05-15", "2026-05-22", "2026-05-29"],
+        next_trading_day="2026-05-14",
+        event_jump_pct=ej,
+        daily_vol_pct=dv,
+        daily_vol_source="fixture",
+        daily_drift_pct=0.0,
+        drift_source_note="fixture",
+    )
+    assert t is not None
+    by = {s.session_date: s for s in t.sessions}
+    days = [date(2026, 5, d) for d in (13, 14, 15, 22, 29)]
+    expected_pct = [
+        ej,
+        math.sqrt(ej**2 + 1 * dv**2),
+        math.sqrt(ej**2 + 2 * dv**2),
+        math.sqrt(ej**2 + 7 * dv**2),
+        math.sqrt(ej**2 + 12 * dv**2),
+    ]
+    expected_n = [0, 1, 2, 7, 12]
+    for d, exp_pct, exp_n in zip(days, expected_pct, expected_n, strict=True):
+        row = by[d]
+        assert row.n_trading == exp_n
+        assert row.one_sigma_half_width_pct == pytest.approx(exp_pct, abs=0.02)
 
 
 def test_compute_sigma_bands_with_iv_crush_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:

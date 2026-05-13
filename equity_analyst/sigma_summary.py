@@ -31,7 +31,13 @@ class SigmaSessionRowModel(BaseModel):
 
     date: date
     label: str = Field(min_length=1)
-    N: int = Field(description="Model-supplied index; verifier recomputes from calendar.")
+    N: int = Field(
+        ge=0,
+        description=(
+            "Optional model hint; verifier recomputes n as NYSE weekdays strictly after the earnings "
+            "calendar date through this row's date (n=0 on that calendar session = raw event jump only)."
+        ),
+    )
     one_sigma_half_width_pct: float = Field(gt=0, le=500.0)
     three_sigma_half_width_pct: float = Field(gt=0, le=500.0)
     prob_up_pct: float | None = Field(

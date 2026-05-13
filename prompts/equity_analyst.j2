@@ -84,7 +84,7 @@ Use these dollar bounds and percentages **exactly as shown**. Do not recalculate
      3. **Forward IV calendar-spread** — only when both event-week and post-event weekly expiries exist in `options_chain_data`. Computation: `daily_vol_post = √((IV_far² × T_far − IV_event² × T_event) / (T_far − T_event)) / √252`. Use only when both (1) and (2) are unavailable, **and** when `iv_crush_multiplier` / `daily_vol_iv_adjusted` are **not** provided above.
 
      **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
-   - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.
+   - `N` = **post-earnings diffusion index** for the variance-additive formula: count **NYSE weekdays strictly after** the earnings **calendar** date through the target session’s date (inclusive of the target). **`n=0` on the earnings calendar session** (e.g. AMC pre-print row) means **only `event_jump`** — no `daily_vol` term yet. The next trading day is **`n=1`**, then **`n=2`**, etc., so `σ(n) = √(event_jump² + n·daily_vol²)` (same half-width % units as the table).
    - **MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** Before showing any σ bands, output **exactly** these two lines in a fenced code block (any backticks), with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, no Unicode multipliers):
 
      ```
@@ -113,13 +113,13 @@ Use these dollar bounds and percentages **exactly as shown**. Do not recalculate
      }
      ```
 
-     Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings calendar and BMO/AMC anchor (same rule as bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** post–T+1 horizon row (so the check can compare `σ²(T+N)−σ²(T+1)` vs `(N−1)·daily_vol²`). Use **strict JSON** (double quotes; no trailing commas).
+     Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings **calendar** date (same weekday-count rule as the bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** later horizon row with **`n≥1`** so the check can compare **`σ²(n₂)−σ²(n₁)`** vs **`(n₂−n₁)·daily_vol²`**. Use **strict JSON** (double quotes; no trailing commas).
 
    - **Percent vs decimal (mandatory):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
 
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by `√(target_DTE / chosen_expiry_DTE)` from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 
-4. **Sanity check (state in output, variance-additive form).** After computing all post-event σ bands, output one line: `σ-scaling check (variance): σ²(T+N) − σ²(T+1) = X.XX (expected (N−1)·daily_vol² = Y.YY); within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`.
+4. **Sanity check (state in output, variance-additive form).** After computing all post-event σ bands, output one line: `σ-scaling check (variance): spot-check σ² ≈ ej² + n·daily_vol² per row and pairwise deltas vs (n₂−n₁)·daily_vol²; within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`.
 
 5. **Reject implausible 0-DTE bands.** If 3σ width for any session is **< 5%** for a stock that has implied earnings move ≥ 15% pre-print, flag the calculation as likely missing an event-vol input and re-derive.
 {% endif %}
@@ -174,6 +174,12 @@ Do NOT collapse to just 1σ or omit 2σ/3σ; if data limits prevent precise calc
 | T-0 pre-open (event day, no intraday yet) | **49 : 51** | Mixed: options skew and pre-print positioning already price much of the setup; the default blend tilts slightly quantitative for directional trust while qualitative narrative still matters and the Pure-quant rule governs $/σ. |
 | T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **49 : 51** | After the tape and chain update, realized range and flow carry slightly more weight for directional tilt; qualitative drivers still shape narrative and scenarios; quantitative levels anchor exact $/σ math via the Pure-quant rule. |
 | T+1 to T+5 (after the event, with intraday history) | **49 : 51** | Realized post-event path and refreshed options data carry slightly more weight for directional tilt; qualitative narrative still informs scenario emphasis; exact $/σ bands remain quant-only. |
+
+**MANDATORY — horizon blend literal strings (section 8; downstream synthesis verifier checks this):** The table column is always **qual : quant** (qualitative lens first, quantitative second). Use **one** canonical digit pair per row everywhere in the report (including **Horizon & blend application**); **do not** swap digits or lens labels between sections.
+
+- **T−3..T−1:** canonical literal is **`55 : 45`**. **Forbidden:** digit-inverting that row (smaller number first with a colon), or emitting **both** the canonical pair and its digit-inverted form in the same report.
+- **T-0 pre-open, T-0 with same-day intraday, and T+1..T+5:** canonical literal is **`49 : 51`**. **Forbidden:** digit-inverting that row (larger number first with a colon), emitting **both** the canonical pair and its digit-inverted form, or **"49 Quant : 51 Qual"** (labels reversed vs the table).
+- **Acceptable:** **`qual : quant = 49 : 51`**, **`49 : 51` (qual : quant)**, or **"≈49% qualitative / ≈51% quantitative"** with that order. **Numeric example:** directional tilt uses **~0.49×(qual) + 0.51×(quant)** for the default **`49 : 51`** row before any **+5 / +10** tilt; **σ** widths stay quant-only.
 
 Conduct a bottom-up review of {{ symbol }} using web_search — earnings transcript/guidance, 30/60/90d news, product/customer/partnerships, insider/buybacks, sector/competitors, supply-chain/end-markets, regulatory/macro — so **Qualitative evidence** is populated with traceable items. When you later produce probabilities and ranges, name which **sourced** qualitative items moved the call. Flag disagreement between this overlay and quantitative sections 1–7; resolve in **Horizon & blend application** / **Directional resolution** and in prediction sections using the rules above.
 

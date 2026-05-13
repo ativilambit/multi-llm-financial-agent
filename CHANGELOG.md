@@ -8,6 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-13
 
+- **Sigma / verifier:** Server-computed σ bands and variance checks now index **`n=0` on the earnings calendar session row** (pre-print / raw `event_jump` only; no `daily_vol` contribution). Later rows use **`n`** = NYSE weekdays strictly after that calendar date through the session date (`σ(n)=√(event_jump²+n·daily_vol²)`). Verifier / `sigma_summary` payload **`N`** matches this rule (AMC earnings-day rows are no longer dropped as “pre-anchor”).
 - **DB** Gate Postgres writes on **`RunConfig.run_profile`** (**`production`** vs **`dev`**, default **`dev`**): `runs`, `provider_responses`, `outcomes`, and `predictions` are persisted only for production runs. Env **`EQUITY_RUN_PROFILE`** / **`RUN_PROFILE`**, CLI **`run --profile`**, and top-level **`run.json`** `run_profile` (written on finalize) drive behavior; legacy **`run.json`** without an explicit profile is treated as production for outcome/prediction compatibility. **`scripts/run_all_symbols.sh`** passes **`--profile production`**. (`feat(db): gate Postgres on run_profile — default dev`)
 
 - **Configs** Added VIK, KLAR, FRMI, BTDR, ONDS, YETI for Thu May 14 earnings.

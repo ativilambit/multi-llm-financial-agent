@@ -159,14 +159,9 @@ def compute_sigma_bands_server_side(
     earn_cal = _parse_earnings_calendar_date(earnings_date)
     if earn_cal is None:
         return None
-    from equity_analyst.iterative import (
-        anchor_session_date_for_variance_check,
-        trading_sessions_inclusive,
-    )
+    _ = earnings_timing  # API stability; diffusion index uses earnings calendar date only.
+    from equity_analyst.iterative import trading_sessions_after_exclusive
 
-    anchor_session = anchor_session_date_for_variance_check(earn_cal, earnings_timing)
-    if anchor_session is None:
-        return None
     rows_in = _collect_unique_session_dates(
         earnings_date=earnings_date,
         next_trading_day=next_trading_day,
@@ -176,7 +171,7 @@ def compute_sigma_bands_server_side(
         return None
     sessions: list[ComputedSigmaSessionRow] = []
     for d, iso, origin in rows_in:
-        n_inc = trading_sessions_inclusive(anchor_session, d)
+        n_inc = trading_sessions_after_exclusive(earn_cal, d)
         sigma1 = math.sqrt(event_jump_pct**2 + float(n_inc) * daily_vol_pct**2)
         sigma2 = 2.0 * sigma1
         sigma3 = 3.0 * sigma1
@@ -229,6 +224,10 @@ def format_computed_sigma_bands_markdown(table: ComputedSigmaBandsTable) -> str:
         "| Date | N | 1σ ±% | 2σ ±% | 3σ ±% | 1σ $ low | 1σ $ high | P(up)% |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    lines.append(
+        "- **N column:** NYSE weekdays **strictly after** the earnings **calendar** date through that row "
+        "(`n=0` on the earnings calendar session = raw `event_jump` only; then T+1, T+2, …).",
+    )
     for s in table.sessions:
         lines.append(
             f"| {s.session_date.isoformat()} | {s.n_trading} | {s.one_sigma_half_width_pct:.2f} | "

@@ -73,6 +73,7 @@ from equity_analyst.synthesizer import (
     format_synthesis_artifact_markdown,
     provider_finish_reason_label,
 )
+from equity_analyst.synthesizer_blend import horizon_blend_ratio_followups
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,8 @@ that are not represented in the excerpt.
 
 If the excerpt includes **section 8** bottom-up qualitative material, add an **unverifiable** item when the first 800 characters of that section-8 passage contain **no** `http://` or `https://` URL and **no** line starting with `Source:` (heuristic for missing citations—tune to reduce false positives).
 
+When the excerpt states **horizon blend** defaults, the equity/synthesizer prompts fix literals as **qual : quant**. For **T-0 / T+1..T+5** rows the digits must read **`49 : 51`** (never digit-invert to larger-then-smaller). For **T-3..T-1** use **`55 : 45`** (never digit-invert to smaller-then-larger). Flag **unverifiable** if the excerpt uses digit-inverted pairs, emits **both** canonical and inverted pairs, or writes **"49 Quant : 51 Qual"** (labels swapped vs **qual : quant**). (Deterministic post-pass also enforces this—still flag if you see it in your excerpt.)
+
 When the excerpt concerns **post-earnings sigma bands** (variance-additive horizons), require **machine-parseable** inputs before any band table: the literal tokens ``event_jump=`` and ``daily_vol=`` (exact spelling, ASCII ``=``) with **two decimals** and ``%/day`` on ``daily_vol``, inside a fenced code block—same mandatory shape as the equity prompt (no LaTeX ``\\_`` escapes, no Markdown italics, no Unicode multipliers). If either token is missing from the excerpt, add an **unverifiable** item demanding those two lines in that exact format (plus ``iv_crush_multiplier=`` / ``daily_vol_raw=`` / ``daily_vol=`` when IV crush context applies).
 
 When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, treat **prior-close anchoring** and **labeled same-day intraday `[low-1.00, high+1.00]` (USD)** as both valid when the synthesis states which anchor it used; do not flag a contradiction solely because two runs used different branches of the equity prompt.
@@ -135,7 +138,7 @@ When excerpted claims concern 1-sigma / 2-sigma / 3-sigma **dollar** bands, trea
     + f"""**{_GS} band structural checks (mandatory pass/fail in your JSON, plus cite synthesis gaps):**
 - For every session or horizon in the excerpt that reports **1{_GS} / 2{_GS} / 3{_GS}** bands tied to options-implied width, require an explicit **vol baseline**: a **real listed options expiry (YYYY-MM-DD)** used for implied move, **or** the literal label **HV30 sqrt(t) scaling** (or text clearly equivalent).
 - **No fake 0-DTE implied move:** if the excerpt reports same-day implied-move {_GS} for a session **without** naming a chain expiry that could support that session, add a concise **unverifiable** item naming the session and asking for the nearest weekly expiry + sqrt(target_DTE/chosen_DTE) scaling or HV30 fallback.
-- **Variance-additive event+diffusion (canonical when the horizon crosses the earnings print and the target is post-event):** if the excerpt states **event_jump=** ... **%** and **daily_vol=** ... **%** (post-event decomposition), recompute **{_GS}^2(T+N) - {_GS}^2(T+1)** from the stated **1{_GS}** (or **3{_GS}/3**) half-width % for each later post-event horizon vs the first post-event row and verify it equals **(N-1) * daily_vol^2** within **+/-25%** (same N as the model's post-event day count). If it fails, add **unverifiable** items with the concrete observed vs expected numbers and ask for a corrected **daily_vol** or explicit fallback labeling.
+- **Variance-additive event+diffusion (canonical when the horizon crosses the earnings print and the target is post-event):** if the excerpt states **event_jump=** ... **%** and **daily_vol=** ... **%** (post-event decomposition), verify each dated **1{_GS}** (or **3{_GS}/3**) half-width satisfies **{_GS}^2 ≈ event_jump^2 + n·daily_vol^2** where **n** counts NYSE weekdays **strictly after** the earnings **calendar** date through that row's date (same **n** as the server {_GS} table: **n=0** on the earnings calendar session is the raw jump only). For two rows with indices n1<n2, **{_GS}^2(n2)-{_GS}^2(n1)** should match **(n2-n1)·daily_vol^2** within **+/-25%**. If it fails, add **unverifiable** items with concrete numbers and ask for a corrected **daily_vol** or explicit regime labeling.
 - **sqrt(t) coherence (fallback, single IV baseline only):** apply **only** when the excerpt has **no** ``event_jump=`` / ``daily_vol=`` literals **and** the dated {_GS} rows are **entirely pre-earnings** or **entirely post-earnings** (no earnings session **between** the earliest and latest dated row). When those literals **are** present, use the **variance-additive** check instead — do **not** demand sqrt(t) ratios across an event jump. When sqrt(t) **does** apply (pre-event constant-IV or post-event single-baseline window), the ratio of **3{_GS} half-width %** values should track **sqrt(Delta trading_sessions)** within **+/-25%** unless the excerpt explicitly flags a **vol regime change**. If incompatible, add **unverifiable** follow-ups naming dates, observed ratio, expected sqrt(N), and ask to re-derive or label distinct regimes.
 - **Unsourced options-chain numerics:** Flag any options-chain numeric claim (**PCR**, **IV**, **OI**, **volume**, **premium**, **breakeven** for a **non-current** / historical session, etc.) that lacks an inline ``http(s)://`` URL or a ``Source:`` attribution **in the same paragraph**. Add to **unverifiable** with: ``Cite or verify: <provider/synthesis> claims <metric>=<value> for <date> without a primary source.``
 - If the excerpt is missing the mandatory sanity line while it contains multi-horizon **3{_GS}** % bands, add an **unverifiable** item: require **`{_GS}-scaling check (variance):`** when **event_jump=** / **daily_vol=** are present; otherwise require **`{_GS}-scaling check:`** (sqrt-t ratio form).
@@ -217,78 +220,14 @@ def trading_sessions_inclusive(start: date, end: date) -> int:
     return n
 
 
-def _is_weekday_session(d: date) -> bool:
-    return d.weekday() < 5
-
-
-def next_trading_day_on_or_after(d: date) -> date:
-    """First NYSE-style weekday on or after ``d``."""
-    cur = d
-    while not _is_weekday_session(cur):
-        cur += timedelta(days=1)
-    return cur
-
-
-def next_trading_day_strictly_after(d: date) -> date:
-    """First weekday strictly after calendar day ``d``."""
-    return next_trading_day_on_or_after(d + timedelta(days=1))
-
-
-def _earnings_timing_implies_amc(earnings_timing: str | None) -> bool:
-    """Heuristic AMC vs BMO from ``RunConfig.earnings_timing`` / template copy."""
-    if not earnings_timing or not earnings_timing.strip():
-        return False
-    low = earnings_timing.lower()
-    if "bmo" in low:
-        return False
-    if "before" in low and "open" in low:
-        return False
-    if "morning" in low and "before" in low:
-        return False
-    amc_markers = (
-        "after the close",
-        "after market close",
-        "after close",
-        "amc",
-        "post-market",
-        "post market",
-        "after hours",
-        "after-hours",
-        "after the bell",
-    )
-    return any(m in low for m in amc_markers)
-
-
-def anchor_session_date_for_variance_check(
-    earnings_calendar: date | None,
-    earnings_timing: str | None,
-) -> date | None:
-    """First **post-event** regular session used as **T+1** for variance-additive sigma checks.
-
-    Matches the equity / synthesizer brief:
-
-    - **BMO** (and unknown timing): first weekday **on or after** ``earnings_calendar`` — the
-      earnings-day regular session is the first post-print diffusion anchor for variance steps.
-    - **AMC** (heuristic on ``earnings_timing``): first weekday **strictly after**
-      ``earnings_calendar`` — diffusion ribbon starts the next session.
-
-    ``N`` for a dated synthesis row is then ``trading_sessions_inclusive(anchor, row_date)``.
-    """
-    if earnings_calendar is None:
-        return None
-    if _earnings_timing_implies_amc(earnings_timing):
-        return next_trading_day_strictly_after(earnings_calendar)
-    return next_trading_day_on_or_after(earnings_calendar)
-
-
 def _dated_rows_for_variance_additive_check(
     by_date: dict[date, tuple[float, str]],
-    anchor_session: date | None,
+    earnings_calendar: date | None,
 ) -> dict[date, tuple[float, str]]:
-    """Keep only rows on/after ``anchor_session`` when the anchor is known."""
-    if anchor_session is None or not by_date:
+    """Keep only rows on/after ``earnings_calendar`` when that calendar date is known."""
+    if earnings_calendar is None or not by_date:
         return dict(by_date)
-    post = {d: v for d, v in by_date.items() if d >= anchor_session}
+    post = {d: v for d, v in by_date.items() if d >= earnings_calendar}
     return post if post else {}
 
 
@@ -575,17 +514,16 @@ def verify_variance_additive_sigma_band_sessions(
 ) -> list[str]:
     """Return follow-up strings when 1-sigma percent half-widths violate variance-additive post-event math.
 
-    Each session entry uses ``session`` (label), ``N`` (weekday sessions from **anchor T+1**
-    through the row's session date, **inclusive**), and ``sigma_pct`` (1-sigma plus-minus half-width
-    as a percent).
+    Each session entry uses ``session`` (label), ``N`` (weekday **diffusion index**: count of
+    regular sessions **strictly after** the earnings **calendar** date through the row's session
+    date, inclusive of the row — same rule as :func:`trading_sessions_after_exclusive`), and
+    ``sigma_pct`` (1-sigma plus-minus half-width as a percent).
 
     ``event_jump`` follows the equity / synthesizer prompts: **ATM straddle implied move (%)** in
     the **same half-width percent units** as ``sigma_pct`` (if a model quotes a full width, it must
-    halve before emitting the literal so it matches ``sigma(T+1)``).
+    halve before emitting the literal).
 
-    With an ``N == 1`` row, ``ref_sq`` is that row's ``sigma_pct**2``. Otherwise ``ref_sq`` defaults
-    to ``event_jump**2 + daily_vol**2`` so ``sigma**2(T+N)-sigma**2(T+1)`` can be checked when the anchor
-    line is missing from the text.
+    Identity checked: ``sigma_pct**2 ≈ event_jump**2 + N * daily_vol**2`` (relative tolerance per row).
     """
     rows: list[tuple[str, int, float]] = []
     for raw in sessions:
@@ -601,48 +539,28 @@ def verify_variance_additive_sigma_band_sessions(
             sig_f = float(sig_val)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             continue
-        if n_int < 1 or sig_f <= 0.0:
+        if n_int < 0 or sig_f <= 0.0:
             continue
         rows.append((sess, n_int, sig_f))
 
     if not rows:
         return []
 
-    ref_sq: float | None = None
-    for _s, n_i, sig in rows:
-        if n_i == 1:
-            ref_sq = sig * sig
-            break
-
     ej2 = float(event_jump_pct) ** 2
     dv2 = float(daily_vol_pct) ** 2
-    if ref_sq is None:
-        ref_sq = ej2 + dv2
 
     followups: list[str] = []
     for sess, n_i, sig in rows:
+        expected_sq = ej2 + float(n_i) * dv2
+        if expected_sq <= 0.0:
+            continue
         obs_sq = sig * sig
-        if n_i == 1:
-            expected_sq = ej2 + dv2
-            if expected_sq <= 0.0:
-                continue
-            rel = abs(obs_sq - expected_sq) / expected_sq
-            if rel > tolerance:
-                followups.append(
-                    f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+1)={obs_sq:.2f} expected "
-                    f"ej^2+dv^2={expected_sq:.2f}, off by {rel:.0%}; fix daily_vol or inputs.",
-                )
-        else:
-            expected_delta = float(n_i - 1) * dv2
-            if expected_delta <= 0.0:
-                continue
-            obs_delta = obs_sq - ref_sq
-            rel = abs(obs_delta - expected_delta) / expected_delta
-            if rel > tolerance:
-                followups.append(
-                    f"{_GS}^2 variance {sess[:18]}: {_GS}^2(T+{n_i})-{_GS}^2(T+1)={obs_delta:.2f} "
-                    f"expected (N-1)*daily_vol^2={expected_delta:.2f} (N={n_i}), off by {rel:.0%}; fix daily_vol.",
-                )
+        rel = abs(obs_sq - expected_sq) / expected_sq
+        if rel > tolerance:
+            followups.append(
+                f"{_GS}^2 variance {sess[:18]}: {_GS}^2(n={n_i})={obs_sq:.2f} expected "
+                f"ej^2+n·daily_vol^2={expected_sq:.2f}, off by {rel:.0%}; fix daily_vol or inputs.",
+            )
     return followups
 
 
@@ -764,21 +682,20 @@ def sigma_sessions_payload_from_sigma_summary_model(
     if not by_date:
         return [], 0, "missing_sigma_summary_sessions"
 
-    anchor = anchor_session_date_for_variance_check(earn_cal, (earnings_timing or "").strip() or None)
-    by_rows = _dated_rows_for_variance_additive_check(by_date, anchor if earn_cal is not None else None)
+    by_rows = _dated_rows_for_variance_additive_check(by_date, earn_cal if earn_cal is not None else None)
 
-    if earn_cal is not None and anchor is not None and not by_rows and by_date:
-        return [], 0, "missing_post_anchor_rows"
+    if earn_cal is not None and not by_rows and by_date:
+        return [], 0, "missing_on_or_after_earnings_date_rows"
 
     if not by_rows:
         return [], 0, "missing_dated_rows"
 
     keys_sorted = sorted(by_rows)
-    anchor_eff = anchor if anchor is not None else keys_sorted[0]
+    baseline = earn_cal if earn_cal is not None else keys_sorted[0]
     sessions_payload: list[dict[str, Any]] = []
     for d in keys_sorted:
         sig_half, lbl = by_rows[d]
-        n_inc = trading_sessions_inclusive(anchor_eff, d)
+        n_inc = trading_sessions_after_exclusive(baseline, d)
         sessions_payload.append(
             {
                 "session": lbl,
@@ -871,21 +788,19 @@ def _legacy_sigma_variance_sessions(
     if not by_s1:
         return [], 0, "missing_dated_rows"
 
-    anchor = anchor_session_date_for_variance_check(earn_cal, (earnings_timing or "").strip() or None)
-
-    by_rows = _dated_rows_for_variance_additive_check(by_s1, anchor if earn_cal is not None else None)
-    if earn_cal is not None and anchor is not None and not by_rows and by_s1:
-        return [], 0, "missing_post_anchor_rows"
+    by_rows = _dated_rows_for_variance_additive_check(by_s1, earn_cal if earn_cal is not None else None)
+    if earn_cal is not None and not by_rows and by_s1:
+        return [], 0, "missing_on_or_after_earnings_date_rows"
 
     if not by_rows:
         return [], 0, "missing_dated_rows"
 
     keys_sorted = sorted(by_rows)
-    anchor_eff = anchor if anchor is not None else keys_sorted[0]
+    baseline = earn_cal if earn_cal is not None else keys_sorted[0]
     sessions_payload: list[dict[str, Any]] = []
     for d in keys_sorted:
         sig_half, lbl = by_rows[d]
-        n_inc = trading_sessions_inclusive(anchor_eff, d)
+        n_inc = trading_sessions_after_exclusive(baseline, d)
         sessions_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
 
     return sessions_payload, len(sessions_payload), None
@@ -1220,6 +1135,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     computed_sigma_bands_table: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
+    _ = earnings_timing  # reserved; structural sigma checks use earnings calendar date only.
     out = dict(result)
     prior = [str(x).strip() for x in (out.get("unverifiable") or []) if str(x).strip()]
     extras: list[str] = []
@@ -1232,7 +1148,8 @@ def augment_verifier_result_with_sigma_structural_checks(
         if variance_mode:
             if f"{_GS}-scaling check (variance):" not in synthesis_text:
                 extras.append(
-                    f"{_GS} bands: add `{_GS}-scaling check (variance):` line (delta {_GS}^2 vs (N-1)*daily_vol^2).",
+                    f"{_GS} bands: add `{_GS}-scaling check (variance):` line "
+                    f"(each row: {_GS}^2 ≈ ej^2 + n·daily_vol^2; deltas vs (n2-n1)·daily_vol^2).",
                 )
         elif f"{_GS}-scaling check" not in synthesis_text:
             extras.append(
@@ -1242,10 +1159,9 @@ def augment_verifier_result_with_sigma_structural_checks(
     dated = extract_dated_three_sigma_half_widths(synthesis_text, year=anchor_year)
     by_w3, by_s1 = _merge_dated_sigma_rows_first_wins(dated)
 
-    anchor = anchor_session_date_for_variance_check(earnings_date, earnings_timing)
     by_date_var = _dated_rows_for_variance_additive_check(
         by_s1,
-        anchor if earnings_date is not None else None,
+        earnings_date if earnings_date is not None else None,
     )
 
     strict_tbl = (
@@ -1266,11 +1182,11 @@ def augment_verifier_result_with_sigma_structural_checks(
     elif variance_mode and len(by_date_var) >= 1:
         assert ej_lit is not None and dv_lit is not None
         keys_sorted = sorted(by_date_var)
-        anchor_eff = anchor if anchor is not None else keys_sorted[0]
+        baseline = earnings_date if earnings_date is not None else keys_sorted[0]
         session_payload: list[dict[str, Any]] = []
         for d in keys_sorted:
             sig_half, lbl = by_date_var[d]
-            n_inc = trading_sessions_inclusive(anchor_eff, d)
+            n_inc = trading_sessions_after_exclusive(baseline, d)
             session_payload.append({"session": lbl, "N": n_inc, "sigma_pct": sig_half})
         extras.extend(
             verify_variance_additive_sigma_band_sessions(
@@ -1332,6 +1248,8 @@ def augment_verifier_result_with_sigma_structural_checks(
             symbol=symbol,
         ),
     )
+
+    extras.extend(horizon_blend_ratio_followups(synthesis_text))
 
     syn_parsed = parse_sigma_summary_json(synthesis_text)
     if syn_parsed is not None:

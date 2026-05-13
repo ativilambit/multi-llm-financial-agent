@@ -130,11 +130,9 @@ def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
     assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_j2
     assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_synth
     assert f"{sig}-scaling check (variance):" in j2
-    assert f"{sig}²(T+N)" in j2 and f"{sig}²(T+1)" in j2
-    assert "daily_vol² = Y.YY" in j2
+    assert "ej² + n·daily_vol²" in j2.replace("**", "")
     assert f"{sig}-scaling check (variance):" in synth
-    assert f"{sig}²(T+N)" in synth and f"{sig}²(T+1)" in synth
-    assert "daily_vol² = Y.YY" in synth
+    assert "ej² + n·daily_vol²" in synth.replace("**", "")
     for needle in (
         "No fake same-day implied move",
         "Variance-additive event+diffusion decomposition",
