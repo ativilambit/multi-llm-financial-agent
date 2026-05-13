@@ -285,6 +285,17 @@ The **2026-05-13 earnings batch** adds eleven configs keyed to **Wed May 13, 202
 | DOX | Amdocs Limited (Nasdaq: DOX) | `configs/dox_2026_05_13.yaml` |
 | USAR | USA Rare Earth, Inc. (Nasdaq: USAR) | `configs/usar_2026_05_13.yaml` |
 
+The **2026-05-14 earnings batch** adds six configs keyed to **Thu May 14, 2026** (same provider stack and options as the May-13 batch above; `earnings_timing` omitted).
+
+| Symbol | Company | Config |
+|--------|---------|--------|
+| VIK | Viking Holdings Ltd (NYSE: VIK) | `configs/vik_2026_05_14.yaml` |
+| KLAR | Klarna Group plc (NYSE: KLAR) | `configs/klar_2026_05_14.yaml` |
+| FRMI | Fermi Inc. (Nasdaq: FRMI) | `configs/frmi_2026_05_14.yaml` |
+| BTDR | Bitdeer Technologies Group (Nasdaq: BTDR) | `configs/btdr_2026_05_14.yaml` |
+| ONDS | Ondas Holdings Inc. (Nasdaq: ONDS) | `configs/onds_2026_05_14.yaml` |
+| YETI | YETI Holdings, Inc. (NYSE: YETI) | `configs/yeti_2026_05_14.yaml` |
+
 `scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above. Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`. If you set **`--date`** (or pass a leading **`DATE`** positional) and omit **`--symbols`** / **`--symbols-file`**, the script **auto-discovers** every matching `configs/*_<suffix>.yaml` and runs those tickers in **sorted** order (no fallback to other dates). Use **`--symbols A,B,C`** or **`--symbols-file path`** to pin a subset: the script uses **`configs/<sym>_<date>.yaml`** when it exists; if that file is missing, it **falls back** to the newest dated config for that symbol that is **not newer than** the requested date (lex order on `YYYY_MM_DD`), or to the **newest file overall** if only newer-dated configs exist—each substitution prints one **`WARN:`** line to stderr. Pass **`--no-fallback`** or **`--strict`** to restore fail-fast behavior (list every missing exact path). **`--symbols` wins** if both `--symbols` and `--symbols-file` are passed.
 
 ```bash
@@ -309,6 +320,9 @@ scripts/run_all_symbols.sh --date 2026-05-10 --symbols MNDY,SE
 
 # May 13, 2026 batch (eleven symbols):
 scripts/run_all_symbols.sh --date 2026-05-13 --symbols NBIS,BABA,WIX,DT,VSH,BIRK,CSCO,DOCS,STUB,DOX,USAR
+
+# May 14, 2026 batch (six symbols):
+scripts/run_all_symbols.sh --date 2026-05-14 --symbols VIK,KLAR,FRMI,BTDR,ONDS,YETI
 
 # Same batch in parallel (example: three concurrent symbols):
 scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETOR,JD,VOD,TME,RDY --parallel --jobs 3

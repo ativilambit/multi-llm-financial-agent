@@ -6,6 +6,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### 2026-05-13
+
+- **Configs** Added VIK, KLAR, FRMI, BTDR, ONDS, YETI for Thu May 14 earnings.
+
 ### 2026-05-12
 
 - **Configs** Added CSCO, DOCS, STUB, DOX, USAR for Wed May 13 AMC earnings.
