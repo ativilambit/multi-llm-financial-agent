@@ -155,6 +155,8 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 - **Sessions:** Each element has `date` (**YYYY-MM-DD**), `label` (short string), optional integer `N` (ignored for math; recomputed from earnings date + BMO/AMC anchor), `one_sigma_half_width_pct` (strictly positive; **±% half-width** as shown on the 1σ line — % of anchor, **not** full width), and `three_sigma_half_width_pct` (same units).
 - **Verification:** With `event_jump=` and `daily_vol=` literals present, `per_provider_sigma_variance_check` recomputes weekday `N` from the post-event anchor and runs the same variance-additive identity as markdown mode. **Valid JSON wins** over regex-parsed 1σ/3σ lines when both are present. Missing or invalid JSON falls back to legacy markdown extraction; a **malformed** last `sigma_summary` block with no usable legacy rows yields `reason=missing_sigma_summary_json` (`passed=None`). **YAML:** `per_provider_sigma_variance_check: false` disables the per-provider check entirely (logged once per provider row as disabled).
 
+**Per-round `severity` (router + synthesizer table):** After each fan-out round, `compute_severity_for_sigma_variance_results` assigns each provider row `severity` ∈ {`info`, `warning`, `error`, `na`}. Isolated single-provider variance failures (`passed=False` while applicable) are **`warning`**; **`error`** applies when the count of applicable `passed=False` rows **or** the count of `missing_literals` rows reaches **`sigma_variance_check_quorum_for_error`** (default **2**, range 1–10). Router fan-out follow-ups for σ literals / variance identity are emitted **only** for **`severity=error`** rows (set quorum to **1** to restore “any single miss escalates”). Env override: **`SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR`** (YAML wins when the field is set in config).
+
 ### Horizon-aware qual:quant blend
 
 - **Why:** Pre-open uncertainty differs from post-print tape-heavy sessions; the model must declare how it balances narrative vs market data.
@@ -256,6 +258,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `facts_packet_max_output_tokens` | `FACTS_PACKET_MAX_OUTPUT_TOKENS` | 4096 | Facts extractor completion budget. |
 | `retry_max_attempts_fan_out` | `RETRY_MAX_ATTEMPTS_FAN_OUT` | **5** | Per-provider API retries in iterative **`fan_out`** only (see Anthropic matrix in §5). |
 | `per_provider_sigma_variance_check` | — | **true** | When false, skip per-provider σ variance math in **`fan_out`** (escape hatch; logs once). |
+| `sigma_variance_check_quorum_for_error` | `SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR` | **2** | Minimum providers per round failing the applicable σ check (variance `passed=False` or `missing_literals`) before router emits fan-out follow-ups for that signal; **1** restores single-provider escalation. |
 
 **Iterative iteration count:** CLI **`--max-iterations`** (default **3**), not a `RunConfig` field.
 
@@ -270,8 +273,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `GEMINI_MIN_THINKING_BUDGET` | Floor when Gemini 3 rejects `thinking_budget=0` (default 1024). |
 | `DATABASE_URL` | Postgres for runs/outcomes/predictions. |
 | `FACTS_PACKET_ENABLED` / `REFINEMENT_MODE_PROMPT_ENABLED` | Mirror boolean toggles when not set in YAML (see `config.py` validators). |
-
----
+| `SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR` | σ variance / literals router quorum (1–10; YAML wins when `sigma_variance_check_quorum_for_error` is set in config). |
 
 ## 7. Operational runbook
 

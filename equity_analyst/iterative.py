@@ -936,13 +936,85 @@ def per_provider_sigma_variance_check(
     }
 
 
-def sigma_missing_literal_router_followups(checks: Sequence[dict[str, Any]]) -> list[str]:
-    """When multiple providers omit parseable ``event_jump=`` / ``daily_vol=``, nudge the next fan-out."""
-    missing: list[str] = []
-    for c in checks:
-        if bool(c.get("applicable", True)):
+def compute_severity_for_sigma_variance_results(
+    results: list[dict[str, Any]], *, quorum_for_error: int
+) -> list[dict[str, Any]]:
+    """Assign per-row ``severity`` after a full fan-out round (mutates ``results`` in place).
+
+    - ``info`` — applicable and ``passed`` is ``True``
+    - ``warning`` — applicable ``passed=False`` but fewer than ``quorum_for_error`` providers failed
+      the variance identity in this round; **or** ``missing_literals`` with fewer than quorum omitters
+    - ``error`` — applicable ``passed=False`` and the count of such failures in this round is
+      **≥ quorum_for_error**; **or** ``missing_literals`` with **≥ quorum_for_error** omitters
+    - ``na`` — ``passed`` is ``None``, disabled / not applicable (except missing-literals cohort above),
+      or other non-matching rows
+    """
+    q = max(1, min(10, int(quorum_for_error)))
+    for r in results:
+        r.pop("isolated", None)
+        r.pop("peers_failed", None)
+        r.pop("peers_literals_missing", None)
+
+    n_fail = sum(1 for r in results if r.get("applicable") is True and r.get("passed") is False)
+    n_miss = sum(
+        1
+        for r in results
+        if r.get("applicable") is not True and str(r.get("reason", "")).strip() == "missing_literals"
+    )
+
+    for r in results:
+        if r.get("applicable") is not True:
+            reason = str(r.get("reason", "")).strip()
+            if reason == "missing_literals":
+                if n_miss >= q:
+                    r["severity"] = "error"
+                    r["peers_literals_missing"] = n_miss
+                elif n_miss > 0:
+                    r["severity"] = "warning"
+                    if n_miss == 1:
+                        r["isolated"] = True
+                else:
+                    r["severity"] = "na"
+            else:
+                r["severity"] = "na"
             continue
+
+        passed = r.get("passed")
+        if passed is True:
+            r["severity"] = "info"
+        elif passed is None:
+            r["severity"] = "na"
+        else:
+            if n_fail >= q:
+                r["severity"] = "error"
+                r["peers_failed"] = n_fail
+            else:
+                r["severity"] = "warning"
+                if n_fail == 1:
+                    r["isolated"] = True
+    return results
+
+
+def _per_provider_sigma_checks_with_severity(
+    checks: Sequence[dict[str, Any]], *, quorum_for_error: int
+) -> list[dict[str, Any]]:
+    """Return a list copy with ``severity`` populated (recomputes when missing — e.g. legacy state)."""
+    lst = [dict(c) for c in checks]
+    if lst and not any("severity" in x for x in lst):
+        compute_severity_for_sigma_variance_results(lst, quorum_for_error=quorum_for_error)
+    return lst
+
+
+def sigma_missing_literal_router_followups(
+    checks: Sequence[dict[str, Any]], *, quorum_for_error: int = 2
+) -> list[str]:
+    """When **≥ quorum** providers omit parseable ``event_jump=`` / ``daily_vol=``, nudge the next fan-out."""
+    lst = _per_provider_sigma_checks_with_severity(checks, quorum_for_error=quorum_for_error)
+    missing: list[str] = []
+    for c in lst:
         if str(c.get("reason", "")).strip() != "missing_literals":
+            continue
+        if c.get("severity") != "error":
             continue
         prov = str(c.get("provider", "")).strip() or "unknown"
         missing.append(
@@ -950,9 +1022,30 @@ def sigma_missing_literal_router_followups(checks: Sequence[dict[str, Any]]) -> 
             f"{prov} did not include the mandatory event_jump= / daily_vol= literals; "
             "please include them in the exact format specified.",
         )
-    if len(missing) < 2:
-        return []
     return missing
+
+
+def sigma_variance_mismatch_router_followups(
+    checks: Sequence[dict[str, Any]], *, quorum_for_error: int = 2
+) -> list[str]:
+    """Fan-out router prompts when **≥ quorum** providers fail the applicable variance identity."""
+    lst = _per_provider_sigma_checks_with_severity(checks, quorum_for_error=quorum_for_error)
+    out: list[str] = []
+    for c in lst:
+        if c.get("severity") != "error":
+            continue
+        if c.get("applicable") is not True or c.get("passed") is not False:
+            continue
+        prov = str(c.get("provider", "")).strip() or "unknown"
+        fus = [str(x).strip() for x in (c.get("followups") or []) if str(x).strip()]
+        if fus:
+            out.append(f"Cite or verify: Provider {prov} sigma variance check: {fus[0]}")
+        else:
+            out.append(
+                f"Cite or verify: Provider {prov} failed the sigma variance-additive identity; "
+                "reconcile dated 1-sigma rows vs event_jump= / daily_vol= or label an explicit regime change.",
+            )
+    return out
 
 
 def render_per_provider_sigma_checks_markdown(checks: list[dict[str, Any]]) -> str:
@@ -965,8 +1058,8 @@ def render_per_provider_sigma_checks_markdown(checks: list[dict[str, Any]]) -> s
     if not checks:
         return ""
     lines = [
-        "| Provider | Model | event_jump | daily_vol | sessions | passed | reason |",
-        "|---|---|---|---|---|---|---|",
+        "| Provider | Model | event_jump | daily_vol | sessions | passed | severity | reason |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for c in checks:
         prov = str(c.get("provider", "")).strip() or "?"
@@ -982,10 +1075,13 @@ def render_per_provider_sigma_checks_markdown(checks: list[dict[str, Any]]) -> s
             passed_s = "True"
         else:
             passed_s = "False"
+        sev = str(c.get("severity") or "").strip() or "n/a"
         reason = str(c.get("reason") or "").strip().replace("|", "/")
         if len(reason) > 80:
             reason = reason[:77] + "..."
-        lines.append(f"| {prov} | {model} | {ej_s} | {dv_s} | {sess} | {passed_s} | {reason} |")
+        lines.append(
+            f"| {prov} | {model} | {ej_s} | {dv_s} | {sess} | {passed_s} | {sev} | {reason} |",
+        )
     return "\n".join(lines)
 
 
@@ -1633,7 +1729,12 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
     unver_thr = int(snap.get("unverifiable_count_threshold_for_fanout", 3))
     conf_cut = float(snap.get("unverifiable_fanout_confidence_below", 0.8))
     force_fan = bool(snap.get("force_fan_out_on_continue", False))
-    sigma_router_qs = sigma_missing_literal_router_followups(state.get("per_provider_sigma_checks") or [])
+    sigma_quorum = int(snap.get("sigma_variance_check_quorum_for_error", 2))
+    checks_raw = state.get("per_provider_sigma_checks") or []
+    sigma_router_qs = [
+        *sigma_missing_literal_router_followups(checks_raw, quorum_for_error=sigma_quorum),
+        *sigma_variance_mismatch_router_followups(checks_raw, quorum_for_error=sigma_quorum),
+    ]
 
     logger.info(
         "Node route rounds_completed=%s max_iterations=%s overall_confidence=%s contradicted=%s "
@@ -2237,25 +2338,33 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             rec: dict[str, Any] = {"provider": name, "model": resp.model}
             rec.update(check)
             per_provider_checks.append(rec)
-            applicable = bool(check.get("applicable"))
-            passed = check.get("passed")
-            ej = check.get("event_jump")
-            dv = check.get("daily_vol")
-            sess = int(check.get("sessions") or 0)
+
+        sigma_quorum = int(snap_fan.get("sigma_variance_check_quorum_for_error", 2))
+        compute_severity_for_sigma_variance_results(per_provider_checks, quorum_for_error=sigma_quorum)
+
+        for rec in per_provider_checks:
+            name = str(rec.get("provider", "")).strip()
+            applicable = bool(rec.get("applicable"))
+            passed = rec.get("passed")
+            ej = rec.get("event_jump")
+            dv = rec.get("daily_vol")
+            sess = int(rec.get("sessions") or 0)
             ej_s = f"{float(ej):.2f}%" if isinstance(ej, (int, float)) else "n/a"
             dv_s = f"{float(dv):.2f}%" if isinstance(dv, (int, float)) else "n/a"
+            sev = str(rec.get("severity") or "n/a")
             if not applicable:
                 logger.info(
-                    "sigma_variance_check provider=%s passed=n/a event_jump=%s daily_vol=%s sessions=%s reason=%s",
+                    "sigma_variance_check provider=%s passed=n/a severity=%s event_jump=%s daily_vol=%s sessions=%s reason=%s",
                     name,
+                    sev,
                     ej_s,
                     dv_s,
                     sess,
-                    str(check.get("reason") or "missing_literals"),
+                    str(rec.get("reason") or "missing_literals"),
                 )
             elif passed is True:
                 logger.info(
-                    "sigma_variance_check provider=%s passed=True event_jump=%s daily_vol=%s sessions=%s",
+                    "sigma_variance_check provider=%s passed=True severity=info event_jump=%s daily_vol=%s sessions=%s",
                     name,
                     ej_s,
                     dv_s,
@@ -2263,18 +2372,27 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 )
             elif passed is None:
                 logger.info(
-                    "sigma_variance_check provider=%s passed=n/a event_jump=%s daily_vol=%s sessions=%s reason=%s",
+                    "sigma_variance_check provider=%s passed=n/a severity=%s event_jump=%s daily_vol=%s sessions=%s reason=%s",
                     name,
+                    sev,
                     ej_s,
                     dv_s,
                     sess,
-                    str(check.get("reason") or "unverifiable"),
+                    str(rec.get("reason") or "unverifiable"),
+                )
+            elif sev == "warning":
+                logger.info(
+                    "sigma_variance_check provider=%s passed=False severity=warning reason=%r isolated=%s",
+                    name,
+                    str(rec.get("reason") or "variance identity drift"),
+                    bool(rec.get("isolated")),
                 )
             else:
                 logger.info(
-                    "sigma_variance_check provider=%s passed=False reason=%r",
+                    "sigma_variance_check provider=%s passed=False severity=error reason=%r peers_failed=%s",
                     name,
-                    str(check.get("reason") or "variance identity drift"),
+                    str(rec.get("reason") or "variance identity drift"),
+                    int(rec.get("peers_failed") or 0),
                 )
 
         out_fan: dict[str, Any] = {

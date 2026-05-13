@@ -41,6 +41,20 @@ _VERIFIER_MAX_OUT_MIN = 256
 _VERIFIER_MAX_OUT_MAX = 32_768
 
 
+def _sigma_variance_check_quorum_for_error_env_fallback(raw: str) -> int | None:
+    """Parse ``SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR``; return ``None`` if missing or invalid."""
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        n = int(s, 10)
+    except ValueError:
+        return None
+    if 1 <= n <= 10:
+        return n
+    return None
+
+
 def _parse_verifier_max_output_tokens_env(raw: str) -> int | None:
     """Parse ``VERIFIER_MAX_OUTPUT_TOKENS``; return ``None`` if missing or invalid."""
     s = str(raw).strip()
@@ -401,6 +415,15 @@ class RunConfig(BaseModel):
         "variance checks (sigma_summary JSON with legacy markdown fallback). Set False to skip checks "
         "and log once per run.",
     )
+    sigma_variance_check_quorum_for_error: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Iterative: per-round quorum — at least this many providers must fail the sigma variance "
+        "identity (passed=False while applicable) or omit mandatory literals (missing_literals) before "
+        "router emits fan-out follow-ups for that signal. Isolated single-provider misses are severity "
+        "warning only (logged + synthesizer table). Set to 1 to treat any single failure as routing error.",
+    )
 
     drive_upload_enabled: bool = Field(
         default=False,
@@ -726,6 +749,26 @@ class RunConfig(BaseModel):
                     self.facts_packet_max_output_tokens,
                 )
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _sigma_variance_check_quorum_for_error_env_fallback_validator(self) -> Self:
+        """Env override when ``sigma_variance_check_quorum_for_error`` was not set explicitly in YAML."""
+        raw = os.environ.get("SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR")
+        if (
+            raw is None
+            or not str(raw).strip()
+            or "sigma_variance_check_quorum_for_error" in self.model_fields_set
+        ):
+            return self
+        n = _sigma_variance_check_quorum_for_error_env_fallback(str(raw))
+        if n is not None:
+            return self.model_copy(update={"sigma_variance_check_quorum_for_error": n})
+        logger.warning(
+            "Invalid SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR=%r (expected integer 1-10); using default %s.",
+            raw,
+            self.sigma_variance_check_quorum_for_error,
+        )
+        return self
 
     @model_validator(mode="after")
     def _retry_max_attempts_fan_out_env_fallback(self) -> Self:

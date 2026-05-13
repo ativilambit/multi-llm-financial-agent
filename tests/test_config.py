@@ -697,6 +697,27 @@ def _minimal_run_config_dict() -> dict[str, Any]:
     }
 
 
+def test_sigma_variance_check_quorum_for_error_default_two() -> None:
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.sigma_variance_check_quorum_for_error == 2
+
+
+def test_sigma_variance_check_quorum_for_error_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR", "1")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.sigma_variance_check_quorum_for_error == 1
+    monkeypatch.delenv("SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR", raising=False)
+
+
+def test_sigma_variance_check_quorum_for_error_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR", "1")
+    d = _minimal_run_config_dict()
+    d["sigma_variance_check_quorum_for_error"] = 4
+    cfg = RunConfig.model_validate(d)
+    assert cfg.sigma_variance_check_quorum_for_error == 4
+    monkeypatch.delenv("SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR", raising=False)
+
+
 def test_retry_max_attempts_fan_out_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RETRY_MAX_ATTEMPTS_FAN_OUT", "7")
     cfg = RunConfig.model_validate(_minimal_run_config_dict())

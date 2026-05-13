@@ -269,8 +269,9 @@ class Synthesizer:
         sigma_checks = (per_provider_sigma_checks_markdown or "").strip()
         sigma_block = (
             f"\n\n### Per-provider {_GS}-band variance checks\n\n"
-            f"Resolve {_GS}-band disagreements toward providers with `passed=True`; surface any "
-            f"`passed=False` provider explicitly in the {_GS} section per Operating Principles.\n\n"
+            f"Use the `severity` column: trust `info` rows; if one provider is `warning`, note it but "
+            f"follow the `info` consensus; if multiple rows are `error`, treat all {_GS} bands as suspect. "
+            f"Surface any material disagreement in the {_GS} section per Operating Principles.\n\n"
             f"{sigma_checks}\n"
             if sigma_checks
             else ""

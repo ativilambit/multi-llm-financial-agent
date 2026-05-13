@@ -356,11 +356,11 @@ async def test_synthesizer_context_includes_per_provider_sigma_checks_markdown()
         ),
     }
     sigma_md = (
-        "| Provider | Model | event_jump | daily_vol | sessions | passed | reason |\n"
-        "|---|---|---|---|---|---|---|\n"
-        "| anthropic | claude | 10.67% | 3.15% | 4 | True |  |\n"
-        "| gemini | gemini-3-pro | 10.50% | 1.00% | 4 | False | variance drift |\n"
-        "| openai | gpt-5.5 | n/a | n/a | 0 | n/a | missing literals |"
+        "| Provider | Model | event_jump | daily_vol | sessions | passed | severity | reason |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| anthropic | claude | 10.67% | 3.15% | 4 | True | info |  |\n"
+        "| gemini | gemini-3-pro | 10.50% | 1.00% | 4 | False | warning | variance drift |\n"
+        "| openai | gpt-5.5 | n/a | n/a | 0 | n/a | warning | missing literals |"
     )
     await s.synthesize(
         original_prompt="ORIG",
@@ -370,10 +370,7 @@ async def test_synthesizer_context_includes_per_provider_sigma_checks_markdown()
     )
     assert p.last_prompt is not None
     assert f"### Per-provider {_SIGMA}-band variance checks" in p.last_prompt
-    assert (
-        f"Resolve {_SIGMA}-band disagreements toward providers with `passed=True`"
-        in p.last_prompt
-    )
+    assert "Use the `severity` column" in p.last_prompt
     assert sigma_md in p.last_prompt
 
 
@@ -396,14 +393,14 @@ async def test_synthesizer_omits_sigma_block_when_no_checks_provided() -> None:
     # the system-prompt operating principle paragraph) only appears when a checks table is
     # supplied. The header may legitimately appear inside the system prompt's reference text.
     assert (
-        f"Resolve {_SIGMA}-band disagreements toward providers with `passed=True`"
-        not in p.last_prompt
+        "Use the `severity` column" not in p.last_prompt
     )
 
 
 def test_synthesizer_prompt_mentions_provider_sigma_check_resolution() -> None:
     """Synthesizer system prompt must instruct on weighting per-provider sigma checks."""
     assert "per_provider_sigma_checks_markdown" in SYNTHESIS_SYSTEM_PROMPT
+    assert "severity" in SYNTHESIS_SYSTEM_PROMPT
     assert "passed=False" in SYNTHESIS_SYSTEM_PROMPT
     assert "suspect" in SYNTHESIS_SYSTEM_PROMPT.lower()
     assert "variance identity" in SYNTHESIS_SYSTEM_PROMPT.lower()

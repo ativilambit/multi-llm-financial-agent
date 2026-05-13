@@ -18,6 +18,7 @@ from equity_analyst.iterative import (
     build_initial_refinement_state,
     compile_refinement_workflow,
     compute_refinement_route_command,
+    compute_severity_for_sigma_variance_results,
     dry_run_compile_only,
     followups_from_unsourced_options_chain_numeric_claims,
     parse_overall_confidence,
@@ -29,6 +30,7 @@ from equity_analyst.iterative import (
     sigma_band_sqrt_ratio_followups,
     sigma_missing_literal_router_followups,
     sigma_sessions_payload_from_sigma_summary_model,
+    sigma_variance_mismatch_router_followups,
     verify_iv_crush_daily_vol_followups,
     verify_variance_additive_sigma_band_sessions,
 )
@@ -588,6 +590,61 @@ def test_per_provider_sigma_variance_check_disabled_per_config() -> None:
     assert r["sigma_check_source"] is None
 
 
+def test_compute_severity_marks_isolated_failure_as_warning() -> None:
+    rows: list[dict[str, Any]] = [
+        {"provider": "a", "applicable": True, "passed": True},
+        {"provider": "b", "applicable": True, "passed": False},
+        {"provider": "c", "applicable": True, "passed": True},
+    ]
+    compute_severity_for_sigma_variance_results(rows, quorum_for_error=2)
+    assert rows[1]["severity"] == "warning"
+    assert rows[1].get("isolated") is True
+
+
+def test_compute_severity_marks_two_failures_as_error() -> None:
+    rows: list[dict[str, Any]] = [
+        {"provider": "a", "applicable": True, "passed": False},
+        {"provider": "b", "applicable": True, "passed": False},
+    ]
+    compute_severity_for_sigma_variance_results(rows, quorum_for_error=2)
+    assert rows[0]["severity"] == "error"
+    assert rows[1]["severity"] == "error"
+    assert rows[0]["peers_failed"] == 2
+
+
+def test_router_followups_skip_warning_severity_rows() -> None:
+    checks: list[dict[str, Any]] = [
+        {"provider": "a", "applicable": True, "passed": True, "followups": [], "reason": ""},
+        {"provider": "b", "applicable": True, "passed": False, "followups": ["v"], "reason": "r"},
+    ]
+    compute_severity_for_sigma_variance_results(checks, quorum_for_error=2)
+    assert sigma_variance_mismatch_router_followups(checks, quorum_for_error=2) == []
+
+
+def test_router_followups_include_error_severity_rows() -> None:
+    checks: list[dict[str, Any]] = [
+        {"provider": "anthropic", "applicable": True, "passed": False, "followups": ["drift"], "reason": "x"},
+        {"provider": "openai", "applicable": True, "passed": False, "followups": [], "reason": "y"},
+    ]
+    compute_severity_for_sigma_variance_results(checks, quorum_for_error=2)
+    qs = sigma_variance_mismatch_router_followups(checks, quorum_for_error=2)
+    assert len(qs) == 2
+    assert "anthropic" in qs[0] and "drift" in qs[0]
+    assert "openai" in qs[1]
+
+
+def test_sigma_variance_check_quorum_yaml_overrides_default() -> None:
+    """Quorum 3: two simultaneous variance misses stay warning (no router mismatch prompts)."""
+    rows: list[dict[str, Any]] = [
+        {"provider": "a", "applicable": True, "passed": False},
+        {"provider": "b", "applicable": True, "passed": False},
+        {"provider": "c", "applicable": True, "passed": True},
+    ]
+    compute_severity_for_sigma_variance_results(rows, quorum_for_error=3)
+    assert rows[0]["severity"] == "warning"
+    assert sigma_variance_mismatch_router_followups(rows, quorum_for_error=3) == []
+
+
 def test_sigma_missing_literal_router_followups_requires_two_providers() -> None:
     one = [
         {"provider": "openai", "applicable": True, "reason": ""},
@@ -652,14 +709,18 @@ def test_render_per_provider_sigma_checks_markdown_three_providers() -> None:
             "followups": [],
         },
     ]
+    compute_severity_for_sigma_variance_results(checks, quorum_for_error=2)
     md = render_per_provider_sigma_checks_markdown(checks)
     assert "| Provider | Model |" in md
+    assert "| severity |" in md
     assert "| anthropic | claude |" in md
     assert "| gemini | gemini-3-pro |" in md
     assert "| openai | gpt-5.5 |" in md
     assert "| True |" in md
     assert "| False |" in md
     assert "| n/a |" in md
+    assert "| warning |" in md
+    assert "| info |" in md
     assert "10.67%" in md
     assert "3.15%" in md
 
@@ -1887,6 +1948,7 @@ async def test_iteration_two_refan_out_providers_only_openai(tmp_path: Path) -> 
         synthesizer="gemini",
         facts_packet_enabled=False,
         conditional_fanout_enabled=True,
+        sigma_variance_check_quorum_for_error=10,
     )
     out = tmp_path / "o2"
     out.mkdir()
@@ -2029,8 +2091,24 @@ async def test_fan_out_logs_per_provider_sigma_variance_check_lines(
     msgs = " ".join(r.getMessage() for r in caplog.records)
     assert "sigma_variance_check provider=anthropic" in msgs
     assert "passed=True" in msgs
+    assert "severity=info" in msgs
     assert "event_jump=6.00%" in msgs
     assert "daily_vol=8.00%" in msgs
+
+
+def test_compute_refinement_route_sigma_variance_quorum_blocks_finalize() -> None:
+    """Two applicable variance failures (quorum met) append router prompts → no early finalize."""
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.95\n",
+        verification={"contradicted": [], "unverifiable": []},
+        snapshot={"sigma_variance_check_quorum_for_error": 2},
+    )
+    st["per_provider_sigma_checks"] = [
+        {"provider": "anthropic", "applicable": True, "passed": False, "followups": ["drift"], "reason": "r"},
+        {"provider": "openai", "applicable": True, "passed": False, "followups": [], "reason": "s"},
+    ]
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "fan_out"
 
 
 def test_parse_verifier_json_sections_to_revise() -> None:
