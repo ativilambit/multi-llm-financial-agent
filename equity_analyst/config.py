@@ -97,6 +97,30 @@ def _parse_verifier_max_output_tokens_env(raw: str) -> int | None:
     return None
 
 
+def _parse_max_weekly_lookahead_days_env(raw: str | None) -> int | None:
+    """Parse ``MAX_WEEKLY_LOOKAHEAD_DAYS`` / ``EQUITY_MAX_WEEKLY_LOOKAHEAD_DAYS``."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        n = int(s, 10)
+    except ValueError:
+        return None
+    if 1 <= n <= 120:
+        return n
+    return None
+
+
+def _default_max_weekly_lookahead_days() -> int:
+    v = _parse_max_weekly_lookahead_days_env(os.environ.get("MAX_WEEKLY_LOOKAHEAD_DAYS"))
+    if v is not None:
+        return v
+    v2 = _parse_max_weekly_lookahead_days_env(os.environ.get("EQUITY_MAX_WEEKLY_LOOKAHEAD_DAYS"))
+    return v2 if v2 is not None else 14
+
+
 DriveAuthMode = Literal["service_account", "oauth_user"]
 RunEnvironment = Literal["production", "test"]
 RunProfile = Literal["production", "dev"]
@@ -229,6 +253,14 @@ class RunConfig(BaseModel):
         default=None,
         description="Optional manual override: mapping matching OptionsChainSnapshot.to_prompt_dict(); "
         "when set, fetch is skipped.",
+    )
+    max_weekly_lookahead_days: int = Field(
+        default_factory=_default_max_weekly_lookahead_days,
+        ge=1,
+        le=120,
+        description="Prefer a non-monthly (weekly-like) listed expiry within this many calendar days after "
+        "earnings for the front straddle; otherwise fall back to the nearest standard monthly (3rd Friday). "
+        "CLI ``--max-weekly-lookahead-days`` / env ``MAX_WEEKLY_LOOKAHEAD_DAYS`` or ``EQUITY_MAX_WEEKLY_LOOKAHEAD_DAYS``.",
     )
 
     target_dates: list[str] = Field(default_factory=list)

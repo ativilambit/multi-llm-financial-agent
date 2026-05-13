@@ -60,6 +60,12 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 
 {{ computed_sigma_bands_markdown }}
 
+{% if options_expiry_class == "monthly" %}
+**MUST:** Include the verbatim label **"Monthly-expiry sourced"** in your σ discussion — event premium is estimated via forward-variance / residual; widen uncertainty accordingly.
+{% endif %}
+{% if diffusion_only_sigma_hint %}
+**MUST:** If event premium is not isolable (diffusion-only server ladder), state explicitly: **"Event premium not isolable; σ bands are diffusion-only (HV-driven)."**
+{% endif %}
 Use these dollar bounds and percentages **exactly as shown**. Do not recalculate σ bands from your own arithmetic — the server already applied variance-additive math (`σ(T+N) = √(event_jump² + N·daily_vol²)`) with verified inputs (`event_jump` from front weekly straddle, `daily_vol` from HV30 × IV-crush multiplier when applicable, `daily_drift_pct` bounded). The verifier will compare your σ outputs against this table and flag any deviation > 1 percentage point on the % half-widths.
 **Percent vs decimal (mandatory):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
 {% else %}

@@ -10,6 +10,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from equity_analyst.config import RunConfig
 from equity_analyst.options_chain import (
+    apply_options_chain_event_expiry_resolution,
     event_jump_implied_move_pct_from_prompt_dict,
     iv_crush_multiplier,
 )
@@ -81,6 +82,7 @@ def _resolve_options_chain(cfg: RunConfig) -> tuple[dict[str, Any], str]:
             cfg.earnings_date,
             cfg.target_dates,
             today_date=cfg.today_date,
+            max_weekly_lookahead_days=int(cfg.max_weekly_lookahead_days),
         )
         if data.get("options_chain_available"):
             snap = options_chain_snapshot_from_prompt_dict(data)
@@ -172,6 +174,12 @@ def render_prompt(cfg: RunConfig, prompt_path: Path, *, prior_synthesis_text: st
         context["same_day_intraday_anchor_band_high"] = None
 
     oc_data, oc_md = _resolve_options_chain(cfg)
+    oc_data["max_weekly_lookahead_days"] = int(cfg.max_weekly_lookahead_days)
+    apply_options_chain_event_expiry_resolution(
+        oc_data,
+        earnings_date=cfg.earnings_date,
+        max_weekly_lookahead_days=int(cfg.max_weekly_lookahead_days),
+    )
     context["options_chain_data"] = oc_data
     context["options_chain_markdown"] = oc_md
     context["options_chain_available"] = bool(oc_data.get("options_chain_available"))
@@ -209,14 +217,24 @@ def render_prompt(cfg: RunConfig, prompt_path: Path, *, prior_synthesis_text: st
         target_dates=list(cfg.target_dates),
         next_trading_day=cfg.next_trading_day,
         oc_data=oc_data,
+        max_weekly_lookahead_days=int(cfg.max_weekly_lookahead_days),
     )
     context["computed_sigma_bands_available"] = sig_avail
     context["computed_sigma_bands_markdown"] = sig_md if sig_avail else ""
     context["computed_sigma_bands_table"] = sig_tbl
+    context["options_expiry_class"] = oc_data.get("expiry_class")
+    context["options_event_jump_source"] = oc_data.get("event_jump_source")
+    context["diffusion_only_sigma_hint"] = bool(
+        isinstance(sig_tbl, dict) and sig_tbl.get("diffusion_only_sigma"),
+    )
 
     event_jump_chain_warning_md = ""
     if not sig_avail and oc_data.get("options_chain_available"):
-        ej_dbg = event_jump_implied_move_pct_from_prompt_dict(oc_data, earnings_date=cfg.earnings_date)
+        ej_dbg = event_jump_implied_move_pct_from_prompt_dict(
+            oc_data,
+            earnings_date=cfg.earnings_date,
+            max_weekly_lookahead_days=int(cfg.max_weekly_lookahead_days),
+        )
         dv_dbg, _ = resolve_daily_vol_pct_for_sigma(cfg.symbol, oc_data, earnings_date=cfg.earnings_date)
         if ej_dbg is None and dv_dbg is not None:
             event_jump_chain_warning_md = (

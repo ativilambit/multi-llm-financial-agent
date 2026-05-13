@@ -1144,6 +1144,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     out = dict(result)
     prior = [str(x).strip() for x in (out.get("unverifiable") or []) if str(x).strip()]
     extras: list[str] = []
+    tbl_sigma = computed_sigma_bands_table or {}
 
     sigma_lines = [ln for ln in synthesis_text.splitlines() if f"3{_GS}" in ln and "±" in ln and "%" in ln]
     ej_lit, dv_lit = _parse_variance_additive_literals(synthesis_text)
@@ -1253,6 +1254,12 @@ def augment_verifier_result_with_sigma_structural_checks(
             symbol=symbol,
         ),
     )
+
+    if str(tbl_sigma.get("expiry_class") or "") == "monthly" and "monthly-expiry sourced" not in synthesis_text.lower():
+        extras.append(
+            "MUST (warning): when server `expiry_class` is `monthly`, synthesis must include the verbatim "
+            "label **\"Monthly-expiry sourced\"** (case-insensitive match) describing the sigma ladder sourcing.",
+        )
 
     blend_followups = horizon_blend_ratio_followups(
         synthesis_text,
@@ -2434,15 +2441,19 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         ref_ej: float | None = None
         tbl_fan = state.get("computed_sigma_bands_table")
         if isinstance(tbl_fan, dict):
-            raw_ej = tbl_fan.get("event_jump_pct")
+            raw_ej = tbl_fan.get("sigma_event_jump_for_ladder_pct")
+            if raw_ej is None:
+                raw_ej = tbl_fan.get("event_jump_pct")
             if isinstance(raw_ej, (int, float)) and float(raw_ej) > 0:
                 ref_ej = float(raw_ej)
         if ref_ej is None:
             oc_fan = state.get("options_chain_data")
             if isinstance(oc_fan, dict) and bool(oc_fan.get("options_chain_available")) and earn_date_s:
+                mwl = int(oc_fan.get("max_weekly_lookahead_days") or 14)
                 ref_ej = event_jump_implied_move_pct_from_prompt_dict(
                     oc_fan,
                     earnings_date=earn_date_s,
+                    max_weekly_lookahead_days=mwl,
                 )
 
         per_provider_checks: list[dict[str, Any]] = []
@@ -2920,6 +2931,12 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         meta["timing"] = timing_summary
         meta["iterations_completed"] = len(state.get("provider_responses", []))
         meta["verification_history"] = state.get("verification_history", [])
+        meta["options_chain_data"] = state.get("options_chain_data") or {}
+        meta["computed_sigma_bands_table"] = (
+            state.get("computed_sigma_bands_table")
+            if isinstance(state.get("computed_sigma_bands_table"), dict)
+            else None
+        )
         syn_meta = state.get("synthesis_meta") or []
         if syn_meta and isinstance(syn_meta[-1], dict):
             meta["synthesis"] = syn_meta[-1]

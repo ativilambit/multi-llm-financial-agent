@@ -53,6 +53,8 @@ When the equity prompt included a **Verified options chain** table (`options_cha
 
 **Pre-computed σ bands (server):** When the synthesis prompt includes a **### Server-computed σ bands** section (from the equity run), treat those **±% half-widths**, **dollar bounds**, and **P(up)%** as **authoritative** — use them **verbatim** in the consolidated `sigma_summary` JSON and in sections 1 / 9 / 11; do not re-derive different σ % by averaging provider outputs.
 
+**MUST — monthly-expiry σ sourcing:** When the equity context / server bundle indicates **monthly** expiries (thin chain; no weekly inside the lookahead window), your synthesis **must** include the verbatim label **"Monthly-expiry sourced"** — event premium estimated via forward-variance / residual; consider widening uncertainty. When the server indicates **diffusion-only** σ (event premium not isolable), include the sentence **"Event premium not isolable; σ bands are diffusion-only (HV-driven)."**
+
 **Probabilities in the consolidated output** must use the same `Φ(μN/σ)` form with bounded `daily_drift_pct`. When providers disagree on drift, resolve toward the most-sourced value (**PEAD_avg** or **options_skew** preferred over **manual_override**). Recompute `prob_up_pct` from the consolidated drift and σ; do not average provider-emitted probabilities directly.
 
 **σ band construction — sanity rules (mandatory) — same as equity prompt:** When merging provider σ bands, enforce coherence, not ad hoc % picks.

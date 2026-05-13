@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,51 @@ def _is_third_friday(d: date) -> bool:
     return 15 <= d.day <= 21
 
 
+def is_standard_monthly_expiration(d: date) -> bool:
+    """True for standard **monthly** equity options expiries (3rd Friday of the month).
+
+    OCC/CBOE may shift the trading week when the 3rd Friday is an exchange holiday (contracts can
+    list on the **prior Thursday** in that edge case). We treat **that Thursday** as ``monthly`` too
+    when the following calendar day is the 3rd Friday — otherwise only the Friday pattern matches.
+    Quarterlies/LEAPS on other calendars are **not** distinguished here and classify as non-monthly.
+    """
+    if _is_third_friday(d):
+        return True
+    if d.weekday() == 3:  # Thursday before a 3rd Friday (documented holiday nuance)
+        nxt = d + timedelta(days=1)
+        if _is_third_friday(nxt):
+            return True
+    return False
+
+
+def expiry_listing_kind(d: date) -> Literal["monthly", "weekly"]:
+    """Coarse listing bucket for an expiry date (``monthly`` = standard monthly rule)."""
+    return "monthly" if is_standard_monthly_expiration(d) else "weekly"
+
+
+def pick_front_listed_expiry_for_earnings(
+    available: list[date],
+    earn: date,
+    *,
+    max_weekly_lookahead_days: int,
+) -> tuple[date | None, Literal["weekly", "monthly", "none"], str]:
+    """Choose the listed expiry used for event straddle / sigma anchoring (weekly preferred)."""
+    if not available:
+        return None, "none", "no_listed_expiry_in_window"
+    win_end = earn + timedelta(days=max(1, int(max_weekly_lookahead_days)))
+    weeklies = [
+        d
+        for d in available
+        if d >= earn and d <= win_end and not is_standard_monthly_expiration(d)
+    ]
+    if weeklies:
+        return min(weeklies), "weekly", "soonest_non_monthly_listing_within_lookahead_window"
+    monthlies = [d for d in available if d >= earn and is_standard_monthly_expiration(d)]
+    if monthlies:
+        return min(monthlies), "monthly", "fallback_nearest_standard_monthly_on_or_after_earnings"
+    return None, "none", "no_listed_expiry_in_window"
+
+
 def _coerce_float(v: Any) -> float | None:
     if v is None:
         return None
@@ -155,45 +200,174 @@ def _parse_expiry_list(raw: list[str] | tuple[str, ...]) -> list[date]:
     return sorted(set(out))
 
 
-def _select_relevant_expiries(available: list[date], earnings: date) -> list[date]:
-    """Pick earnings-week, pre-earnings same-week, T+1w-ish Friday, and nearest monthly (3rd Fri)."""
+def _forward_variance_expiry_bracket(available: list[date], earnings: date) -> tuple[date | None, date | None]:
+    """Return ``(T1, T2)`` for forward implied variance: closest listed expiry **before** earnings, then first on/after."""
+    if not available:
+        return None, None
+    pre = [d for d in available if d < earnings]
+    post = [d for d in available if d >= earnings]
+    t1 = max(pre) if pre else None
+    t2 = min(post) if post else None
+    return t1, t2
+
+
+def _select_relevant_expiries_with_rationale(available: list[date], earnings: date) -> list[tuple[date, str]]:
+    """Pick earnings-week, pre-earnings same-week, T+1w-ish Friday, and nearest monthly (3rd Fri), with reasons."""
     if not available:
         return []
-    chosen: list[date] = []
+    chosen: list[tuple[date, str]] = []
     seen: set[date] = set()
 
-    def _add(d: date) -> None:
+    def _add(d: date, reason: str) -> None:
         if d in seen:
             return
         seen.add(d)
-        chosen.append(d)
+        chosen.append((d, reason))
 
     # 1) Nearest expiry on or after earnings (earnings-week contract).
     post = [d for d in available if d >= earnings]
     if post:
-        _add(min(post))
+        _add(min(post), "nearest listed expiry on or after earnings calendar date (event-week)")
 
     # 2) Nearest expiry before earnings in the same ISO week as earnings (pre-earnings chain).
     w0 = _week_start_monday(earnings)
     pre_same_week = [d for d in available if earnings > d >= w0]
     if pre_same_week:
-        _add(max(pre_same_week))
+        _add(max(pre_same_week), "latest listed expiry before earnings in the same ISO week as earnings")
 
     # 3) Following Friday ~T+1 week (closest listed expiry to earnings + 7d, after earnings).
     target = earnings + timedelta(days=7)
     after_earn = [d for d in available if d > earnings]
     if after_earn:
-        _add(min(after_earn, key=lambda d: (abs((d - target).days), d)))
+        _add(
+            min(after_earn, key=lambda d: (abs((d - target).days), d)),
+            "listed expiry closest to earnings+7d (post-earnings weekly anchor)",
+        )
 
     # 4) Monthly (3rd Friday) closest to earnings.
     thirds = [d for d in available if _is_third_friday(d)]
     if thirds:
-        _add(min(thirds, key=lambda d: (abs((d - earnings).days), d)))
+        _add(
+            min(thirds, key=lambda d: (abs((d - earnings).days), d)),
+            "monthly (3rd Friday) expiry closest to earnings calendar date",
+        )
 
     # If nothing matched (odd chain), fall back to closest overall.
     if not chosen:
-        _add(min(available, key=lambda d: (abs((d - earnings).days), d)))
+        _add(
+            min(available, key=lambda d: (abs((d - earnings).days), d)),
+            "fallback: listed expiry closest to earnings calendar date",
+        )
     return chosen
+
+
+def _select_relevant_expiries(available: list[date], earnings: date) -> list[date]:
+    """Pick earnings-week, pre-earnings same-week, T+1w-ish Friday, and nearest monthly (3rd Fri)."""
+    return [d for d, _ in _select_relevant_expiries_with_rationale(available, earnings)]
+
+
+def _implied_move_total_percent_from_row(row: dict[str, Any], *, spot: float | None) -> float | None:
+    """Straddle-implied move in **percent** (e.g. 11.31 for ~11.31% move), from snapshot row + spot."""
+    im = _coerce_float(row.get("implied_move_pct"))
+    if im is not None and im > 0:
+        if im < 2.0:
+            return float(im * 100.0)
+        return float(im)
+    s = _coerce_float(spot)
+    straddle = _coerce_float(row.get("atm_straddle_mid"))
+    if straddle is not None and s is not None and s > 0 and straddle > 0:
+        return float(straddle / s * 100.0)
+    iv_atm = _atm_iv_proxy_ex(row)
+    exp_s = str(row.get("expiry_date") or "")[:10]
+    td = _coerce_int(row.get("dte"))
+    cal_d: int | None = None
+    try:
+        date.fromisoformat(exp_s)
+        # Without as_of, use DTE-derived calendar max(1, td) as weak proxy
+        if td > 0:
+            cal_d = max(td, 1)
+    except ValueError:
+        cal_d = max(td, 1) if td > 0 else None
+    if iv_atm is not None and iv_atm > 0 and cal_d is not None and cal_d > 0:
+        return float(iv_atm * math.sqrt(float(cal_d) / 365.0) * 100.0)
+    return None
+
+
+def apply_options_chain_event_expiry_resolution(
+    oc_data: dict[str, Any],
+    *,
+    earnings_date: str,
+    max_weekly_lookahead_days: int = 14,
+) -> None:
+    """Populate ``expiry_used`` / ``expiry_class`` / straddle literals for sigma + prompts (mutates ``oc_data``)."""
+    if oc_data.get("_event_expiry_resolution_applied"):
+        return
+    oc_data["_event_expiry_resolution_applied"] = True
+    oc_data["max_weekly_lookahead_days"] = int(max_weekly_lookahead_days)
+    if not oc_data.get("options_chain_available"):
+        oc_data.setdefault("expiry_class", "none")
+        oc_data.setdefault("expiry_used", None)
+        oc_data.setdefault("event_jump_source", "unavailable")
+        oc_data.setdefault("lit_event_straddle_move_pct", None)
+        oc_data.setdefault("event_jump_for_sigma_pct", None)
+        oc_data.setdefault("event_expiry_calendar_days_after_earn", None)
+        oc_data.setdefault("front_contract_selection_note", "chain_unavailable")
+        return
+
+    earn = _parse_earnings_calendar_date(earnings_date)
+    avail = _available_expiry_dates_from_oc(oc_data)
+    spot = _coerce_float(oc_data.get("spot"))
+    if earn is None or not avail:
+        oc_data["expiry_class"] = "none"
+        oc_data["expiry_used"] = None
+        oc_data["event_jump_source"] = "unavailable"
+        oc_data["lit_event_straddle_move_pct"] = None
+        oc_data["event_jump_for_sigma_pct"] = None
+        oc_data["event_expiry_calendar_days_after_earn"] = None
+        oc_data["front_contract_selection_note"] = "no_listed_expiry_in_window"
+        return
+
+    exp_d, eclass, note = pick_front_listed_expiry_for_earnings(
+        avail,
+        earn,
+        max_weekly_lookahead_days=max_weekly_lookahead_days,
+    )
+    oc_data["front_contract_selection_note"] = note
+    if exp_d is None or eclass == "none":
+        oc_data["expiry_class"] = "none"
+        oc_data["expiry_used"] = None
+        oc_data["event_jump_source"] = "unavailable"
+        oc_data["lit_event_straddle_move_pct"] = None
+        oc_data["event_jump_for_sigma_pct"] = 0.0
+        oc_data["event_expiry_calendar_days_after_earn"] = None
+        return
+
+    oc_data["expiry_used"] = exp_d.isoformat()
+    oc_data["expiry_class"] = eclass
+    oc_data["event_expiry_calendar_days_after_earn"] = int((exp_d - earn).days)
+    row = _selected_row_for_calendar_expiry(oc_data, exp_d)
+    if row is None:
+        oc_data["event_jump_source"] = "unavailable"
+        oc_data["lit_event_straddle_move_pct"] = None
+        oc_data["event_jump_for_sigma_pct"] = 0.0
+        oc_data["front_contract_selection_note"] = note + ";missing_selected_expiries_row"
+        return
+
+    lit = _implied_move_total_percent_from_row(row, spot=spot)
+    oc_data["lit_event_straddle_move_pct"] = lit
+    if lit is None or lit <= 0:
+        oc_data["event_jump_source"] = "unavailable"
+        oc_data["event_jump_for_sigma_pct"] = 0.0
+        return
+
+    if eclass == "weekly":
+        oc_data["event_jump_source"] = "front_weekly_straddle"
+        oc_data["event_jump_for_sigma_pct"] = float(lit)
+        return
+
+    # Monthly: provisional; sigma_compute may replace event_jump_for_sigma with event-only estimate.
+    oc_data["event_jump_source"] = "monthly_straddle_with_residual"
+    oc_data["event_jump_for_sigma_pct"] = float(lit)
 
 
 def _pick_atm_strike(strikes: list[float], spot: float) -> float | None:
@@ -311,6 +485,7 @@ class ExpirySnapshot:
     total_call_oi: int
     total_put_oi: int
     put_call_ratio_oi: float | None
+    selection_rationale: str = ""
 
 
 @dataclass
@@ -410,6 +585,7 @@ def _build_expiry_snapshot(
     spot: float | None,
     calls: Any,
     puts: Any,
+    selection_rationale: str = "",
 ) -> ExpirySnapshot | None:
     if calls is None or puts is None:
         return None
@@ -476,6 +652,7 @@ def _build_expiry_snapshot(
         total_call_oi=coi,
         total_put_oi=poi,
         put_call_ratio_oi=pcr_oi,
+        selection_rationale=selection_rationale,
     )
 
 
@@ -490,6 +667,8 @@ def _expiry_snapshot_from_row_dict(r: dict[str, Any]) -> ExpirySnapshot:
     d["total_call_oi"] = _coerce_int(d.get("total_call_oi"))
     d["total_put_oi"] = _coerce_int(d.get("total_put_oi"))
     d["dte"] = _coerce_int(d.get("dte"))
+    if "selection_rationale" not in d or d.get("selection_rationale") is None:
+        d["selection_rationale"] = ""
     return ExpirySnapshot(**d)
 
 
@@ -587,10 +766,19 @@ def event_jump_implied_move_pct_from_prompt_dict(
     oc_data: dict[str, Any],
     *,
     earnings_date: str,
+    max_weekly_lookahead_days: int = 14,
 ) -> float | None:
-    """Front **event-week** weekly ATM straddle / spot x 100 from verified ``options_chain_data``."""
+    """ATM straddle / spot x 100 for the **server-resolved** front earnings contract (weekly preferred)."""
     if not oc_data.get("options_chain_available"):
         return None
+    apply_options_chain_event_expiry_resolution(
+        oc_data,
+        earnings_date=earnings_date,
+        max_weekly_lookahead_days=int(oc_data.get("max_weekly_lookahead_days") or max_weekly_lookahead_days),
+    )
+    lit = oc_data.get("lit_event_straddle_move_pct")
+    if lit is not None and isinstance(lit, (int, float)) and float(lit) > 0:
+        return float(lit)
     snap = options_chain_snapshot_from_prompt_dict(oc_data)
     if snap is None:
         return None
@@ -654,6 +842,165 @@ def event_jump_implied_move_pct_from_prompt_dict(
     return None
 
 
+def _as_of_date_from_options_chain(oc_data: dict[str, Any]) -> date | None:
+    as_of_s = str(oc_data.get("as_of") or "")
+    if len(as_of_s) >= 10:
+        try:
+            return date.fromisoformat(as_of_s[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _available_expiry_dates_from_oc(oc_data: dict[str, Any]) -> list[date]:
+    raw = oc_data.get("available_expiries") or []
+    return _parse_expiry_list(tuple(str(x) for x in raw))
+
+
+def _selected_row_for_calendar_expiry(oc_data: dict[str, Any], exp: date) -> dict[str, Any] | None:
+    key = exp.isoformat()
+    for row in oc_data.get("selected_expiries") or []:
+        if isinstance(row, dict) and str(row.get("expiry_date") or "")[:10] == key:
+            return row
+    return None
+
+
+def _year_fraction_act365(as_of: date, expiry: date) -> float:
+    """Calendar year fraction for variance-time (ACT/365), floored for numerical stability."""
+    if expiry <= as_of:
+        return 1.0 / 365.0
+    return max((expiry - as_of).days / 365.0, 1.0 / 365.0)
+
+
+def compute_event_only_implied_move_bundle(
+    oc_data: dict[str, Any],
+    *,
+    earnings_date: str,
+    event_jump_pct: float,
+    daily_vol_pct: float,
+    diffusion_sessions_multiplier: float = 1.0,
+    lit_straddle_move_pct: float | None = None,
+    expiry_class: str | None = None,
+) -> dict[str, Any]:
+    """Zero-to-one **trading session** earnings implied-move estimate vs straddle-through-expiry ``event_jump``.
+
+    Primary: practitioner forward implied variance between listed ``T1`` (latest expiry **before**
+    earnings) and ``T2`` (first expiry **on or after** earnings), using ATM IVs and ACT/365 year
+    fractions, then ``sigma_fwd * sqrt(1/252)`` as a one-session percent move (aligned with HV30/sqrt(252)
+    ``daily_vol`` units in this repo). Fallback: ``max(0, event_jump_pct - k*daily_vol_pct*sqrt(n))``
+    with ``n`` = trading sessions from ``as_of`` through ``T2`` (same ``dte`` convention as snapshots).
+
+    When ``expiry_class`` is ``monthly`` and forward variance is unavailable, uses a variance residual
+    in percent space: ``sqrt(max(0, (L/100)^2 - n*(dv/100)^2)) / sqrt(n) * 100`` with ``L`` = literal straddle
+    move (``lit_straddle_move_pct``) when provided.
+
+    Every return includes ``event_only_implied_move_method`` and ``event_only_implied_move_reason``;
+    ``event_only_implied_move_pct`` may be ``null`` only with an explanatory reason.
+    """
+    out: dict[str, Any] = {
+        "event_only_implied_move_pct": None,
+        "event_only_implied_move_method": "unavailable",
+        "event_only_implied_move_reason": "",
+        "event_only_implied_move_T1_expiry": None,
+        "event_only_implied_move_T2_expiry": None,
+    }
+    if not oc_data.get("options_chain_available"):
+        out["event_only_implied_move_reason"] = "options_chain_available is false"
+        return out
+    earn = _parse_earnings_calendar_date(earnings_date)
+    if earn is None:
+        out["event_only_implied_move_reason"] = f"could not parse earnings_date={earnings_date!r}"
+        return out
+    avail = _available_expiry_dates_from_oc(oc_data)
+    if not avail:
+        out["event_only_implied_move_reason"] = "available_expiries is empty on chain payload"
+        return out
+    as_of_d = _as_of_date_from_options_chain(oc_data)
+    if as_of_d is None:
+        out["event_only_implied_move_reason"] = (
+            "could not parse as_of calendar date from options_chain_data.as_of (need YYYY-MM-DD prefix)"
+        )
+        return out
+
+    t1, t2 = _forward_variance_expiry_bracket(avail, earn)
+    out["event_only_implied_move_T1_expiry"] = t1.isoformat() if t1 else None
+    out["event_only_implied_move_T2_expiry"] = t2.isoformat() if t2 else None
+
+    if t1 is not None and t2 is not None and t1 < t2:
+        row1 = _selected_row_for_calendar_expiry(oc_data, t1)
+        row2 = _selected_row_for_calendar_expiry(oc_data, t2)
+        iv1 = _atm_iv_proxy_ex(row1) if row1 else None
+        iv2 = _atm_iv_proxy_ex(row2) if row2 else None
+        ty1 = _year_fraction_act365(as_of_d, t1)
+        ty2 = _year_fraction_act365(as_of_d, t2)
+        if (
+            row1 is not None
+            and row2 is not None
+            and iv1 is not None
+            and iv2 is not None
+            and iv1 > 0
+            and iv2 > 0
+            and ty2 > ty1
+        ):
+            denom = ty2 - ty1
+            var_fwd = (iv2 * iv2 * ty2 - iv1 * iv1 * ty1) / denom
+            if var_fwd > 0.0 and math.isfinite(var_fwd):
+                sigma_fwd = math.sqrt(var_fwd)
+                move_pct = sigma_fwd * math.sqrt(1.0 / 252.0) * 100.0
+                if move_pct > 0.0 and math.isfinite(move_pct):
+                    out["event_only_implied_move_pct"] = float(move_pct)
+                    out["event_only_implied_move_method"] = "forward_variance"
+                    out["event_only_implied_move_reason"] = (
+                        f"sigma_fwd from ATM IV variance swap approx: T1={t1.isoformat()} IV={iv1:.4f} "
+                        f"Tyr={ty1:.5f}, T2={t2.isoformat()} IV={iv2:.4f} Tyr={ty2:.5f}; "
+                        f"one-session move = sigma_fwd*sqrt(1/252) in percent"
+                    )
+                    return out
+        out["event_only_implied_move_reason"] = (
+            "forward_variance not used: missing selected_expiries rows or ATM IV for T1/T2, "
+            "or non-positive / non-finite implied forward variance"
+        )
+
+    if t2 is None:
+        out["event_only_implied_move_reason"] = (
+            "no listed expiry on or after earnings calendar date; cannot anchor straddle window"
+        )
+        return out
+    row_t2 = _selected_row_for_calendar_expiry(oc_data, t2)
+    n_sess = _coerce_int(row_t2.get("dte")) if row_t2 else 0
+    if n_sess <= 0:
+        n_sess = trading_sessions_after_exclusive(as_of_d, t2)
+    if daily_vol_pct < 0.0 or not math.isfinite(daily_vol_pct):
+        out["event_only_implied_move_reason"] = "daily_vol_pct invalid for straddle_minus_diffusion fallback"
+        return out
+
+    lit_ej = float(lit_straddle_move_pct) if lit_straddle_move_pct is not None else float(event_jump_pct)
+    if str(expiry_class or "") == "monthly" and lit_straddle_move_pct is not None and lit_ej > 0.0 and n_sess > 0:
+        ve = (lit_ej / 100.0) ** 2 - float(n_sess) * (float(daily_vol_pct) / 100.0) ** 2
+        if ve > 0.0 and math.isfinite(ve):
+            one_sess = math.sqrt(ve) / math.sqrt(float(n_sess)) * 100.0
+            if one_sess > 0.0 and math.isfinite(one_sess):
+                out["event_only_implied_move_pct"] = float(one_sess)
+                out["event_only_implied_move_method"] = "monthly_straddle_minus_diffusion"
+                out["event_only_implied_move_reason"] = (
+                    f"monthly thin chain: sqrt(max(0,(L/100)^2-n*(dv/100)^2))/sqrt(n)*100 with L={lit_ej:.4f}% "
+                    f"(literal straddle), n={n_sess}, dv={daily_vol_pct:.4f}%/day"
+                )
+                return out
+
+    k = float(diffusion_sessions_multiplier)
+    diff_term = k * float(daily_vol_pct) * math.sqrt(float(max(n_sess, 0)))
+    residual = float(event_jump_pct) - diff_term
+    capped = max(0.0, residual)
+    out["event_only_implied_move_pct"] = float(capped)
+    out["event_only_implied_move_method"] = "straddle_minus_diffusion"
+    out["event_only_implied_move_reason"] = (
+        f"max(0, event_jump_pct ({event_jump_pct:.4f}%) - {k:.4f}*daily_vol_pct ({daily_vol_pct:.4f}%)"
+        f"*sqrt(n)) with n={n_sess} trading sessions from as_of through T2={t2.isoformat()} (chain dte when present)"
+    )
+    return out
+
+
 def _failed_options_prompt_dict(symbol_u: str, fetch_error: str) -> dict[str, Any]:
     return {
         "options_chain_available": False,
@@ -672,13 +1019,19 @@ def _fetch_options_chain_snapshot_cached(
     earnings_key: str,
     today_key: str,
     targets_joined: str,
+    lookahead_key: str,
 ) -> str:
     """JSON-serialized successful :meth:`OptionsChainSnapshot.to_prompt_dict` (verified chain only).
 
     Soft failures raise :class:`OptionsChainSoftFetchError` so they are **not** cached.
     """
     _ = targets_joined  # cache key segment for future busting
-    data = _fetch_options_chain_snapshot_impl(symbol_u, earnings_key, today_key)
+    _ = lookahead_key
+    try:
+        look_n = int(lookahead_key)
+    except ValueError:
+        look_n = 14
+    data = _fetch_options_chain_snapshot_impl(symbol_u, earnings_key, today_key, max_weekly_lookahead_days=look_n)
     if not data.get("options_chain_available"):
         raise OptionsChainSoftFetchError(data)
     import json
@@ -699,7 +1052,13 @@ def _as_of_session_date(today_key: str) -> date:
         return date.today()
 
 
-def _fetch_options_chain_snapshot_impl(symbol_u: str, earnings_key: str, today_key: str) -> dict[str, Any]:
+def _fetch_options_chain_snapshot_impl(
+    symbol_u: str,
+    earnings_key: str,
+    today_key: str,
+    *,
+    max_weekly_lookahead_days: int = 14,
+) -> dict[str, Any]:
     """Build a ``to_prompt_dict``-shaped mapping; ``options_chain_available`` may be false with ``fetch_error``."""
     earnings = _parse_earnings_calendar_date(earnings_key)
     if earnings is None:
@@ -728,9 +1087,32 @@ def _fetch_options_chain_snapshot_impl(symbol_u: str, earnings_key: str, today_k
                 "parsed Yahoo option expiries list empty after fetch",
             )
         spot = _resolve_spot(ticker)
-        selected_d = _select_relevant_expiries(available_dates, earnings)
+        date_reasons: dict[date, str] = {}
+        for ed, reason in _select_relevant_expiries_with_rationale(available_dates, earnings):
+            date_reasons[ed] = reason
+        t1_br, t2_br = _forward_variance_expiry_bracket(available_dates, earnings)
+        if t1_br is not None and t1_br not in date_reasons:
+            date_reasons[t1_br] = (
+                "forward-variance bracket: latest listed expiry strictly before earnings calendar date"
+            )
+        if t2_br is not None and t2_br not in date_reasons:
+            date_reasons[t2_br] = (
+                "forward-variance bracket: first listed expiry on or after earnings calendar date"
+            )
+        look = max(1, int(max_weekly_lookahead_days))
+        fe, fe_class, _fe_note = pick_front_listed_expiry_for_earnings(
+            available_dates,
+            earnings,
+            max_weekly_lookahead_days=look,
+        )
+        if fe is not None:
+            date_reasons.setdefault(
+                fe,
+                f"front contract for event_jump / sigma ladder ({fe_class}, lookahead_days={look})",
+            )
         ex_snaps: list[dict[str, Any]] = []
-        for ed in selected_d:
+        for ed in sorted(date_reasons.keys()):
+            reason = date_reasons[ed]
             try:
                 chain = ticker.option_chain(ed.isoformat())
             except Exception as exc:
@@ -747,6 +1129,7 @@ def _fetch_options_chain_snapshot_impl(symbol_u: str, earnings_key: str, today_k
                 spot=spot,
                 calls=chain.calls,
                 puts=chain.puts,
+                selection_rationale=reason,
             )
             if snap is not None:
                 ex_snaps.append(asdict(snap))
@@ -775,6 +1158,7 @@ def fetch_options_chain_prompt_dict(
     target_dates: list[str],
     *,
     today_date: str | None = None,
+    max_weekly_lookahead_days: int = 14,
 ) -> dict[str, Any]:
     """Yahoo option chain as ``to_prompt_dict`` shape, including soft failures with ``fetch_error``."""
     sym = symbol.strip().upper()
@@ -786,8 +1170,9 @@ def fetch_options_chain_prompt_dict(
         if parsed is not None:
             td = parsed.isoformat()
     tj = ",".join(target_dates)
+    lk = str(int(max_weekly_lookahead_days))
     try:
-        blob = _fetch_options_chain_snapshot_cached(sym, earnings_date.strip(), td, tj)
+        blob = _fetch_options_chain_snapshot_cached(sym, earnings_date.strip(), td, tj, lk)
     except OptionsChainSoftFetchError as exc:
         return exc.payload
     import json

@@ -11,6 +11,8 @@ from typing import Any
 from equity_analyst.drift_bounds import bound_daily_drift, computed_prob_up_pct
 from equity_analyst.options_chain import (
     _parse_earnings_calendar_date,
+    apply_options_chain_event_expiry_resolution,
+    compute_event_only_implied_move_bundle,
     event_jump_implied_move_pct_from_prompt_dict,
     iv_crush_multiplier,
 )
@@ -217,7 +219,7 @@ def format_computed_sigma_bands_markdown(table: ComputedSigmaBandsTable) -> str:
         "**Server-computed σ bands (variance-additive)** — use **verbatim** in σ JSON and prose when this block is present.",
         "",
         f"- Anchor: **${table.anchor_price:.2f}** (`anchor_type={table.anchor_type!r}`)",
-        f"- `event_jump` (front weekly ATM straddle / spot): **{table.event_jump_pct:.2f}%**",
+        f"- `event_jump` (σ-ladder jump term): **{table.event_jump_pct:.2f}%**",
         f"- `daily_vol`: **{table.daily_vol_pct:.2f}%/day** ({table.daily_vol_source})",
         f"- `daily_drift_pct` (bounded, for P(up)): **{table.daily_drift_pct:+.4f}%/day** ({table.drift_source_note})",
         "",
@@ -252,6 +254,7 @@ def try_build_computed_sigma_bundle(
     target_dates: list[str],
     next_trading_day: str,
     oc_data: dict[str, Any],
+    max_weekly_lookahead_days: int = 14,
 ) -> tuple[bool, str, dict[str, Any] | None, str]:
     """Return ``(available, markdown, json_dict_for_verifier, event_daily_tag)``."""
     spot = oc_data.get("spot")
@@ -260,16 +263,69 @@ def try_build_computed_sigma_bundle(
         ap = float(spot)
     if ap is None or ap <= 0:
         return False, "", None, ""
-    ej = event_jump_implied_move_pct_from_prompt_dict(oc_data, earnings_date=earnings_date)
+
+    oc_data["max_weekly_lookahead_days"] = int(max_weekly_lookahead_days)
+    apply_options_chain_event_expiry_resolution(
+        oc_data,
+        earnings_date=earnings_date,
+        max_weekly_lookahead_days=int(max_weekly_lookahead_days),
+    )
+
     dv, dv_src = resolve_daily_vol_pct_for_sigma(symbol, oc_data, earnings_date=earnings_date)
-    if ej is None and bool(oc_data.get("options_chain_available")):
+    if dv is None:
+        return False, "", None, ""
+
+    lit = oc_data.get("lit_event_straddle_move_pct")
+    lit_f = float(lit) if isinstance(lit, (int, float)) and float(lit) > 0 else None
+
+    ej_src = str(oc_data.get("event_jump_source") or "")
+    diffusion_only = ej_src == "unavailable" and (lit_f is None or lit_f <= 0)
+
+    ej_lit = event_jump_implied_move_pct_from_prompt_dict(
+        oc_data,
+        earnings_date=earnings_date,
+        max_weekly_lookahead_days=int(max_weekly_lookahead_days),
+    )
+    ej_for_sigma = float(oc_data.get("event_jump_for_sigma_pct") or 0.0)
+    if not diffusion_only and (ej_for_sigma <= 0 and ej_lit is not None):
+        ej_for_sigma = float(ej_lit)
+
+    exp_class = str(oc_data.get("expiry_class") or "none")
+    days_after = oc_data.get("event_expiry_calendar_days_after_earn")
+    days_i = int(days_after) if isinstance(days_after, (int, float)) else 0
+
+    eo_input_ej = float(lit_f if lit_f is not None else (ej_lit or ej_for_sigma or 0.0))
+    eo_bundle = compute_event_only_implied_move_bundle(
+        oc_data,
+        earnings_date=earnings_date,
+        event_jump_pct=eo_input_ej,
+        daily_vol_pct=float(dv),
+        lit_straddle_move_pct=lit_f,
+        expiry_class=exp_class if exp_class in ("weekly", "monthly", "none") else None,
+    )
+
+    if exp_class == "monthly" and days_i > 7 and eo_bundle.get("event_only_implied_move_pct") is not None:
+        ej_for_sigma = float(eo_bundle["event_only_implied_move_pct"])
+        oc_data["event_jump_for_sigma_pct"] = ej_for_sigma
+        if str(eo_bundle.get("event_only_implied_move_method")) == "forward_variance":
+            oc_data["event_jump_source"] = "monthly_forward_variance"
+        else:
+            oc_data["event_jump_source"] = "monthly_straddle_with_residual"
+
+    if diffusion_only:
+        ej_for_sigma = 0.0
+        logger.info(
+            "try_build_computed_sigma_bundle: diffusion-only σ (symbol=%s earnings_date=%s)",
+            symbol,
+            earnings_date,
+        )
+    elif ej_for_sigma <= 0 and not diffusion_only:
         logger.warning(
             "try_build_computed_sigma_bundle: event_jump unavailable (symbol=%s earnings_date=%s); "
             "computed σ bundle suppressed",
             symbol,
             earnings_date,
         )
-    if ej is None or dv is None:
         return False, "", None, ""
 
     pead = compute_pead_avg_drift_pct(symbol)
@@ -277,13 +333,9 @@ def try_build_computed_sigma_bundle(
     drift_note: str
     drift_val: float
     if pead is not None:
-        from equity_analyst.drift_bounds import bound_daily_drift
-
         drift_val, _ = bound_daily_drift(float(pead), "PEAD_avg")
         drift_note = "PEAD_avg (bounded)"
     elif mom is not None:
-        from equity_analyst.drift_bounds import bound_daily_drift
-
         drift_val, _ = bound_daily_drift(float(mom), "recent_momentum")
         drift_note = "recent_momentum (bounded)"
     else:
@@ -299,7 +351,7 @@ def try_build_computed_sigma_bundle(
         earnings_timing=earnings_timing,
         target_dates=target_dates,
         next_trading_day=next_trading_day,
-        event_jump_pct=float(ej),
+        event_jump_pct=float(ej_for_sigma),
         daily_vol_pct=float(dv),
         daily_vol_source=dv_src,
         daily_drift_pct=float(drift_val),
@@ -307,8 +359,42 @@ def try_build_computed_sigma_bundle(
     )
     if table is None:
         return False, "", None, ""
-    tag = f"event_jump={ej:.2f}% daily_vol={dv:.2f}%/day ({dv_src})"
-    return True, format_computed_sigma_bands_markdown(table), table.to_json_dict(), tag
+    tag = f"event_jump={ej_for_sigma:.2f}% daily_vol={dv:.2f}%/day ({dv_src})"
+
+    md = format_computed_sigma_bands_markdown(table)
+    post: list[str] = []
+    if diffusion_only or ej_for_sigma == 0.0:
+        post.append(
+            "**Event premium not isolable; σ bands are diffusion-only (HV-driven).** "
+            "Use `event_jump=0.00%` with the cited `daily_vol` (diffusion-only ladder).",
+        )
+    if exp_class == "monthly":
+        post.append(
+            "**MUST (verbatim):** Include the label **\"Monthly-expiry sourced\"** — event premium "
+            "estimated via forward-variance / residual; consider widening uncertainty.",
+        )
+    lit_line = oc_data.get("lit_event_straddle_move_pct")
+    if isinstance(lit_line, (int, float)):
+        eo_raw = eo_bundle.get("event_only_implied_move_pct")
+        eo_fmt = f"{float(eo_raw):.2f}" if isinstance(eo_raw, (int, float)) and eo_raw is not None else "n/a"
+        post.append(
+            f"**Straddle-through-expiry implied move (literal contract):** {float(lit_line):.2f}% "
+            f"(expiry `{oc_data.get('expiry_used')}`) | **Event-session estimate (forward / residual):** "
+            f"{eo_fmt}% "
+            f"(`event_only_implied_move_method={eo_bundle.get('event_only_implied_move_method')!r}`).",
+        )
+    if post:
+        md = md + "\n\n" + "\n".join(post)
+
+    tbl = table.to_json_dict()
+    tbl["expiry_class"] = oc_data.get("expiry_class")
+    tbl["expiry_used"] = oc_data.get("expiry_used")
+    tbl["event_jump_source"] = oc_data.get("event_jump_source")
+    tbl["lit_event_straddle_move_pct"] = oc_data.get("lit_event_straddle_move_pct")
+    tbl["sigma_event_jump_for_ladder_pct"] = float(ej_for_sigma)
+    tbl["diffusion_only_sigma"] = bool(diffusion_only)
+    tbl.update({k: v for k, v in eo_bundle.items() if k not in tbl})
+    return True, md, tbl, tag
 
 
 def format_computed_probabilities_reference_markdown(

@@ -65,7 +65,7 @@ Graph nodes in `equity_analyst/iterative.py`: **`fan_out` → `synthesize` → `
 | `facts_packet.py` | Round-1 **frozen facts** markdown for later iterations. |
 | `prediction_extract.py` | Horizon structured JSON → Postgres / fallback file. |
 | `outcome_tracker.py` | yfinance OHLC for labeling runs; intraday high/low helper for same-day anchoring. |
-| `options_chain.py` | Yahoo chain snapshot → markdown table; **expiry audit** strings when verified chain is on. |
+| `options_chain.py` | Yahoo chain snapshot → markdown table; **expiry audit** strings; **weekly vs standard monthly** front-expiry resolution for event straddle / sigma anchoring (`is_standard_monthly_expiration`, `pick_front_listed_expiry_for_earnings`). |
 | `pdf_writer.py` | Markdown → HTML → PDF (WeasyPrint). |
 | `db_models.py` / `db_ops.py` | SQLAlchemy schema and best-effort upserts. |
 | `drive_uploader.py` | Service account or OAuth upload to Shared Drive / user folder. |
@@ -169,6 +169,9 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 - **Why:** Without a server-fetched chain, models invent expiries/strikes; that is hard for verifiers to falsify.
 - **Summary:** `options_chain_auto_fetch` defaults to **true** (opt out with YAML `false` or `OPTIONS_CHAIN_AUTO_FETCH=0`). When enabled (or a valid `options_chain_snapshot` is set), the prompt injects a **Verified** markdown table—**use verbatim**; verifier/synthesis audits can flag expiries not in Yahoo data.
 - **Pointer:** `equity_analyst/prompting.py` (`_resolve_options_chain`); `equity_analyst/options_chain.py` (fetch + `options_chain_expiry_audit_messages` consumed from `iterative.py`).
+- **Front expiry for earnings (weekly vs monthly):** Listed expiries are classified with **`is_standard_monthly_expiration`** (3rd Friday of the month, plus the documented **Thursday-before-holiday** monthly roll case). Selection prefers the **soonest listed “weekly”** (non-monthly) expiry **on or after** the earnings calendar date and **within** **`max_weekly_lookahead_days`** (default **14** calendar days; YAML `max_weekly_lookahead_days`, env **`MAX_WEEKLY_LOOKAHEAD_DAYS`** or **`EQUITY_MAX_WEEKLY_LOOKAHEAD_DAYS`**, CLI **`--max-weekly-lookahead-days`**). If none qualify, the code falls back to the **nearest standard monthly on or after** earnings (still inside the same window). If nothing is listed in-window, metadata records **`no_listed_expiry_in_window`**, **`expiry_class: none`**, and server sigma bands degrade to **HV-only diffusion** (`event_jump_source: unavailable`) with prompts instructing “diffusion-only” wording.
+- **Implied move / sigma ladder:** **`implied_move_pct`** stays the **literal ATM straddle / spot** for the chosen listed contract. **`event_only_implied_move_pct`** isolates a one-session event estimate: **forward variance** between two listed expiries bracketing earnings when possible; for thin monthlies, **`monthly_straddle_minus_diffusion`** residual; otherwise **`straddle_minus_diffusion`**. When the chosen expiry is **more than 7 calendar days** after earnings, the **variance-additive ladder** uses the **event-only** jump for `event_jump` (not the raw wide straddle) so half-widths do not balloon—see comments in `sigma_compute.py` / `options_chain.py`. Bundle keys: **`expiry_class`**, **`expiry_used`**, **`event_jump_source`**, **`event_only_implied_move_method`**, **`event_only_implied_move_pct`** (plus existing chain fields).
+- **Verifier / synthesis:** When **`expiry_class` is `monthly`**, synthesis should include the verbatim label **“Monthly-expiry sourced”**; `augment_verifier_result_with_sigma_structural_checks` adds a **warning** follow-up if that phrase is missing (case-insensitive).
 
 ### REFINEMENT MODE (iteration ≥ 2 fan-out)
 
@@ -262,6 +265,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `sigma_variance_check_quorum_for_error` | `SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR` | **2** | Minimum providers per round failing the applicable σ check (variance `passed=False` or `missing_literals`) before router emits fan-out follow-ups for that signal; **1** restores single-provider escalation. |
 | `run_profile` | `EQUITY_RUN_PROFILE` / `RUN_PROFILE` | **dev** | **`production`** enables Postgres persistence for runs/responses/outcomes/predictions; **`dev`** keeps artifacts only. CLI **`run --profile`** overrides for one invocation. |
 | `db_enabled` | `DB_ENABLED` | **true** | When false, skips Postgres regardless of **`run_profile`**. |
+| `max_weekly_lookahead_days` | `MAX_WEEKLY_LOOKAHEAD_DAYS` / `EQUITY_MAX_WEEKLY_LOOKAHEAD_DAYS` | **14** | Calendar-day window after earnings for preferring a **weekly** listed expiry before falling back to **standard monthly** (`options_chain.py` / CLI **`--max-weekly-lookahead-days`**). |
 
 **Iterative iteration count:** CLI **`--max-iterations`** (default **3**), not a `RunConfig` field.
 

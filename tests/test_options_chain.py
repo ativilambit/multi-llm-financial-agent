@@ -306,3 +306,203 @@ def test_to_markdown_table_includes_iv_crush_line_when_earnings_date() -> None:
     md = snap.to_markdown_table(earnings_date="2026-05-13")
     assert "IV crush ratio (post/event)" in md
     assert "0.5922" in md or "0.592" in md
+
+
+def test_is_standard_monthly_expiration_third_friday_and_thursday_observed() -> None:
+    from equity_analyst.options_chain import is_standard_monthly_expiration
+
+    # Jan/Feb/Mar 2026 standard monthlies (3rd Fridays)
+    assert is_standard_monthly_expiration(date(2026, 1, 16)) is True
+    assert is_standard_monthly_expiration(date(2026, 2, 20)) is True
+    assert is_standard_monthly_expiration(date(2026, 3, 20)) is True
+    # Non-monthly Friday in same month range
+    assert is_standard_monthly_expiration(date(2026, 3, 6)) is False
+    # Thursday immediately before a 3rd Friday (documented OCC holiday nuance path)
+    assert is_standard_monthly_expiration(date(2026, 3, 19)) is True
+
+
+def test_pick_front_prefers_weekly_inside_window_then_monthly() -> None:
+    from equity_analyst.options_chain import pick_front_listed_expiry_for_earnings
+
+    earn = date(2026, 5, 13)
+    avail = sorted(
+        {
+            date(2026, 5, 15),  # standard monthly (3rd Fri)
+            date(2026, 5, 20),  # Wed — not standard monthly
+        },
+    )
+    d, k, _ = pick_front_listed_expiry_for_earnings(avail, earn, max_weekly_lookahead_days=14)
+    assert k == "weekly"
+    assert d == date(2026, 5, 20)
+
+    avail2 = sorted({date(2026, 5, 15), date(2026, 6, 19)})
+    d2, k2, _ = pick_front_listed_expiry_for_earnings(avail2, earn, max_weekly_lookahead_days=14)
+    assert k2 == "monthly"
+    assert d2 == date(2026, 5, 15)
+
+
+def test_apply_options_chain_resolution_sets_available_expiries_bundle() -> None:
+    from equity_analyst.options_chain import apply_options_chain_event_expiry_resolution
+
+    oc = {
+        "options_chain_available": True,
+        "as_of": "2026-05-12T12:00:00Z",
+        "spot": 100.0,
+        "available_expiries": ["2026-05-15"],
+        "selected_expiries": [
+            {
+                "expiry_date": "2026-05-15",
+                "dte": 3,
+                "atm_strike": 100.0,
+                "atm_straddle_mid": 11.0,
+                "implied_move_pct": 0.11,
+                "atm_call_iv": 0.5,
+                "atm_put_iv": 0.5,
+                "atm_call_bid": None,
+                "atm_call_ask": None,
+                "atm_call_mid": None,
+                "atm_call_last": None,
+                "atm_put_bid": None,
+                "atm_put_ask": None,
+                "atm_put_mid": None,
+                "atm_put_last": None,
+                "expected_move_dollar": 11.0,
+                "skew_25d_call_minus_put_iv": None,
+                "skew_25d_note": "",
+                "total_call_volume": 0,
+                "total_put_volume": 0,
+                "put_call_ratio": None,
+                "total_call_oi": 0,
+                "total_put_oi": 0,
+                "put_call_ratio_oi": None,
+            },
+        ],
+    }
+    apply_options_chain_event_expiry_resolution(oc, earnings_date="2026-05-13", max_weekly_lookahead_days=14)
+    assert oc.get("expiry_used") == "2026-05-15"
+    assert oc.get("available_expiries") == ["2026-05-15"]
+    assert oc.get("lit_event_straddle_move_pct") == pytest.approx(11.0)
+
+
+def test_compute_event_only_forward_variance_synthetic() -> None:
+    from equity_analyst.options_chain import compute_event_only_implied_move_bundle
+
+    oc = {
+        "options_chain_available": True,
+        "as_of": "2026-05-01T12:00:00Z",
+        "spot": 100.0,
+        "available_expiries": ["2026-05-08", "2026-05-22"],
+        "selected_expiries": [
+            {
+                "expiry_date": "2026-05-08",
+                "dte": 5,
+                "atm_call_iv": 0.30,
+                "atm_put_iv": 0.30,
+                "atm_straddle_mid": None,
+                "implied_move_pct": None,
+                "atm_strike": 100.0,
+                "atm_call_bid": None,
+                "atm_call_ask": None,
+                "atm_call_mid": None,
+                "atm_call_last": None,
+                "atm_put_bid": None,
+                "atm_put_ask": None,
+                "atm_put_mid": None,
+                "atm_put_last": None,
+                "expected_move_dollar": None,
+                "skew_25d_call_minus_put_iv": None,
+                "skew_25d_note": "",
+                "total_call_volume": 0,
+                "total_put_volume": 0,
+                "put_call_ratio": None,
+                "total_call_oi": 0,
+                "total_put_oi": 0,
+                "put_call_ratio_oi": None,
+            },
+            {
+                "expiry_date": "2026-05-22",
+                "dte": 15,
+                "atm_call_iv": 0.50,
+                "atm_put_iv": 0.50,
+                "atm_straddle_mid": None,
+                "implied_move_pct": None,
+                "atm_strike": 100.0,
+                "atm_call_bid": None,
+                "atm_call_ask": None,
+                "atm_call_mid": None,
+                "atm_call_last": None,
+                "atm_put_bid": None,
+                "atm_put_ask": None,
+                "atm_put_mid": None,
+                "atm_put_last": None,
+                "expected_move_dollar": None,
+                "skew_25d_call_minus_put_iv": None,
+                "skew_25d_note": "",
+                "total_call_volume": 0,
+                "total_put_volume": 0,
+                "put_call_ratio": None,
+                "total_call_oi": 0,
+                "total_put_oi": 0,
+                "put_call_ratio_oi": None,
+            },
+        ],
+    }
+    out = compute_event_only_implied_move_bundle(
+        oc,
+        earnings_date="2026-05-13",
+        event_jump_pct=12.0,
+        daily_vol_pct=2.0,
+    )
+    assert out["event_only_implied_move_method"] == "forward_variance"
+    assert out["event_only_implied_move_pct"] is not None
+    assert float(out["event_only_implied_move_pct"]) > 0.0
+
+
+def test_compute_event_only_monthly_sqrt_residual() -> None:
+    from equity_analyst.options_chain import compute_event_only_implied_move_bundle
+
+    oc = {
+        "options_chain_available": True,
+        "as_of": "2026-05-01T12:00:00Z",
+        "spot": 100.0,
+        "available_expiries": ["2026-06-19"],
+        "selected_expiries": [
+            {
+                "expiry_date": "2026-06-19",
+                "dte": 35,
+                "atm_call_iv": None,
+                "atm_put_iv": None,
+                "atm_straddle_mid": 25.0,
+                "implied_move_pct": None,
+                "atm_strike": 100.0,
+                "atm_call_bid": None,
+                "atm_call_ask": None,
+                "atm_call_mid": None,
+                "atm_call_last": None,
+                "atm_put_bid": None,
+                "atm_put_ask": None,
+                "atm_put_mid": None,
+                "atm_put_last": None,
+                "expected_move_dollar": 25.0,
+                "skew_25d_call_minus_put_iv": None,
+                "skew_25d_note": "",
+                "total_call_volume": 0,
+                "total_put_volume": 0,
+                "put_call_ratio": None,
+                "total_call_oi": 0,
+                "total_put_oi": 0,
+                "put_call_ratio_oi": None,
+            },
+        ],
+    }
+    out = compute_event_only_implied_move_bundle(
+        oc,
+        earnings_date="2026-05-13",
+        event_jump_pct=25.0,
+        daily_vol_pct=1.0,
+        lit_straddle_move_pct=25.0,
+        expiry_class="monthly",
+    )
+    assert out["event_only_implied_move_method"] == "monthly_straddle_minus_diffusion"
+    assert out["event_only_implied_move_pct"] is not None
+    assert float(out["event_only_implied_move_pct"]) >= 0.0

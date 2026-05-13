@@ -110,12 +110,15 @@ def test_computed_sigma_bands_table_injected_when_chain_and_hv30_available(
     )
     oc = {
         "options_chain_available": True,
+        "as_of": "2026-05-12T12:00:00Z",
         "spot": 100.0,
+        "available_expiries": ["2026-05-15"],
         "selected_expiries": [
             {
                 "expiry_date": "2026-05-15",
                 "implied_move_pct": 10.0,
                 "atm_straddle_mid": 10.0,
+                "dte": 3,
             },
         ],
     }

@@ -142,6 +142,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override RunConfig.t0_blend_preset for T-0 horizon qual:quant digits (T-3..T-1 and T+1..T+5 "
         "unchanged). Default from YAML / EQUITY_T0_BLEND_PRESET.",
     )
+    run.add_argument(
+        "--max-weekly-lookahead-days",
+        type=int,
+        default=None,
+        help="Override RunConfig.max_weekly_lookahead_days (weekly→monthly front-expiry window; default 14).",
+    )
     run.add_argument("--max-iterations", type=int, default=3)
     run.add_argument("--confidence-threshold", type=float, default=0.85)
     run.add_argument(
@@ -550,6 +556,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["run_profile"] = args.run_profile
     if getattr(args, "t0_blend_preset", None) is not None:
         patch["t0_blend_preset"] = normalize_t0_blend_preset(str(args.t0_blend_preset))
+    if getattr(args, "max_weekly_lookahead_days", None) is not None:
+        patch["max_weekly_lookahead_days"] = int(args.max_weekly_lookahead_days)
     if args.retry_max_attempts is not None:
         patch["retry_max_attempts"] = args.retry_max_attempts
     if args.retry_base_delay_s is not None:

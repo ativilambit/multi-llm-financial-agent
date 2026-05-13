@@ -436,6 +436,12 @@ class Orchestrator:
                     "latency_s": synthesis.response.latency_s,
                 },
                 "errors": run_errors,
+                "options_chain_data": rendered.context.get("options_chain_data") or {},
+                "computed_sigma_bands_table": (
+                    rendered.context.get("computed_sigma_bands_table")
+                    if isinstance(rendered.context.get("computed_sigma_bands_table"), dict)
+                    else None
+                ),
             }
             run_json.write_text(json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
