@@ -522,6 +522,13 @@ class RunConfig(BaseModel):
         "predictions). ``dev`` keeps file artifacts only. Override with CLI ``--profile`` or env "
         "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE``.",
     )
+    env: RunEnvironment = Field(
+        default="production",
+        description="Deployment tier for a run: ``test`` selects dev-safe defaults (``run_profile=dev`` when not "
+        "overridden by CLI ``--profile``, and Postgres off unless YAML ``db_enabled: true`` or ``DB_ENABLED=1``). "
+        "Separate from ``run_environment`` (Drive upload folder routing). YAML ``env``, env ``EQUITY_ENV``, or "
+        "CLI ``--env`` (CLI wins).",
+    )
     t0_blend_preset: T0BlendPreset = Field(
         default="default",
         description="T-0-only horizon blend (qual : quant digits). T-3..T-1 stays 55:45; T+1..T+5 stays 49:51. "
@@ -624,6 +631,18 @@ class RunConfig(BaseModel):
         s = v.strip().lower()
         if s not in ("production", "dev"):
             raise ValueError("run_profile must be 'production' or 'dev'")
+        return s
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _normalize_env_tier(cls, v: Any) -> str:
+        if v is None:
+            return "production"
+        if not isinstance(v, str):
+            raise ValueError("env must be a string")
+        s = v.strip().lower()
+        if s not in ("production", "test"):
+            raise ValueError("env must be 'production' or 'test'")
         return s
 
     @field_validator("synthesizer", mode="before")
@@ -792,8 +811,27 @@ class RunConfig(BaseModel):
         return self.model_copy(update=updates) if updates else self
 
     @model_validator(mode="after")
+    def _equity_env_env_fallback(self) -> Self:
+        """Env ``EQUITY_ENV`` when ``env`` was not set explicitly in YAML (YAML > env > default)."""
+        if "env" in self.model_fields_set:
+            return self
+        raw = os.environ.get("EQUITY_ENV")
+        if raw is None or not str(raw).strip():
+            return self
+        s = str(raw).strip().lower()
+        if s not in ("production", "test"):
+            raise ValueError(
+                "EQUITY_ENV must be 'production' or 'test' "
+                f"(got {raw!r}); unset the variable or fix the value."
+            )
+        return self.model_copy(update={"env": cast(RunEnvironment, s)})
+
+    @model_validator(mode="after")
     def _run_profile_env_fallback(self) -> Self:
         """Env override for ``run_profile`` (same idea as ``DB_ENABLED`` on ``_db_env_fallback``)."""
+        if self.env == "test":
+            # Test tier: profile comes from YAML / field defaults only; never promote from env vars.
+            return self
         raw = os.environ.get("EQUITY_RUN_PROFILE")
         if raw is None or not str(raw).strip():
             raw = os.environ.get("RUN_PROFILE")
@@ -806,6 +844,23 @@ class RunConfig(BaseModel):
                 f"(got {raw!r}); unset the variable or fix the value."
             )
         return self.model_copy(update={"run_profile": cast(RunProfile, s)})
+
+    @model_validator(mode="after")
+    def _env_tier_test_safe_defaults(self) -> Self:
+        """When ``env`` is ``test``, prefer dev profile and no Postgres unless explicitly opted in."""
+        if self.env != "test":
+            return self
+        updates: dict[str, Any] = {}
+        if "run_profile" not in self.model_fields_set:
+            updates["run_profile"] = "dev"
+        explicit_db = ("db_enabled" in self.model_fields_set and self.db_enabled is True) or (
+            os.environ.get("DB_ENABLED") is not None
+            and str(os.environ.get("DB_ENABLED", "")).strip() != ""
+            and _env_flag_truthy("DB_ENABLED")
+        )
+        if not explicit_db:
+            updates["db_enabled"] = False
+        return self.model_copy(update=updates) if updates else self
 
     @model_validator(mode="after")
     def _t0_blend_preset_env_fallback(self) -> Self:
@@ -1042,6 +1097,32 @@ class RunConfig(BaseModel):
         if self.synthesizer.request_timeout_s is not None:
             return float(self.synthesizer.request_timeout_s)
         return float(self.request_timeout_s)
+
+
+def db_enabled_explicitly_opted_in(*, base_cfg: RunConfig) -> bool:
+    """True when Postgres should stay enabled for ``env=test`` (YAML or ``DB_ENABLED``)."""
+    if "db_enabled" in base_cfg.model_fields_set and base_cfg.db_enabled is True:
+        return True
+    raw = os.environ.get("DB_ENABLED")
+    return bool(raw is not None and str(raw).strip() != "" and _env_flag_truthy("DB_ENABLED"))
+
+
+def apply_cli_env_tier_overrides(
+    merged: RunConfig,
+    *,
+    base_cfg: RunConfig,
+    run_profile_cli: str | None,
+    no_db: bool,
+) -> RunConfig:
+    """Re-apply ``env=test`` defaults after CLI patches (``model_copy`` does not re-run validators)."""
+    if merged.env != "test":
+        return merged
+    updates: dict[str, Any] = {}
+    if run_profile_cli is None:
+        updates["run_profile"] = "dev"
+    if not no_db and not db_enabled_explicitly_opted_in(base_cfg=base_cfg):
+        updates["db_enabled"] = False
+    return merged.model_copy(update=updates) if updates else merged
 
 
 def run_profile_from_persisted_run_json(data: dict[str, Any]) -> RunProfile:

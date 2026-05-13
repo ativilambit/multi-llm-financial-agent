@@ -15,7 +15,12 @@ from typing import Any, Literal, cast
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from equity_analyst.config import RunConfig, load_config, run_profile_from_persisted_run_json
+from equity_analyst.config import (
+    RunConfig,
+    apply_cli_env_tier_overrides,
+    load_config,
+    run_profile_from_persisted_run_json,
+)
 from equity_analyst.db_ops import best_effort_upsert_run_and_responses
 from equity_analyst.drive_uploader import log_drive_upload_plan_from_config
 from equity_analyst.iterative import (
@@ -247,12 +252,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--environment",
-        "--env",
         dest="run_environment",
         choices=["production", "test"],
         default=None,
-        help="Run environment for Drive uploads: ``production`` → child folder ``prod``; ``test`` → ``test``. "
-        "Overrides run_environment / RUN_ENVIRONMENT when set.",
+        help="Drive upload routing: ``production`` → child folder ``prod``; ``test`` → ``test``. "
+        "Overrides ``run_environment`` / ``RUN_ENVIRONMENT`` when set. "
+        "(For deployment tier / Postgres defaults, use ``--env`` / ``EQUITY_ENV`` / YAML ``env``.)",
+    )
+    run.add_argument(
+        "--env",
+        dest="equity_env",
+        choices=["production", "test"],
+        default=None,
+        help="Deployment tier: ``test`` uses ``run_profile=dev`` unless overridden by ``--profile``, and "
+        "disables Postgres unless YAML sets ``db_enabled: true`` or ``DB_ENABLED=1``. "
+        "Overrides ``EQUITY_ENV`` and YAML ``env`` when set. Separate from ``--environment`` (Drive).",
     )
     run.add_argument(
         "--drive-auth-mode",
@@ -549,11 +563,14 @@ def _print_outcome_batch_fail_line(*, symbol: str, message: str) -> None:
 
 
 def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> RunConfig:
+    base_cfg = cfg
     patch: dict[str, Any] = {}
     if getattr(args, "no_db", False):
         patch["db_enabled"] = False
     if getattr(args, "run_profile", None) is not None:
         patch["run_profile"] = args.run_profile
+    if getattr(args, "equity_env", None) is not None:
+        patch["env"] = str(args.equity_env)
     if getattr(args, "t0_blend_preset", None) is not None:
         patch["t0_blend_preset"] = normalize_t0_blend_preset(str(args.t0_blend_preset))
     if getattr(args, "max_weekly_lookahead_days", None) is not None:
@@ -600,7 +617,13 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["facts_packet_enabled"] = bool(args.facts_packet)
     if getattr(args, "conditional_fanout", None) is not None:
         patch["conditional_fanout_enabled"] = bool(args.conditional_fanout)
-    return cfg if not patch else cfg.model_copy(update=patch)
+    merged = cfg if not patch else cfg.model_copy(update=patch)
+    return apply_cli_env_tier_overrides(
+        merged,
+        base_cfg=base_cfg,
+        run_profile_cli=getattr(args, "run_profile", None),
+        no_db=bool(getattr(args, "no_db", False)),
+    )
 
 
 def _load_cfg(args: argparse.Namespace) -> RunConfig:

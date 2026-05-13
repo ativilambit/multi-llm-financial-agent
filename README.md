@@ -53,7 +53,7 @@ The Postgres DB layer is **additive**: it stores structured metadata for queryin
 - `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down, `db_enabled` is false, **`run_profile`** is not production, or the insert fails; see prediction extraction below)
 - `outputs/outcomes_registry.jsonl`
 
-**Postgres persistence profile:** only runs with **`run_profile: production`** are written to Postgres (`runs`, `provider_responses`, `outcomes`, `predictions`). Local experiments default to **`dev`** (no Postgres writes; files and logs behave the same). Use **`python -m equity_analyst run ... --profile production`**, set **`EQUITY_RUN_PROFILE=production`** (or **`RUN_PROFILE`** if the former is unset), or put **`run_profile: production`** in YAML. Real multi-symbol batches via **`scripts/run_all_symbols.sh`** pass **`--profile production`**. Outcome and prediction tooling reads **`run.json`**: top-level **`run_profile`**, else **`config.run_profile`**; older trees without either field are treated as **production** so existing cron/outcome flows keep working.
+**Postgres persistence profile:** only runs with **`run_profile: production`** are written to Postgres (`runs`, `provider_responses`, `outcomes`, `predictions`). Local experiments default to **`dev`** (no Postgres writes; files and logs behave the same). Use **`python -m equity_analyst run ... --profile production`**, set **`EQUITY_RUN_PROFILE=production`** (or **`RUN_PROFILE`** if the former is unset), or put **`run_profile: production`** in YAML. Real multi-symbol batches via **`scripts/run_all_symbols.sh`** pass **`--profile production`** by default; use **`scripts/run_all_symbols.sh ... --env test`** (or **`python -m equity_analyst run ... --env test`**) for a **test tier**: **`run_profile=dev`** unless you add **`--profile production`**, and Postgres stays off unless YAML sets **`db_enabled: true`** or the shell sets **`DB_ENABLED=1`**. Outcome and prediction tooling reads **`run.json`**: top-level **`run_profile`**, else **`config.run_profile`**; older trees without either field are treated as **production** so existing cron/outcome flows keep working.
 
 **T-0 horizon blend preset (`RunConfig.t0_blend_preset`):** only the **T-0** rows in the fenced horizon table use this **qual : quant** digit pair; **T−3..T−1** stays **55 : 45** and **T+1..T+5** stays **49 : 51**. Presets: **`default`** (49:51), **`quant_lean`** (40:60), **`quant_dominant`** (1:99), **`qual_dominant`** (99:1). Set in YAML, or override with **`EQUITY_T0_BLEND_PRESET`**, or **`python -m equity_analyst run ... --t0-blend <preset>`** (CLI wins over env and YAML for that field). The equity Jinja template and synthesizer system prompt are injected at render/synthesis time; the verifier rejects wrong T-0 literals for the active preset.
 
@@ -204,6 +204,7 @@ Environment keys (optional; typically set in `.env` or the shell):
 - `DRIVE_OAUTH_CLIENT_SECRETS_PATH` (path to Desktop OAuth client JSON; used by `drive_oauth_setup`)
 - `DRIVE_OAUTH_TOKEN_PATH` (saved refresh token JSON)
 - `RUN_ENVIRONMENT=production|test` (optional; routes uploads under the `prod` or `test` subfolder; overrides YAML `run_environment` when set)
+- `EQUITY_ENV=production|test` (optional; **`RunConfig.env`** deployment tier: **`test`** implies dev profile + no Postgres unless YAML `db_enabled: true` or `DB_ENABLED=1`; only applied when YAML omits `env`. When set to **`test`**, **`EQUITY_RUN_PROFILE` / `RUN_PROFILE`** are **not** applied so a shell profile cannot promote runs to production Postgres.)
 
 Per-run CLI overrides:
 
@@ -212,8 +213,12 @@ python -m equity_analyst run --config ... --upload-to-drive --drive-folder-id <f
 python -m equity_analyst run --config ... --no-upload-to-drive
 python -m equity_analyst run --config ... --drive-auth-mode oauth_user
 python -m equity_analyst run --config ... --environment test
+python -m equity_analyst run --config ... --environment production
+python -m equity_analyst run --config ... --env test
 python -m equity_analyst run --config ... --env production
 ```
+
+**Note:** **`--environment`** controls **Google Drive** child folders (`prod` / `test`). **`--env`** sets **`RunConfig.env`** (batch / deployment tier: **`test`** selects **`run_profile=dev`** unless **`--profile`** overrides, and disables Postgres unless you opt in with **`db_enabled: true`** in YAML or **`DB_ENABLED=1`**).
 
 ### Caveats
 
@@ -300,7 +305,7 @@ The **2026-05-14 earnings batch** adds six configs keyed to **Thu May 14, 2026**
 | ONDS | Ondas Holdings Inc. (Nasdaq: ONDS) | `configs/onds_2026_05_14.yaml` |
 | YETI | YETI Holdings, Inc. (NYSE: YETI) | `configs/yeti_2026_05_14.yaml` |
 
-`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above. Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`. If you set **`--date`** (or pass a leading **`DATE`** positional) and omit **`--symbols`** / **`--symbols-file`**, the script **auto-discovers** every matching `configs/*_<suffix>.yaml` and runs those tickers in **sorted** order (no fallback to other dates). Use **`--symbols A,B,C`** or **`--symbols-file path`** to pin a subset: the script uses **`configs/<sym>_<date>.yaml`** when it exists; if that file is missing, it **falls back** to the newest dated config for that symbol that is **not newer than** the requested date (lex order on `YYYY_MM_DD`), or to the **newest file overall** if only newer-dated configs exist—each substitution prints one **`WARN:`** line to stderr. Pass **`--no-fallback`** or **`--strict`** to restore fail-fast behavior (list every missing exact path). **`--symbols` wins** if both `--symbols` and `--symbols-file` are passed.
+`scripts/run_all_symbols.sh` wraps `python -m equity_analyst run` and is **Bash 3.2-compatible** (no `mapfile`, no `${var,,}`, no associative arrays) so it works with macOS `/bin/bash`. By default it runs the **2026-05-10** symbol set above and passes **`--profile production`** to each symbol. Pass **`--env test`** to forward **`--env test`** instead (dev profile + no Postgres unless **`DB_ENABLED=1`** or YAML **`db_enabled: true`**). Use **`--date YYYY-MM-DD`** (or `YYYY_MM_DD`) so config paths resolve as `configs/<symbol_lower>_<suffix>.yaml`. If you set **`--date`** (or pass a leading **`DATE`** positional) and omit **`--symbols`** / **`--symbols-file`**, the script **auto-discovers** every matching `configs/*_<suffix>.yaml` and runs those tickers in **sorted** order (no fallback to other dates). Use **`--symbols A,B,C`** or **`--symbols-file path`** to pin a subset: the script uses **`configs/<sym>_<date>.yaml`** when it exists; if that file is missing, it **falls back** to the newest dated config for that symbol that is **not newer than** the requested date (lex order on `YYYY_MM_DD`), or to the **newest file overall** if only newer-dated configs exist—each substitution prints one **`WARN:`** line to stderr. Pass **`--no-fallback`** or **`--strict`** to restore fail-fast behavior (list every missing exact path). **`--symbols` wins** if both `--symbols` and `--symbols-file` are passed.
 
 ```bash
 # Sequential (default): one symbol at a time, --iterative --max-iterations 3 --log-level INFO.
@@ -335,6 +340,9 @@ scripts/run_all_symbols.sh --date 2026-05-12 --symbols SE,ZBRA,ONON,QBTS,LIF,ETO
 scripts/run_all_symbols.sh --max-iterations 2
 scripts/run_all_symbols.sh --no-iterative
 scripts/run_all_symbols.sh --log-level DEBUG
+
+# Test-tier batch (no Postgres unless DB_ENABLED=1 or YAML db_enabled: true):
+scripts/run_all_symbols.sh --date 2026-05-13 --env test
 
 # Optional parallel mode: up to 2 symbols run concurrently by default (override with
 # `--jobs N` or `-j N`, allowed range 1–10). Example: `--parallel --jobs 3`.

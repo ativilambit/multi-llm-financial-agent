@@ -43,6 +43,8 @@ JOBS=""
 ITERATIVE=1
 MAX_ITERATIONS=3
 LOG_LEVEL="INFO"
+# Deployment tier: "production" (default) forwards --profile production; "test" forwards --env test.
+TIER_ENV="production"
 
 HAVE_DATE=0
 RAW_DATE=""
@@ -279,6 +281,8 @@ Run options:
   --no-iterative          Skip --iterative; run a single fan-out + synthesis pass.
   --max-iterations N      Forward to --max-iterations N (default 3, iterative only).
   --log-level LEVEL       Forward to --log-level (DEBUG|INFO|WARNING|ERROR; default INFO).
+  --env production|test   Forward to python --env (test: dev profile + no Postgres unless DB_ENABLED=1
+                          or YAML db_enabled: true). Default production uses --profile production.
   -h, --help              Show this help and exit.
 
 Default symbol order (with default --date 2026-05-10):
@@ -288,6 +292,7 @@ Examples:
   scripts/run_all_symbols.sh 2026_05_12
   scripts/run_all_symbols.sh 2026_05_13 NBIS BABA
   scripts/run_all_symbols.sh --date 2026-05-12 --parallel
+  scripts/run_all_symbols.sh --date 2026_05_13 --env test
 
 A per-batch summary is written to outputs/batch_<timestamp>/batch_summary.txt
 along with one combined log per symbol.
@@ -408,6 +413,31 @@ while [ "$#" -gt 0 ]; do
       LOG_LEVEL="${1#--log-level=}"
       shift
       ;;
+    --env)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --env requires production or test" >&2
+        exit 2
+      fi
+      case "$2" in
+        production|test) TIER_ENV="$2" ;;
+        *)
+          echo "ERROR: --env must be production or test (got: $2)" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
+    --env=*)
+      ev="${1#--env=}"
+      case "$ev" in
+        production|test) TIER_ENV="$ev" ;;
+        *)
+          echo "ERROR: --env must be production or test (got: $ev)" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -461,7 +491,7 @@ SUMMARY_FILE="$BATCH_DIR/batch_summary.txt"
   if [ "$MODE" = "parallel" ]; then
     echo "Parallel jobs (max concurrent): $JOBS"
   fi
-  echo "Iterative: $ITERATIVE  Max iterations: $MAX_ITERATIONS  Log level: $LOG_LEVEL"
+  echo "Iterative: $ITERATIVE  Max iterations: $MAX_ITERATIONS  Log level: $LOG_LEVEL  Tier: $TIER_ENV"
   echo "Config date suffix: $CONFIG_DATE"
   echo "Symbols (in order): $SYMBOLS"
   if [ "$EXPLICIT_SYMBOL_SOURCE" -eq 1 ]; then
@@ -480,7 +510,12 @@ EOF
 # Build the equity_analyst argv suffix (everything after the config path).
 build_args() {
   # echoes a single shell-quote-safe argument string (we control all values).
-  local _args="--log-level $LOG_LEVEL --profile production"
+  local _args="--log-level $LOG_LEVEL"
+  if [ "$TIER_ENV" = "test" ]; then
+    _args="$_args --env test"
+  else
+    _args="$_args --profile production"
+  fi
   if [ "$ITERATIVE" -eq 1 ]; then
     _args="$_args --iterative --max-iterations $MAX_ITERATIONS"
   fi

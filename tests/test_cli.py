@@ -223,7 +223,7 @@ def test_cli_run_environment_override(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     parser = _build_parser()
-    args = parser.parse_args(["run", "--config", str(yml), "--env", "test"])
+    args = parser.parse_args(["run", "--config", str(yml), "--environment", "test"])
     base = _load_cfg(args)
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.run_environment == "test"
@@ -231,6 +231,74 @@ def test_cli_run_environment_override(tmp_path: Path) -> None:
     args2 = parser.parse_args(["run", "--config", str(yml), "--environment", "production"])
     cfg2 = _apply_cli_config_overrides(_load_cfg(args2), args2)
     assert cfg2.run_environment == "production"
+
+
+def test_cli_equity_env_test_sets_dev_and_db_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+    monkeypatch.delenv("RUN_PROFILE", raising=False)
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "run_profile": "production",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml), "--env", "test"])
+    base = _load_cfg(args)
+    assert base.env == "production"
+    assert base.run_profile == "production"
+    assert base.db_enabled is True
+    cfg = _apply_cli_config_overrides(base, args)
+    assert cfg.env == "test"
+    assert cfg.run_profile == "dev"
+    assert cfg.db_enabled is False
+
+
+def test_cli_equity_env_test_keeps_profile_when_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "run_profile": "dev",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml), "--env", "test", "--profile", "production"])
+    base = _load_cfg(args)
+    cfg = _apply_cli_config_overrides(base, args)
+    assert cfg.env == "test"
+    assert cfg.run_profile == "production"
 
 
 def test_cli_drive_auth_mode_override(tmp_path: Path) -> None:

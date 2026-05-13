@@ -938,6 +938,81 @@ def test_run_profile_invalid_env_raises(monkeypatch: pytest.MonkeyPatch) -> None
         monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
 
 
+def test_env_defaults_production() -> None:
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.env == "production"
+
+
+def test_env_yaml_test_sets_dev_and_db_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    d = _minimal_run_config_dict()
+    d["env"] = "test"
+    cfg = RunConfig.model_validate(d)
+    assert cfg.env == "test"
+    assert cfg.run_profile == "dev"
+    assert cfg.db_enabled is False
+
+
+def test_env_yaml_test_keeps_explicit_run_profile() -> None:
+    d = _minimal_run_config_dict()
+    d["env"] = "test"
+    d["run_profile"] = "production"
+    cfg = RunConfig.model_validate(d)
+    assert cfg.env == "test"
+    assert cfg.run_profile == "production"
+
+
+def test_env_yaml_test_keeps_db_when_yaml_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    d = _minimal_run_config_dict()
+    d["env"] = "test"
+    d["db_enabled"] = True
+    cfg = RunConfig.model_validate(d)
+    assert cfg.db_enabled is True
+
+
+def test_equity_env_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_ENV", "test")
+    try:
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+        assert cfg.env == "test"
+    finally:
+        monkeypatch.delenv("EQUITY_ENV", raising=False)
+
+
+def test_env_yaml_wins_over_equity_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_ENV", "test")
+    try:
+        d = _minimal_run_config_dict()
+        d["env"] = "production"
+        cfg = RunConfig.model_validate(d)
+        assert cfg.env == "production"
+    finally:
+        monkeypatch.delenv("EQUITY_ENV", raising=False)
+
+
+def test_equity_env_invalid_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_ENV", "staging")
+    try:
+        with pytest.raises(ValueError, match="EQUITY_ENV"):
+            RunConfig.model_validate(_minimal_run_config_dict())
+    finally:
+        monkeypatch.delenv("EQUITY_ENV", raising=False)
+
+
+def test_env_yaml_test_overrides_run_profile_from_env_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``env=test`` resets implicit production from EQUITY_RUN_PROFILE when YAML omits ``run_profile``."""
+    monkeypatch.delenv("RUN_PROFILE", raising=False)
+    monkeypatch.setenv("EQUITY_RUN_PROFILE", "production")
+    try:
+        d = _minimal_run_config_dict()
+        d["env"] = "test"
+        cfg = RunConfig.model_validate(d)
+        assert cfg.run_profile == "dev"
+    finally:
+        monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+
+
 def test_t0_blend_preset_defaults() -> None:
     cfg = RunConfig.model_validate(_minimal_run_config_dict())
     assert cfg.t0_blend_preset == "default"
