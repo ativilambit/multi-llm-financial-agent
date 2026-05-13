@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import yaml
 from dotenv import load_dotenv
+from pydantic import ValidationError
 
 from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
 from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL
@@ -935,3 +936,35 @@ def test_run_profile_invalid_env_raises(monkeypatch: pytest.MonkeyPatch) -> None
             RunConfig.model_validate(_minimal_run_config_dict())
     finally:
         monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+
+
+def test_t0_blend_preset_defaults() -> None:
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.t0_blend_preset == "default"
+
+
+def test_t0_blend_preset_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_T0_BLEND_PRESET", "quant_lean")
+    try:
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+        assert cfg.t0_blend_preset == "quant_lean"
+    finally:
+        monkeypatch.delenv("EQUITY_T0_BLEND_PRESET", raising=False)
+
+
+def test_t0_blend_preset_yaml_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_T0_BLEND_PRESET", "quant_lean")
+    try:
+        d = _minimal_run_config_dict()
+        d["t0_blend_preset"] = "qual_dominant"
+        cfg = RunConfig.model_validate(d)
+        assert cfg.t0_blend_preset == "qual_dominant"
+    finally:
+        monkeypatch.delenv("EQUITY_T0_BLEND_PRESET", raising=False)
+
+
+def test_t0_blend_preset_invalid_yaml_raises() -> None:
+    d = _minimal_run_config_dict()
+    d["t0_blend_preset"] = "bogus"
+    with pytest.raises(ValidationError):
+        RunConfig.model_validate(d)

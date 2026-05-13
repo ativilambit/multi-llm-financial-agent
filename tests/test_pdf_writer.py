@@ -4,12 +4,21 @@ import importlib
 import importlib.util
 import io
 import logging
+import sys
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from equity_analyst.pdf_writer import _log_weasyprint_render_failure, write_markdown_as_pdf
+
+
+def _patch_fake_weasyprint_module(fake_html: MagicMock):
+    """Avoid importing real WeasyPrint (native libs); ``write_markdown_as_pdf`` does ``from weasyprint import HTML``."""
+    mod = ModuleType("weasyprint")
+    mod.HTML = fake_html
+    return patch.dict(sys.modules, {"weasyprint": mod})
 
 
 def _weasyprint_importable() -> bool:
@@ -86,7 +95,7 @@ def test_write_markdown_as_pdf_logs_native_hint_on_cairo_import_error(
     dest = tmp_path / "out.pdf"
     fake_html = MagicMock()
     fake_html.return_value.write_pdf.side_effect = ImportError("cannot import cairo")
-    with patch("weasyprint.HTML", fake_html), caplog.at_level(logging.WARNING):
+    with _patch_fake_weasyprint_module(fake_html), caplog.at_level(logging.WARNING):
         assert write_markdown_as_pdf("# Hello", dest) is False
     joined = " ".join(r.message for r in caplog.records)
     assert "brew install pango cairo" in joined
@@ -101,7 +110,7 @@ def test_write_markdown_as_pdf_logs_dep_mismatch_on_attributeerror(
     fake_html.return_value.write_pdf.side_effect = AttributeError(
         "'super' object has no attribute 'transform'"
     )
-    with patch("weasyprint.HTML", fake_html), caplog.at_level(logging.WARNING):
+    with _patch_fake_weasyprint_module(fake_html), caplog.at_level(logging.WARNING):
         assert write_markdown_as_pdf("# Hello", dest) is False
     joined = " ".join(r.message for r in caplog.records)
     assert "mismatched" in joined
@@ -114,7 +123,7 @@ def test_write_markdown_as_pdf_logs_generic_on_other_render_error(
     dest = tmp_path / "out.pdf"
     fake_html = MagicMock()
     fake_html.return_value.write_pdf.side_effect = ValueError("bad pdf state")
-    with patch("weasyprint.HTML", fake_html), caplog.at_level(logging.WARNING):
+    with _patch_fake_weasyprint_module(fake_html), caplog.at_level(logging.WARNING):
         assert write_markdown_as_pdf("# Hello", dest) is False
     joined = " ".join(r.message for r in caplog.records)
     assert "PDF skipped" in joined

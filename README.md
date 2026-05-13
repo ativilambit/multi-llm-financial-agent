@@ -55,6 +55,8 @@ The Postgres DB layer is **additive**: it stores structured metadata for queryin
 
 **Postgres persistence profile:** only runs with **`run_profile: production`** are written to Postgres (`runs`, `provider_responses`, `outcomes`, `predictions`). Local experiments default to **`dev`** (no Postgres writes; files and logs behave the same). Use **`python -m equity_analyst run ... --profile production`**, set **`EQUITY_RUN_PROFILE=production`** (or **`RUN_PROFILE`** if the former is unset), or put **`run_profile: production`** in YAML. Real multi-symbol batches via **`scripts/run_all_symbols.sh`** pass **`--profile production`**. Outcome and prediction tooling reads **`run.json`**: top-level **`run_profile`**, else **`config.run_profile`**; older trees without either field are treated as **production** so existing cron/outcome flows keep working.
 
+**T-0 horizon blend preset (`RunConfig.t0_blend_preset`):** only the **T-0** rows in the fenced horizon table use this **qual : quant** digit pair; **T−3..T−1** stays **55 : 45** and **T+1..T+5** stays **49 : 51**. Presets: **`default`** (49:51), **`quant_lean`** (40:60), **`quant_dominant`** (1:99), **`qual_dominant`** (99:1). Set in YAML, or override with **`EQUITY_T0_BLEND_PRESET`**, or **`python -m equity_analyst run ... --t0-blend <preset>`** (CLI wins over env and YAML for that field). The equity Jinja template and synthesizer system prompt are injected at render/synthesis time; the verifier rejects wrong T-0 literals for the active preset.
+
 ### Connection
 
 Set `DATABASE_URL` in `.env` at the repo root. It is loaded automatically by the `equity_analyst` CLI, Alembic (`migrations/env.py`), and `scripts/setup_db.sh`, so you do not need to `source .env` manually for those entry points.

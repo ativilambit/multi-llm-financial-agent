@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from equity_analyst.config import RunConfig
+from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.synthesizer import (
     SYNTHESIS_SYSTEM_PROMPT,
@@ -13,6 +14,7 @@ from equity_analyst.synthesizer import (
     detect_max_tokens_truncation,
     provider_finish_reason_label,
 )
+from equity_analyst.synthesizer_blend import inject_t0_blend_into_synthesizer_system_prompt
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 
@@ -68,7 +70,11 @@ async def test_synthesizer_includes_all_provider_outputs_and_instructions() -> N
 
     await s.synthesize(original_prompt="ORIG", responses=responses, enable_web_search=False)
     assert p.last_prompt is not None
-    assert SYNTHESIS_SYSTEM_PROMPT.strip() in p.last_prompt
+    syn_md = inject_t0_blend_into_synthesizer_system_prompt(
+        _load_prompt_file("synthesizer_system.md"),
+        "default",
+    )
+    assert syn_md in p.last_prompt
     assert "Provider: anthropic" in p.last_prompt
     assert "Provider: openai" in p.last_prompt
     assert "disagreements" in p.last_prompt.lower()

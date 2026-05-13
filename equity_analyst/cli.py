@@ -35,6 +35,7 @@ from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_export import use_prompt_exporter
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
+from equity_analyst.synthesizer_blend import normalize_t0_blend_preset
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Run profile: only production persists runs/responses/outcomes/predictions to Postgres. "
         "Default from RunConfig / EQUITY_RUN_PROFILE / RUN_PROFILE (default dev).",
+    )
+    run.add_argument(
+        "--t0-blend",
+        dest="t0_blend_preset",
+        choices=["default", "quant_lean", "quant_dominant", "qual_dominant"],
+        default=None,
+        help="Override RunConfig.t0_blend_preset for T-0 horizon qual:quant digits (T-3..T-1 and T+1..T+5 "
+        "unchanged). Default from YAML / EQUITY_T0_BLEND_PRESET.",
     )
     run.add_argument("--max-iterations", type=int, default=3)
     run.add_argument("--confidence-threshold", type=float, default=0.85)
@@ -539,6 +548,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["db_enabled"] = False
     if getattr(args, "run_profile", None) is not None:
         patch["run_profile"] = args.run_profile
+    if getattr(args, "t0_blend_preset", None) is not None:
+        patch["t0_blend_preset"] = normalize_t0_blend_preset(str(args.t0_blend_preset))
     if args.retry_max_attempts is not None:
         patch["retry_max_attempts"] = args.retry_max_attempts
     if args.retry_base_delay_s is not None:

@@ -17,6 +17,8 @@
 # - earnings_timing: Human-readable BMO/AMC/etc. label; if omitted, models verify timing via web_search (see commented example under earnings_date).
 # - historical_quarters: Number of quarters to include in the empirical move table
 # - short_interest_lookbacks: Phrases describing lookback windows to ask for
+# - t0_blend_preset: T-0-only horizon blend (qual:quant). One of: default | quant_lean | quant_dominant | qual_dominant
+#   (T-3..T-1 stays 55:45; T+1..T+5 stays 49:51). Env EQUITY_T0_BLEND_PRESET or CLI --t0-blend overrides when omitted here.
 #
 # Per-provider options (when using object form under `providers:`):
 # - model: API model id for that backend (default is each provider's built-in default, e.g. Opus for Anthropic)

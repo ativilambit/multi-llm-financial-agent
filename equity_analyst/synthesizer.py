@@ -11,6 +11,10 @@ from equity_analyst.provider_summarize import maybe_summarize_healthy_for_synthe
 from equity_analyst.providers.anthropic_provider import AnthropicProvider
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.retry import async_retry_call
+from equity_analyst.synthesizer_blend import (
+    T0BlendPreset,
+    inject_t0_blend_into_synthesizer_system_prompt,
+)
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
@@ -213,6 +217,7 @@ class Synthesizer:
         refinement_markdown: str | None = None,
         per_provider_sigma_checks_markdown: str | None = None,
         computed_sigma_bands_markdown: str | None = None,
+        t0_blend_preset: T0BlendPreset = "default",
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -283,8 +288,12 @@ class Synthesizer:
             if csb
             else ""
         )
+        syn_md = inject_t0_blend_into_synthesizer_system_prompt(
+            _load_prompt_file("synthesizer_system.md"),
+            t0_blend_preset,
+        )
         fixed_intro = (
-            f"{_load_prompt_file('synthesizer_system.md')}\n\n"
+            f"{syn_md}\n\n"
             f"### Original user prompt\n{original_prompt}"
             f"{refine_block}"
             f"{sigma_block}"
@@ -313,7 +322,10 @@ class Synthesizer:
             enable_web_search,
         )
 
-        syn_sys = _load_prompt_file("synthesizer_system.md")
+        syn_sys = inject_t0_blend_into_synthesizer_system_prompt(
+            _load_prompt_file("synthesizer_system.md"),
+            t0_blend_preset,
+        )
         syn_sep = syn_sys + "\n\n"
         syn_user_only = (
             synthesis_prompt[len(syn_sep) :] if synthesis_prompt.startswith(syn_sep) else synthesis_prompt

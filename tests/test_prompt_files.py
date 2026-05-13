@@ -5,6 +5,7 @@ from pathlib import Path
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.provider_summarize import summarize_system_prompt
 from equity_analyst.synthesizer import SYNTHESIS_SYSTEM_PROMPT
+from equity_analyst.synthesizer_blend import assert_prompt_stack_excludes_horizon_blend_inversions
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = REPO_ROOT / "prompts"
@@ -43,31 +44,45 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     """Prompts include horizon-aware qualitative vs quantitative blend table."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
-    assert "| Horizon | Default blend (qual : quant) | Rationale |" in j2
-    assert "| Horizon | Default blend (qual : quant) | Rationale |" in synth
+    assert "| Horizon | Blend (qual : quant) | Notes |" in j2
+    assert "| Horizon | Blend (qual : quant) | Notes |" in synth
+    assert "__T0_BLEND_LITERAL__" in synth
+    assert "{{ t0_blend_literal }}" in j2
     assert "55 : 45" in j2 and "55 : 45" in synth
-    assert j2.count("49 : 51") >= 3
-    assert synth.count("49 : 51") >= 3
-    t0_pre = (
-        "| T-0 pre-open (event day, no intraday yet) | **49 : 51** | "
+    assert j2.count("49 : 51") >= 1
+    assert synth.count("49 : 51") >= 1
+    t0_pre_j2 = (
+        "| T-0 pre-open (event day, no intraday yet) | {{ t0_blend_literal }} | "
         "Mixed: options skew and pre-print positioning already price much of the setup; "
         "the default blend tilts slightly quantitative for directional trust while qualitative narrative still matters "
         "and the Pure-quant rule governs $/σ. |"
     )
-    t0_intra = (
-        "| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **49 : 51** | "
+    t0_pre_synth = (
+        "| T-0 pre-open (event day, no intraday yet) | __T0_BLEND_LITERAL__ | "
+        "Mixed: options skew and pre-print positioning already price much of the setup; "
+        "the default blend tilts slightly quantitative for directional trust while qualitative narrative still matters "
+        "and the Pure-quant rule governs $/σ. |"
+    )
+    t0_intra_j2 = (
+        "| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | {{ t0_blend_literal }} | "
+        "After the tape and chain update, realized range and flow carry slightly more weight for directional tilt; "
+        "qualitative drivers still shape narrative and scenarios; "
+        "quantitative levels anchor exact $/σ math via the Pure-quant rule. |"
+    )
+    t0_intra_synth = (
+        "| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | __T0_BLEND_LITERAL__ | "
         "After the tape and chain update, realized range and flow carry slightly more weight for directional tilt; "
         "qualitative drivers still shape narrative and scenarios; "
         "quantitative levels anchor exact $/σ math via the Pure-quant rule. |"
     )
     t1_t5 = (
-        "| T+1 to T+5 (after the event, with intraday history) | **49 : 51** | "
+        "| T+1 to T+5 (after the event, with intraday history) | 49 : 51 | "
         "Realized post-event path and refreshed options data carry slightly more weight for directional tilt; "
         "qualitative narrative still informs scenario emphasis; "
         "exact $/σ bands remain quant-only. |"
     )
-    assert t0_pre in j2 and t0_pre in synth
-    assert t0_intra in j2 and t0_intra in synth
+    assert t0_pre_j2 in j2 and t0_pre_synth in synth
+    assert t0_intra_j2 in j2 and t0_intra_synth in synth
     assert t1_t5 in j2 and t1_t5 in synth
     assert "40 : 60" not in j2 and "40 : 60" not in synth
     assert "45 : 55" not in j2 and "45 : 55" not in synth
@@ -75,6 +90,10 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     assert "Qualitative vs quantitative weighting" in synth
     assert "default to the qualitative side" in j2 and "unambiguous and recent" in j2
     assert "**default to the qualitative side**" in synth
+
+
+def test_prompt_stack_has_no_horizon_blend_inversions() -> None:
+    assert_prompt_stack_excludes_horizon_blend_inversions()
 
 
 def test_section8_qualitative_evidence_subsections_and_limits() -> None:

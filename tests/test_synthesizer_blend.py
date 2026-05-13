@@ -12,7 +12,7 @@ def test_horizon_blend_followups_flags_both_49_51_and_51_49() -> None:
     msgs = horizon_blend_ratio_followups(text)
     assert msgs, "expected at least one follow-up for inconsistent literals"
     joined = " ".join(msgs).lower()
-    assert "49:51" in joined and "51:49" in joined
+    assert "blend" in joined and "inconsistent" in joined
 
 
 def test_horizon_blend_followups_passes_canonical_only() -> None:
@@ -26,11 +26,35 @@ def test_horizon_blend_followups_passes_canonical_only() -> None:
 def test_horizon_blend_followups_flags_quant_first_label_swap() -> None:
     text = "We use the 49 Quant : 51 Qual blend for T+2."
     msgs = horizon_blend_ratio_followups(text)
-    assert msgs and "49 quant" in msgs[0].lower()
+    assert msgs and "lens" in msgs[0].lower()
 
 
 def test_horizon_blend_followups_flags_51_49_alone() -> None:
     assert horizon_blend_ratio_followups("Blend is 51:49 for T+1.") != []
+
+
+def test_horizon_blend_followups_flags_quant_colon_qual_label() -> None:
+    text = "Section 8 applies quant:qual = 49 : 51 for T+1."
+    msgs = horizon_blend_ratio_followups(text)
+    assert msgs and "quant-then-qual" in " ".join(msgs).lower()
+
+
+def test_horizon_blend_followups_flags_qualitative_colon_quantitative() -> None:
+    text = "Default blend is qualitative:quantitative = 49 : 51 for T+2."
+    msgs = horizon_blend_ratio_followups(text)
+    assert msgs and "qualitative-then-quantitative" in " ".join(msgs).lower()
+
+
+def test_horizon_blend_followups_flags_inverted_pct_49_row() -> None:
+    text = "Horizon row implies 51% qualitative vs 49% quantitative for T+2."
+    msgs = horizon_blend_ratio_followups(text)
+    assert msgs and "%" in msgs[0]
+
+
+def test_horizon_blend_followups_flags_inverted_pct_55_row() -> None:
+    text = "Pre-event we use 45% qualitative and 55% quantitative for T-2."
+    msgs = horizon_blend_ratio_followups(text)
+    assert msgs
 
 
 def test_augment_verifier_includes_blend_messages() -> None:
@@ -42,4 +66,4 @@ def test_augment_verifier_includes_blend_messages() -> None:
     base = {"verified": [], "contradicted": [], "unverifiable": []}
     out = augment_verifier_result_with_sigma_structural_checks(syn, base)
     unv = " ".join(out.get("unverifiable") or []).lower()
-    assert "blend" in unv and "49:51" in unv and "51:49" in unv
+    assert "blend" in unv and "inconsistent" in unv

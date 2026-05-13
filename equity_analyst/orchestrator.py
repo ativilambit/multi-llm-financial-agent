@@ -337,6 +337,7 @@ class Orchestrator:
                                 str(rendered.context.get("computed_sigma_bands_markdown") or "").strip()
                                 or None
                             ),
+                            t0_blend_preset=self._config.t0_blend_preset,
                         ),
                         timeout=syn_timeout,
                     )

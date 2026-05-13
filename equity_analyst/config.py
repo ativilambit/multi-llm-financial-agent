@@ -12,6 +12,8 @@ from typing import Any, Literal, Self, TextIO, cast
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from equity_analyst.synthesizer_blend import T0BlendPreset, normalize_t0_blend_preset
+
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
 
 logger = logging.getLogger(__name__)
@@ -488,6 +490,11 @@ class RunConfig(BaseModel):
         "predictions). ``dev`` keeps file artifacts only. Override with CLI ``--profile`` or env "
         "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE``.",
     )
+    t0_blend_preset: T0BlendPreset = Field(
+        default="default",
+        description="T-0-only horizon blend (qual : quant digits). T-3..T-1 stays 55:45; T+1..T+5 stays 49:51. "
+        "Override with CLI ``--t0-blend`` or env ``EQUITY_T0_BLEND_PRESET`` when not set in YAML.",
+    )
     db_enabled: bool = Field(
         default=True,
         description="When True, write best-effort structured metadata to Postgres (additive; files remain source of truth).",
@@ -507,6 +514,11 @@ class RunConfig(BaseModel):
             if s in ("service_account", "oauth_user"):
                 return s
         raise ValueError("drive_auth_mode must be 'service_account' or 'oauth_user'")
+
+    @field_validator("t0_blend_preset", mode="before")
+    @classmethod
+    def _normalize_t0_blend_preset(cls, v: Any) -> T0BlendPreset:
+        return normalize_t0_blend_preset(v)
 
     @field_validator("verifier_provider")
     @classmethod
@@ -762,6 +774,16 @@ class RunConfig(BaseModel):
                 f"(got {raw!r}); unset the variable or fix the value."
             )
         return self.model_copy(update={"run_profile": cast(RunProfile, s)})
+
+    @model_validator(mode="after")
+    def _t0_blend_preset_env_fallback(self) -> Self:
+        """Env override when ``t0_blend_preset`` was not set explicitly in YAML (YAML > env > default)."""
+        if "t0_blend_preset" in self.model_fields_set:
+            return self
+        raw = os.environ.get("EQUITY_T0_BLEND_PRESET")
+        if raw is None or not str(raw).strip():
+            return self
+        return self.model_copy(update={"t0_blend_preset": normalize_t0_blend_preset(raw)})
 
     @model_validator(mode="after")
     def _delete_checkpoint_env_fallback(self) -> Self:

@@ -161,8 +161,8 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 ### Horizon-aware qual:quant blend
 
 - **Why:** Pre-open uncertainty differs from post-print tape-heavy sessions; the model must declare how it balances narrative vs market data.
-- **Summary:** Horizon table: **55:45** (T−3 to T−1); **49:51** (T-0 pre-open, T-0 with same-day intraday, T+1 to T+5); when quant is **mixed or weak**, tilt **+5 to +10pp** toward qualitative; on **directional disagreement**, default **qualitative** unless quant is **unambiguous and recent**.
-- **Pointer:** `prompts/equity_analyst.j2` (section 8 table and paragraphs; sections 9, 11, 12 echo).
+- **Summary:** Horizon table: **55:45** (T−3 to T−1); **49:51** for **T+1 to T+5**; **T-0** rows use **`RunConfig.t0_blend_preset`** (`default` → 49:51, `quant_lean` → 40:60, `quant_dominant` → 1:99, `qual_dominant` → 99:1, always **qual : quant**). YAML `t0_blend_preset`, env **`EQUITY_T0_BLEND_PRESET`**, or CLI **`--t0-blend`** (CLI overrides). When quant is **mixed or weak**, tilt **+5 to +10pp** toward qualitative; on **directional disagreement**, default **qualitative** unless quant is **unambiguous and recent**.
+- **Pointer:** `prompts/equity_analyst.j2` (section 8 fenced table + `t0_blend_literal`); `prompts/synthesizer_system.md` (`__T0_BLEND_LITERAL__` substitution in `synthesizer.py`); `equity_analyst/synthesizer_blend.py` (`horizon_blend_ratio_followups` preset-aware T-0 markdown rows); sections 9, 11, 12 echo weighting rules.
 
 ### Verified options chain
 
@@ -173,7 +173,7 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 ### REFINEMENT MODE (iteration ≥ 2 fan-out)
 
 - **Why:** Later rounds should patch verifier targets, not re-derive frozen primitives from scratch (saves tokens and reduces contradictions).
-- **Summary:** When iteration ≥ 2 and providers actually run, prepend **REFINEMENT MODE** instructions: quote **FACTS**, focus on **follow-up verification targets** and **sections_to_revise**.
+- **Summary:** REFINEMENT MODE instructions: quote **FACTS**, focus on **follow-up verification targets** and **sections_to_revise**; **MUST NOT** rewrite **horizon blend** digit pairs or swap **qual / quant** lens order for “clarity.”
 - **Pointer:** `equity_analyst/iterative.py` (`_refinement_mode_block`, `_compose_fan_out_user_body`); toggle `refinement_mode_prompt_enabled` / `REFINEMENT_MODE_PROMPT_ENABLED`.
 
 ---

@@ -73,7 +73,11 @@ from equity_analyst.synthesizer import (
     format_synthesis_artifact_markdown,
     provider_finish_reason_label,
 )
-from equity_analyst.synthesizer_blend import horizon_blend_ratio_followups
+from equity_analyst.synthesizer_blend import (
+    T0BlendPreset,
+    horizon_blend_ratio_followups,
+    normalize_t0_blend_preset,
+)
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
 logger = logging.getLogger(__name__)
@@ -128,7 +132,7 @@ that are not represented in the excerpt.
 
 If the excerpt includes **section 8** bottom-up qualitative material, add an **unverifiable** item when the first 800 characters of that section-8 passage contain **no** `http://` or `https://` URL and **no** line starting with `Source:` (heuristic for missing citations—tune to reduce false positives).
 
-When the excerpt states **horizon blend** defaults, the equity/synthesizer prompts fix literals as **qual : quant**. For **T-0 / T+1..T+5** rows the digits must read **`49 : 51`** (never digit-invert to larger-then-smaller). For **T-3..T-1** use **`55 : 45`** (never digit-invert to smaller-then-larger). Flag **unverifiable** if the excerpt uses digit-inverted pairs, emits **both** canonical and inverted pairs, or writes **"49 Quant : 51 Qual"** (labels swapped vs **qual : quant**). (Deterministic post-pass also enforces this—still flag if you see it in your excerpt.)
+When the excerpt states **horizon blend** defaults, the equity/synthesizer prompts fix literals as **qual : quant** (qualitative first). For **T-0 / T+1..T+5** rows the digits must match the fenced table (**49 : 51**). For **T-3..T-1** use the fenced table (**55 : 45**). Flag **unverifiable** if the excerpt uses digit-inverted colon pairs, emits **both** canonical and inverted pairs, swaps **Quant**/**Qual** lens names against **qual**/**quant** ordering, uses a **quant-then-qual** colon label for the blend column, uses **qualitative-colon-quantitative** as a pseudo-blend header, or uses **%-wording** that contradicts the fenced digit pairs. (Deterministic post-pass also enforces this—still flag if you see it in your excerpt.)
 
 When the excerpt concerns **post-earnings sigma bands** (variance-additive horizons), require **machine-parseable** inputs before any band table: the literal tokens ``event_jump=`` and ``daily_vol=`` (exact spelling, ASCII ``=``) with **two decimals** and ``%/day`` on ``daily_vol``, inside a fenced code block—same mandatory shape as the equity prompt (no LaTeX ``\\_`` escapes, no Markdown italics, no Unicode multipliers). If either token is missing from the excerpt, add an **unverifiable** item demanding those two lines in that exact format (plus ``iv_crush_multiplier=`` / ``daily_vol_raw=`` / ``daily_vol=`` when IV crush context applies).
 
@@ -1133,6 +1137,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     earnings_date: date | None = None,
     earnings_timing: str | None = None,
     computed_sigma_bands_table: dict[str, Any] | None = None,
+    t0_blend_preset: T0BlendPreset = "default",
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     _ = earnings_timing  # reserved; structural sigma checks use earnings calendar date only.
@@ -1249,7 +1254,10 @@ def augment_verifier_result_with_sigma_structural_checks(
         ),
     )
 
-    extras.extend(horizon_blend_ratio_followups(synthesis_text))
+    blend_followups = horizon_blend_ratio_followups(
+        synthesis_text,
+        t0_blend_preset=t0_blend_preset,
+    )
 
     syn_parsed = parse_sigma_summary_json(synthesis_text)
     if syn_parsed is not None:
@@ -1264,7 +1272,7 @@ def augment_verifier_result_with_sigma_structural_checks(
             extras.append(f"Note: {drift_note}")
 
     extras.extend(followups_from_unsourced_options_chain_numeric_claims(synthesis_text))
-    merged = extras + [u for u in prior if u not in extras]
+    merged = blend_followups + extras + [u for u in prior if u not in blend_followups and u not in extras]
     deduped: list[str] = []
     seen: set[str] = set()
     for u in merged:
@@ -1759,7 +1767,7 @@ class RefinementState(TypedDict, total=False):
     earnings_date: NotRequired[str]
     earnings_timing: NotRequired[str | None]
     computed_sigma_bands_table: NotRequired[dict[str, Any] | None]
-
+    t0_blend_preset: NotRequired[str]
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
     """Decide next graph node after verification (stop / verify-only / provider fan-out)."""
@@ -2051,6 +2059,9 @@ def _refinement_mode_block(*, iteration: int, max_iterations: int) -> str:
         "- DO focus your reasoning on the verifier's specific concerns, on the **follow-up verification targets** "
         "below, and on revising or strengthening the sections called out under **Sections to revise**. Adjust "
         "probabilities, ranges, qualitative emphasis, and conclusions accordingly.\n"
+        "- MUST NOT alter **horizon blend** digit pairs, fenced blend-table rows, or **qual-then-quant** lens "
+        "wording when editing for clarity — copy them verbatim from the prior synthesis or the equity prompt "
+        "fence; never digit-invert, never swap lens labels, never substitute **quant-then-qual** phrasing.\n"
         "- DO NOT re-write sections that did not get verifier flags or new disagreements. You may briefly confirm them.\n"
     )
 
@@ -2594,6 +2605,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         refinement_markdown=refinement,
                         per_provider_sigma_checks_markdown=sigma_checks_md,
                         computed_sigma_bands_markdown=csb_md or None,
+                        t0_blend_preset=normalize_t0_blend_preset(state.get("t0_blend_preset", "default")),
                     ),
                     timeout=timeout_syn,
                 )
@@ -2828,6 +2840,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 if isinstance(state.get("computed_sigma_bands_table"), dict)
                 else None
             ),
+            t0_blend_preset=normalize_t0_blend_preset(state.get("t0_blend_preset", "default")),
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"
@@ -3062,6 +3075,7 @@ def build_initial_refinement_state(
             if isinstance(rendered.context.get("computed_sigma_bands_table"), dict)
             else None
         ),
+        "t0_blend_preset": cfg.t0_blend_preset,
     }
 
 

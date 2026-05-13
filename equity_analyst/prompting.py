@@ -24,6 +24,7 @@ from equity_analyst.sigma_compute import (
     resolve_daily_vol_pct_for_sigma,
     try_build_computed_sigma_bundle,
 )
+from equity_analyst.synthesizer_blend import format_t0_blend_qual_quant_literal
 
 log = logging.getLogger(__name__)
 
@@ -236,6 +237,7 @@ def render_prompt(cfg: RunConfig, prompt_path: Path, *, prior_synthesis_text: st
             earnings_timing=cfg.earnings_timing,
         )
     context["computed_probabilities_markdown"] = prob_md
+    context["t0_blend_literal"] = format_t0_blend_qual_quant_literal(cfg.t0_blend_preset)
 
     user_message_text = template.render(**context)
     text = f"{EQUITY_ANALYST_SYSTEM_PROMPT}\n\n{user_message_text}"
