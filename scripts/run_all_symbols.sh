@@ -480,7 +480,7 @@ EOF
 # Build the equity_analyst argv suffix (everything after the config path).
 build_args() {
   # echoes a single shell-quote-safe argument string (we control all values).
-  local _args="--log-level $LOG_LEVEL"
+  local _args="--log-level $LOG_LEVEL --profile production"
   if [ "$ITERATIVE" -eq 1 ]; then
     _args="$_args --iterative --max-iterations $MAX_ITERATIONS"
   fi

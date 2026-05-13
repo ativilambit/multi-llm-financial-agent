@@ -15,7 +15,7 @@ from typing import Any, Literal, cast
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from equity_analyst.config import RunConfig, load_config
+from equity_analyst.config import RunConfig, load_config, run_profile_from_persisted_run_json
 from equity_analyst.db_ops import best_effort_upsert_run_and_responses
 from equity_analyst.drive_uploader import log_drive_upload_plan_from_config
 from equity_analyst.iterative import (
@@ -124,6 +124,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-db",
         action="store_true",
         help="Disable best-effort Postgres writes for this run (file artifacts are still written).",
+    )
+    run.add_argument(
+        "--profile",
+        dest="run_profile",
+        choices=["production", "dev"],
+        default=None,
+        help="Run profile: only production persists runs/responses/outcomes/predictions to Postgres. "
+        "Default from RunConfig / EQUITY_RUN_PROFILE / RUN_PROFILE (default dev).",
     )
     run.add_argument("--max-iterations", type=int, default=3)
     run.add_argument("--confidence-threshold", type=float, default=0.85)
@@ -529,6 +537,8 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
     patch: dict[str, Any] = {}
     if getattr(args, "no_db", False):
         patch["db_enabled"] = False
+    if getattr(args, "run_profile", None) is not None:
+        patch["run_profile"] = args.run_profile
     if args.retry_max_attempts is not None:
         patch["retry_max_attempts"] = args.retry_max_attempts
     if args.retry_base_delay_s is not None:
@@ -635,6 +645,7 @@ async def _run_iterative_cli(
         "thread_id": thread_id,
         "template_path": rendered.template_path,
         "config": cfg.model_dump(),
+        "run_profile": cfg.run_profile,
         "started_at_utc": started_at_utc,
         "max_iterations": args.max_iterations,
         "confidence_threshold": args.confidence_threshold,
@@ -845,7 +856,8 @@ def _run_predictions_extract_batch_cli(args: argparse.Namespace) -> int:
             cfg_raw = data.get("config")
             if not isinstance(cfg_raw, dict):
                 raise ValueError("run.json missing config snapshot")
-            cfg = RunConfig.model_validate(cfg_raw)
+            effective_rp = run_profile_from_persisted_run_json(data)
+            cfg = RunConfig.model_validate(cfg_raw).model_copy(update={"run_profile": effective_rp})
             rows = asyncio.run(run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg))
         except Exception as exc:
             failed += 1
@@ -896,6 +908,7 @@ def main(argv: list[str] | None = None) -> int:
                     if run_json.is_file():
                         data = json.loads(run_json.read_text(encoding="utf-8"))
                         data["finished_at_utc"] = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+                        data["run_profile"] = cfg.run_profile
                         run_json.write_text(
                             json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                         )

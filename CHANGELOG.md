@@ -8,6 +8,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### 2026-05-13
 
+- **DB** Gate Postgres writes on **`RunConfig.run_profile`** (**`production`** vs **`dev`**, default **`dev`**): `runs`, `provider_responses`, `outcomes`, and `predictions` are persisted only for production runs. Env **`EQUITY_RUN_PROFILE`** / **`RUN_PROFILE`**, CLI **`run --profile`**, and top-level **`run.json`** `run_profile` (written on finalize) drive behavior; legacy **`run.json`** without an explicit profile is treated as production for outcome/prediction compatibility. **`scripts/run_all_symbols.sh`** passes **`--profile production`**. (`feat(db): gate Postgres on run_profile — default dev`)
+
 - **Configs** Added VIK, KLAR, FRMI, BTDR, ONDS, YETI for Thu May 14 earnings.
 
 ### 2026-05-12

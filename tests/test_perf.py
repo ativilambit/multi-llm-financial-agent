@@ -14,6 +14,11 @@ from equity_analyst.providers.base import LLMProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
+_ORCH_CFG_NET_OFF: dict[str, Any] = {
+    "options_chain_auto_fetch": False,
+    "run_profile": "production",
+}
+
 
 class _Slow(LLMProvider):
     def __init__(self, *, name: str, delay_s: float, text: str) -> None:
@@ -55,6 +60,7 @@ async def test_orchestrator_timeout_does_not_block_other_providers(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -113,6 +119,7 @@ async def test_orchestrator_one_provider_failure_others_continue(tmp_path: Path,
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -201,6 +208,7 @@ async def test_run_json_timing_present_after_live_run(tmp_path: Path, monkeypatc
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,

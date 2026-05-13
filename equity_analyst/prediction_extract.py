@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from equity_analyst.config import RunConfig
+from equity_analyst.config import RunConfig, run_profile_from_persisted_run_json
 from equity_analyst.db_ops import best_effort_replace_predictions as db_replace_predictions
 from equity_analyst.outcome_tracker import _pick_synthesis_path
 from equity_analyst.prompt_export import logical_prompt_split, prompt_call_context
@@ -389,11 +389,21 @@ async def run_prediction_extract_for_run_dir(
             }
             for r in rows
         ]
+        run_json_path = run_dir / "run.json"
+        db_profile = cfg.run_profile
+        if run_json_path.is_file():
+            try:
+                db_profile = run_profile_from_persisted_run_json(
+                    json.loads(run_json_path.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                db_profile = cfg.run_profile
         ok = await db_replace_predictions(
             cfg_db_enabled=cfg.db_enabled,
             run_id=run_id,
             rows=dict_rows,
             database_url=cfg.database_url,
+            run_profile=db_profile,
         )
         if not ok and rows:
             _write_predictions_fallback_json(

@@ -66,6 +66,7 @@ async def test_best_effort_insert_logs_warning(
             "earnings_date": "Mon May 11 2026",
             "next_trading_day": "Tue May 12 2026",
             "followup_open_date": "Tue May 12 2026",
+            "run_profile": "production",
         }
     )
 

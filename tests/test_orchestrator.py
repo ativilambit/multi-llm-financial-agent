@@ -18,6 +18,11 @@ from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
+_ORCH_CFG_NET_OFF: dict[str, Any] = {
+    "options_chain_auto_fetch": False,
+    "run_profile": "production",
+}
+
 
 def _write_minimal_sa_key_json(path: Path) -> None:
     from test_drive_uploader import _minimal_valid_rsa_pem
@@ -69,6 +74,7 @@ async def test_orchestrator_parallel_and_writes_outputs(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -201,6 +207,7 @@ async def test_synthesizer_failure_does_not_crash_run(tmp_path: Path, monkeypatc
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -250,6 +257,7 @@ async def test_error_responses_excluded_from_synthesis(tmp_path: Path, monkeypat
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -345,6 +353,7 @@ async def test_all_providers_failed_skips_synthesizer(tmp_path: Path, monkeypatc
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -390,6 +399,7 @@ async def test_retry_on_rate_limit_then_success(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -449,6 +459,7 @@ async def test_yaml_model_override_passed_to_provider_registry(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -516,6 +527,7 @@ async def test_synthesizer_gets_separate_max_output_tokens_from_fan_out(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -567,6 +579,7 @@ async def test_synthesizer_max_output_tokens_cli_override_applied(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -617,6 +630,7 @@ async def test_fan_out_per_provider_max_output_tokens_override(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -706,6 +720,7 @@ async def test_fan_out_gemini_receives_cacheable_prefix_when_caching_enabled(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -767,6 +782,7 @@ async def test_fan_out_gemini_skips_cacheable_prefix_when_caching_disabled(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -827,6 +843,7 @@ async def test_per_provider_request_timeout_override_honored(
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -878,6 +895,7 @@ async def test_drive_upload_invoked_and_run_json_has_url(tmp_path: Path, monkeyp
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -952,6 +970,7 @@ async def test_drive_upload_disabled_skips_hook(tmp_path: Path, monkeypatch: Any
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -1006,6 +1025,7 @@ async def test_drive_upload_failure_still_completes_run(tmp_path: Path, monkeypa
 
     cfg = RunConfig.model_validate(
         {
+            **_ORCH_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,

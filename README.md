@@ -50,8 +50,10 @@ The Postgres DB layer is **additive**: it stores structured metadata for queryin
 - `outputs/<run-id>/prompts/` — per-LLM-call exports of the rendered system/user text, model caps, tool flags, and (for analyst fan-out) a JSON sidecar of the Jinja render context; see `prompts_index.md` inside that folder. Disable with **`EXPORT_PROMPTS=0`** if you want smaller run directories.
 - `outputs/<run-id>/synthesis.md` (and optional PDFs)
 - `outputs/<run-id>/outcome.json`
-- `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down or `db_enabled` is false; see prediction extraction below)
+- `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down, `db_enabled` is false, **`run_profile`** is not production, or the insert fails; see prediction extraction below)
 - `outputs/outcomes_registry.jsonl`
+
+**Postgres persistence profile:** only runs with **`run_profile: production`** are written to Postgres (`runs`, `provider_responses`, `outcomes`, `predictions`). Local experiments default to **`dev`** (no Postgres writes; files and logs behave the same). Use **`python -m equity_analyst run ... --profile production`**, set **`EQUITY_RUN_PROFILE=production`** (or **`RUN_PROFILE`** if the former is unset), or put **`run_profile: production`** in YAML. Real multi-symbol batches via **`scripts/run_all_symbols.sh`** pass **`--profile production`**. Outcome and prediction tooling reads **`run.json`**: top-level **`run_profile`**, else **`config.run_profile`**; older trees without either field are treated as **production** so existing cron/outcome flows keep working.
 
 ### Connection
 
@@ -643,7 +645,7 @@ Batch mode mirrors **`outcome-record-batch`**: Shape A parses `output_dir=` line
 
 **Postgres writes:** existing `predictions` rows for the run are **deleted** then re-inserted (idempotent reruns). Each row uses `source = 'llm_extracted'`.
 
-**Fallback file:** if Postgres is unavailable, `DATABASE_URL` is unset/invalid, **`db_enabled`** is false in the run’s config snapshot, or the insert fails, the tool logs a **WARNING** and writes **`predictions_extract.json`** next to `run.json` when at least one structured row was parsed.
+**Fallback file:** if Postgres is unavailable, `DATABASE_URL` is unset/invalid, **`db_enabled`** is false in the run’s config snapshot, **`run_profile`** is not **production**, or the insert fails, the tool logs a **WARNING** and writes **`predictions_extract.json`** next to `run.json` when at least one structured row was parsed.
 
 **Auto-run after each completion (default off):** set **`prediction_extract_enabled: true`** in YAML (it is recorded in `run.json`), or pass **`--extract-predictions`** on `python -m equity_analyst run` (Boolean optional: `--no-extract-predictions` forces off for that invocation). When enabled, standard runs invoke extraction after synthesis; iterative runs invoke it at the end of **`finalize`** (after `synthesis.md` and `run.json` are written).
 

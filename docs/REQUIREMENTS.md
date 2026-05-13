@@ -234,7 +234,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 
 ## 6. Configuration knobs
 
-**Precedence (typical):** CLI flags → explicit YAML → environment (only for fields where `RunConfig` model validators wire env, and **only if** the YAML key was not explicitly set).
+**Precedence (typical):** CLI flags → explicit YAML → environment (only for fields where `RunConfig` model validators wire env, and **only if** the YAML key was not explicitly set). The **`run`** subcommand’s **`--profile`** flag overrides **`run_profile`** for that invocation (same idea as **`--no-db`** for **`db_enabled`**).
 
 ### RunConfig / env (representative table)
 
@@ -260,6 +260,8 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `retry_max_attempts_fan_out` | `RETRY_MAX_ATTEMPTS_FAN_OUT` | **5** | Per-provider API retries in iterative **`fan_out`** only (see Anthropic matrix in §5). |
 | `per_provider_sigma_variance_check` | — | **true** | When false, skip per-provider σ variance math in **`fan_out`** (escape hatch; logs once). |
 | `sigma_variance_check_quorum_for_error` | `SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR` | **2** | Minimum providers per round failing the applicable σ check (variance `passed=False` or `missing_literals`) before router emits fan-out follow-ups for that signal; **1** restores single-provider escalation. |
+| `run_profile` | `EQUITY_RUN_PROFILE` / `RUN_PROFILE` | **dev** | **`production`** enables Postgres persistence for runs/responses/outcomes/predictions; **`dev`** keeps artifacts only. CLI **`run --profile`** overrides for one invocation. |
+| `db_enabled` | `DB_ENABLED` | **true** | When false, skips Postgres regardless of **`run_profile`**. |
 
 **Iterative iteration count:** CLI **`--max-iterations`** (default **3**), not a `RunConfig` field.
 
@@ -273,6 +275,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `XAI_API_KEY` | Grok fan-out. |
 | `GEMINI_MIN_THINKING_BUDGET` | Floor when Gemini 3 rejects `thinking_budget=0` (default 1024). |
 | `DATABASE_URL` | Postgres for runs/outcomes/predictions. |
+| `EQUITY_RUN_PROFILE` / `RUN_PROFILE` | Default **`dev`** in `RunConfig`; set **`production`** for real batches so Postgres receives structured rows. |
 | `FACTS_PACKET_ENABLED` / `REFINEMENT_MODE_PROMPT_ENABLED` | Mirror boolean toggles when not set in YAML (see `config.py` validators). |
 | `SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR` | σ variance / literals router quorum (1–10; YAML wins when `sigma_variance_check_quorum_for_error` is set in config). |
 
@@ -282,7 +285,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 
 ```bash
 source .venv/bin/activate
-python -m equity_analyst run --config configs/<sym>_<date>.yaml --iterative --max-iterations 3
+python -m equity_analyst run --config configs/<sym>_<date>.yaml --iterative --max-iterations 3 --profile production
 ```
 
 Use **`--log-level DEBUG`** for provider request shapes; **`--dry-run`** renders prompt without API calls (iterative dry-run does not create `outputs/` — see `README.md`).
@@ -315,7 +318,7 @@ Changing **`prompts/*.j2`**, verifier strings, or routing does **not** retroacti
 | --- | --- |
 | **yfinance** | OHLCV for outcomes (`outcome_tracker.py`); same-day intraday high/low; options chain snapshot (`options_chain.py`). |
 | **LLM web_search** | Quotes, IR, calendars, transcripts, news, narrative qual work. |
-| **Postgres** | Structured query over runs, provider responses, outcomes, predictions. |
+| **Postgres** | Structured query over runs, provider responses, outcomes, predictions (**`run_profile: production`** only for writes; see §6). |
 | **Google Drive** | Human-shared run folders (OAuth or service account). |
 
 ---

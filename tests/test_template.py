@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from equity_analyst.config import RunConfig
 from equity_analyst.prompting import render_prompt
+
+_TEMPLATE_CFG_NET_OFF: dict[str, Any] = {
+    "options_chain_auto_fetch": False,
+    "run_profile": "production",
+}
 
 
 def _repo_root() -> Path:
@@ -16,6 +22,7 @@ def _repo_root() -> Path:
 def test_template_renders_mndy_config_no_placeholders() -> None:
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "MNDY",
             "company_name": None,
             "today_low": 68,
@@ -91,6 +98,7 @@ def test_template_renders_mndy_config_no_placeholders() -> None:
 def test_template_uses_config_earnings_timing_when_provided() -> None:
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "ZZZ",
             "today_date": "d",
             "today_session": "s",
@@ -117,12 +125,13 @@ def test_template_uses_config_earnings_timing_when_provided() -> None:
 def test_template_renders_when_reference_prices_omitted() -> None:
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "ABCD",
             "today_date": "Tue Jan 1, 2026",
             "today_session": "regular hours",
-            "earnings_date": "Wed Jan 15 2026",
-            "target_dates": ["Wed Jan 15"],
-            "next_trading_day": "Thu Jan 16",
+            "earnings_date": "Thu Jan 15 2026",
+            "target_dates": ["Thu Jan 15"],
+            "next_trading_day": "Fri Jan 16",
             "followup_open_date": "Mon Jan 20",
             "historical_quarters": 4,
             "short_interest_lookbacks": ["last week"],
@@ -136,7 +145,7 @@ def test_template_renders_when_reference_prices_omitted() -> None:
     assert "User session labels (not prices):" in text
     assert "ABCD" in text
     assert "Date anchors" in text
-    assert "Earnings date: Wed Jan 15 2026" in text
+    assert "Earnings date: Thu Jan 15 2026" in text
     assert "next trading day" in text
     assert "end of that earnings week" in text
 
@@ -144,6 +153,7 @@ def test_template_renders_when_reference_prices_omitted() -> None:
 def test_template_same_day_intraday_available_injects_bounds() -> None:
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "TEST",
             "today_date": "Tue May 12, 2026",
             "today_session": "regular hours",
@@ -180,6 +190,7 @@ def test_render_prompt_auto_fetch_fills_intraday_when_enabled(
     )
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "X",
             "today_date": "d",
             "today_session": "s",
@@ -206,6 +217,7 @@ def test_render_prompt_auto_fetch_fills_intraday_when_enabled(
 def test_template_generalizes_to_other_symbol() -> None:
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "NVDA",
             "company_name": "NVIDIA",
             "reference_session_low": 100,
@@ -255,6 +267,7 @@ def test_template_options_chain_markdown_when_available(monkeypatch: pytest.Monk
     monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "ACME",
             "today_date": "d",
             "today_session": "s",
@@ -293,6 +306,7 @@ def test_template_options_chain_fallback_when_unavailable(monkeypatch: pytest.Mo
     monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "ZZZ",
             "today_date": "d",
             "today_session": "s",
@@ -304,6 +318,7 @@ def test_template_options_chain_fallback_when_unavailable(monkeypatch: pytest.Mo
             "short_interest_lookbacks": ["last week"],
             "providers": ["openai"],
             "synthesizer": "openai",
+            "options_chain_auto_fetch": True,
         }
     )
     text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
@@ -329,6 +344,7 @@ def test_template_options_chain_fallback_when_auto_fetch_disabled(monkeypatch: p
     monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "OFF",
             "today_date": "d",
             "today_session": "s",
@@ -365,6 +381,7 @@ def test_template_options_chain_fallback_includes_fetch_error(monkeypatch: pytes
     monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "BAD",
             "today_date": "d",
             "today_session": "s",
@@ -376,6 +393,7 @@ def test_template_options_chain_fallback_includes_fetch_error(monkeypatch: pytes
             "short_interest_lookbacks": ["last week"],
             "providers": ["openai"],
             "synthesizer": "openai",
+            "options_chain_auto_fetch": True,
         }
     )
     text = render_prompt(cfg, _repo_root() / "prompts" / "equity_analyst.j2").text
@@ -402,6 +420,7 @@ def test_render_prompt_warns_when_options_chain_auto_fetch_but_unavailable(
     monkeypatch.setattr("equity_analyst.prompting._resolve_options_chain", _fake_resolve)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "LOG",
             "today_date": "d",
             "today_session": "s",
@@ -413,6 +432,7 @@ def test_render_prompt_warns_when_options_chain_auto_fetch_but_unavailable(
             "short_interest_lookbacks": ["last week"],
             "providers": ["openai"],
             "synthesizer": "openai",
+            "options_chain_auto_fetch": True,
         }
     )
     with caplog.at_level(logging.WARNING, logger="equity_analyst.prompting"):
@@ -494,6 +514,7 @@ def test_template_includes_iv_crush_multiplier_and_adjusted_daily_vol_when_avail
     monkeypatch.setattr("equity_analyst.prompting.fetch_hv30_annualized_percent", lambda _sym: 84.9)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "NBIS",
             "today_date": "d",
             "today_session": "s",
@@ -565,6 +586,7 @@ def test_template_falls_back_when_multiplier_none(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("equity_analyst.prompting.fetch_hv30_annualized_percent", lambda _sym: 84.9)
     cfg = RunConfig.model_validate(
         {
+            **_TEMPLATE_CFG_NET_OFF,
             "symbol": "NBIS",
             "today_date": "d",
             "today_session": "s",

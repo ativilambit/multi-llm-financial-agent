@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from equity_analyst.cli import _apply_cli_config_overrides, _build_parser, _load_cfg
@@ -259,3 +260,35 @@ def test_cli_drive_auth_mode_override(tmp_path: Path) -> None:
     base = _load_cfg(args)
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.drive_auth_mode == "oauth_user"
+
+
+def test_cli_run_profile_flag_overrides_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+    monkeypatch.delenv("RUN_PROFILE", raising=False)
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "run_profile": "dev",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml), "--profile", "production"])
+    base = _load_cfg(args)
+    assert base.run_profile == "dev"
+    cfg = _apply_cli_config_overrides(base, args)
+    assert cfg.run_profile == "production"

@@ -97,6 +97,7 @@ def _parse_verifier_max_output_tokens_env(raw: str) -> int | None:
 
 DriveAuthMode = Literal["service_account", "oauth_user"]
 RunEnvironment = Literal["production", "test"]
+RunProfile = Literal["production", "dev"]
 
 _DEFAULT_OAUTH_CONFIG_DIR = Path.home() / ".config" / "multi-llm-equity-analyst"
 
@@ -481,6 +482,12 @@ class RunConfig(BaseModel):
         description="Path to store/load OAuth user refresh token JSON; default under ~/.config/multi-llm-equity-analyst/.",
     )
 
+    run_profile: RunProfile = Field(
+        default="dev",
+        description="Only ``production`` runs are persisted to Postgres (runs, provider_responses, outcomes, "
+        "predictions). ``dev`` keeps file artifacts only. Override with CLI ``--profile`` or env "
+        "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE``.",
+    )
     db_enabled: bool = Field(
         default=True,
         description="When True, write best-effort structured metadata to Postgres (additive; files remain source of truth).",
@@ -562,6 +569,18 @@ class RunConfig(BaseModel):
                 f"{', '.join(sorted(KNOWN_PROVIDER_NAMES))}"
             )
         return v
+
+    @field_validator("run_profile", mode="before")
+    @classmethod
+    def _normalize_run_profile(cls, v: Any) -> str:
+        if v is None:
+            return "dev"
+        if not isinstance(v, str):
+            raise ValueError("run_profile must be a string")
+        s = v.strip().lower()
+        if s not in ("production", "dev"):
+            raise ValueError("run_profile must be 'production' or 'dev'")
+        return s
 
     @field_validator("synthesizer", mode="before")
     @classmethod
@@ -727,6 +746,22 @@ class RunConfig(BaseModel):
             if raw is not None and str(raw).strip():
                 updates["database_url"] = str(raw).strip()
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _run_profile_env_fallback(self) -> Self:
+        """Env override for ``run_profile`` (same idea as ``DB_ENABLED`` on ``_db_env_fallback``)."""
+        raw = os.environ.get("EQUITY_RUN_PROFILE")
+        if raw is None or not str(raw).strip():
+            raw = os.environ.get("RUN_PROFILE")
+        if raw is None or not str(raw).strip():
+            return self
+        s = str(raw).strip().lower()
+        if s not in ("production", "dev"):
+            raise ValueError(
+                "EQUITY_RUN_PROFILE / RUN_PROFILE must be 'production' or 'dev' "
+                f"(got {raw!r}); unset the variable or fix the value."
+            )
+        return self.model_copy(update={"run_profile": cast(RunProfile, s)})
 
     @model_validator(mode="after")
     def _delete_checkpoint_env_fallback(self) -> Self:
@@ -953,6 +988,24 @@ class RunConfig(BaseModel):
         if self.synthesizer.request_timeout_s is not None:
             return float(self.synthesizer.request_timeout_s)
         return float(self.request_timeout_s)
+
+
+def run_profile_from_persisted_run_json(data: dict[str, Any]) -> RunProfile:
+    """Resolve Postgres persistence profile from on-disk ``run.json``.
+
+    Precedence: top-level ``run_profile``, then ``config["run_profile"]``.
+    Legacy snapshots with no explicit profile are treated as ``production`` so
+    historical batch runs keep Postgres outcome/prediction compatibility.
+    """
+    top = data.get("run_profile")
+    if isinstance(top, str) and top.strip().lower() in ("production", "dev"):
+        return cast(RunProfile, top.strip().lower())
+    cfg = data.get("config")
+    if isinstance(cfg, dict):
+        v = cfg.get("run_profile")
+        if isinstance(v, str) and v.strip().lower() in ("production", "dev"):
+            return cast(RunProfile, v.strip().lower())
+    return "production"
 
 
 def _load_yaml_from_stream(stream: TextIO) -> dict[str, Any]:

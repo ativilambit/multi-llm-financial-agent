@@ -14,6 +14,8 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from equity_analyst.config import RunProfile, run_profile_from_persisted_run_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -327,17 +329,31 @@ def record_outcome_for_run_dir(
     auto_fetch_partial = bool(auto_fetch and not coverage)
 
     if persist and db_upsert:
-        from equity_analyst.db_ops import best_effort_upsert_outcome
-
-        with contextlib.suppress(Exception):
-            asyncio.run(
-                best_effort_upsert_outcome(
-                    cfg_db_enabled=True,
-                    run_id=resolved_dir.name,
-                    outcome=outcome.model_dump(),
-                    database_url=None,
+        persisted_profile: RunProfile = "production"
+        try:
+            rj = resolved_dir / "run.json"
+            if rj.is_file():
+                persisted_profile = run_profile_from_persisted_run_json(
+                    json.loads(rj.read_text(encoding="utf-8"))
                 )
-            )
+        except Exception:
+            persisted_profile = "production"
+
+        if persisted_profile != "production":
+            logger.info("DB write skipped: run_profile=%s (not production)", persisted_profile)
+        else:
+            from equity_analyst.db_ops import best_effort_upsert_outcome
+
+            with contextlib.suppress(Exception):
+                asyncio.run(
+                    best_effort_upsert_outcome(
+                        cfg_db_enabled=True,
+                        run_id=resolved_dir.name,
+                        outcome=outcome.model_dump(),
+                        database_url=None,
+                        run_profile=persisted_profile,
+                    )
+                )
 
     return RecordOutcomeForRunDirResult(
         outcome=outcome,

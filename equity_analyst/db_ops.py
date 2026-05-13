@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import delete, insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from equity_analyst.config import RunConfig
+from equity_analyst.config import RunConfig, RunProfile
 from equity_analyst.db import get_async_session, is_db_available
 from equity_analyst.db_models import OutcomeRow, PredictionRow, ProviderResponseRow, RunRow
 from equity_analyst.provider_runtime import is_failed_provider_response
@@ -68,6 +68,12 @@ async def best_effort_upsert_run_and_responses(
     database_url: str | None = None,
 ) -> None:
     if not cfg.db_enabled:
+        return
+    if run_json_data.get("dry_run") is True:
+        logger.info("DB write skipped: dry_run=True")
+        return
+    if cfg.run_profile != "production":
+        logger.info("DB write skipped: run_profile=%s (not production)", cfg.run_profile)
         return
 
     if not await is_db_available(database_url=database_url):
@@ -160,8 +166,12 @@ async def best_effort_upsert_outcome(
     run_id: str,
     outcome: dict[str, Any],
     database_url: str | None = None,
+    run_profile: RunProfile = "production",
 ) -> None:
     if not cfg_db_enabled:
+        return
+    if run_profile != "production":
+        logger.info("DB write skipped: run_profile=%s (not production)", run_profile)
         return
     if not await is_db_available(database_url=database_url):
         logger.warning("DB unavailable; skipping outcome upsert run_id=%s", run_id)
@@ -201,12 +211,16 @@ async def best_effort_replace_predictions(
     run_id: str,
     rows: list[dict[str, Any]],
     database_url: str | None = None,
+    run_profile: RunProfile = "production",
 ) -> bool:
     """DELETE existing ``predictions`` for ``run_id`` then bulk INSERT ``rows``."""
     if not cfg_db_enabled:
         logger.warning(
             "prediction_extract: DB writes disabled; skipping Postgres run_id=%s", run_id
         )
+        return False
+    if run_profile != "production":
+        logger.info("DB write skipped: run_profile=%s (not production)", run_profile)
         return False
     if not await is_db_available(database_url=database_url):
         logger.warning("prediction_extract: DB unavailable run_id=%s", run_id)

@@ -210,10 +210,10 @@ async def test_replace_predictions_second_call_deletes_then_inserts_again(
         }
     ]
     assert await best_effort_replace_predictions(
-        cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows
+        cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows, run_profile="production"
     )
     assert await best_effort_replace_predictions(
-        cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows
+        cfg_db_enabled=True, run_id=rows[0]["run_id"], rows=rows, run_profile="production"
     )
     assert exec_kinds == ["delete", "insert", "delete", "insert"]
 
@@ -228,7 +228,12 @@ async def test_run_prediction_extract_invokes_replace_twice_idempotent(
     run_dir.mkdir(parents=True)
     cfg = _minimal_run_config()
     (run_dir / "run.json").write_text(
-        json.dumps({"config": cfg.model_dump()}, indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            {"run_profile": "production", "config": cfg.model_dump()},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
     (run_dir / "synthesis.md").write_text("# Hello\n", encoding="utf-8")

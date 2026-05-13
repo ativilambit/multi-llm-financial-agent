@@ -891,3 +891,47 @@ def test_target_dates_day_of_week_validation_catches_may_16_2026_saturday() -> N
     good = {**bad, "target_dates": ["Wed May 13", "Thu May 14", "Fri May 15"]}
     cfg = RunConfig.model_validate(good)
     assert "Fri May 15" in cfg.target_dates
+
+
+def test_run_profile_defaults_to_dev() -> None:
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.run_profile == "dev"
+
+
+def test_run_profile_env_equity_run_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_RUN_PROFILE", "production")
+    try:
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+        assert cfg.run_profile == "production"
+    finally:
+        monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+
+
+def test_run_profile_env_run_profile_when_equity_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+    monkeypatch.setenv("RUN_PROFILE", "production")
+    try:
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+        assert cfg.run_profile == "production"
+    finally:
+        monkeypatch.delenv("RUN_PROFILE", raising=False)
+
+
+def test_run_profile_equity_env_wins_over_run_profile_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_RUN_PROFILE", "dev")
+    monkeypatch.setenv("RUN_PROFILE", "production")
+    try:
+        cfg = RunConfig.model_validate(_minimal_run_config_dict())
+        assert cfg.run_profile == "dev"
+    finally:
+        monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
+        monkeypatch.delenv("RUN_PROFILE", raising=False)
+
+
+def test_run_profile_invalid_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITY_RUN_PROFILE", "staging")
+    try:
+        with pytest.raises(ValueError, match="EQUITY_RUN_PROFILE"):
+            RunConfig.model_validate(_minimal_run_config_dict())
+    finally:
+        monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
