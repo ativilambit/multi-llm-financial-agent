@@ -6,6 +6,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### 2026-05-12
+
+- **Configs** Added CSCO, DOCS, STUB, DOX, USAR for Wed May 13 AMC earnings.
+
 ### 2026-05-11
 
 - **Configs** Added NBIS, BABA, WIX, DT, VSH, BIRK for **Wed May 13, 2026** earnings (`configs/*_2026_05_13.yaml`; issuer IR / calendars indicate **BMO** on that date; `earnings_timing` omitted for web_search verification per project convention).
