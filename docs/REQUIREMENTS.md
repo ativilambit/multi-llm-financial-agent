@@ -161,8 +161,13 @@ Each rule: **why**, **one-line summary**, **enforcement pointer**.
 ### Horizon-aware qual:quant blend
 
 - **Why:** Pre-open uncertainty differs from post-print tape-heavy sessions; the model must declare how it balances narrative vs market data.
-- **Summary:** Horizon table: **55:45** (T−3 to T−1); **49:51** for **T+1 to T+5**; **T-0** rows use **`RunConfig.t0_blend_preset`** (`default` → 49:51, `quant_lean` → 40:60, `quant_dominant` → 1:99, `qual_dominant` → 99:1, always **qual : quant**). YAML `t0_blend_preset`, env **`EQUITY_T0_BLEND_PRESET`**, or CLI **`--t0-blend`** (CLI overrides). When quant is **mixed or weak**, tilt **+5 to +10pp** toward qualitative; on **directional disagreement**, default **qualitative** unless quant is **unambiguous and recent**.
-- **Pointer:** `prompts/equity_analyst.j2` (section 8 fenced table + `t0_blend_literal`); `prompts/synthesizer_system.md` (`__T0_BLEND_LITERAL__` substitution in `synthesizer.py`); `equity_analyst/synthesizer_blend.py` (`horizon_blend_ratio_followups` preset-aware T-0 markdown rows); sections 9, 11, 12 echo weighting rules.
+- **Summary:** Horizon table: **55:45** (T−3 to T−1); **49:51** for **T+1 to T+5**; **T-0** rows use **`RunConfig.t0_blend_preset`** (`default` → 49:51, `quant_lean` → 40:60, `quant_dominant` → 1:99, `qual_dominant` → 99:1, always **qual : quant**). YAML `t0_blend_preset`, env **`EQUITY_T0_BLEND_PRESET`**, or CLI **`--t0-blend`** (CLI overrides). The digits are **trust-weighting and narrative-emphasis guidance only**—they **do not** authorize ad hoc numeric shifts to **`prob_up_pct`**, σ half-widths, or scenario-weight numbers (those follow Φ / cited quant math). On **directional disagreement**, default **qualitative** unless quant is **unambiguous and recent**.
+- **Pointer:** `prompts/equity_analyst.j2` (section 8 fenced table + `t0_blend_literal`); `prompts/synthesizer_system.md` (`__T0_BLEND_LITERAL__` substitution in `synthesizer.py`); `equity_analyst/synthesizer_blend.py` (`horizon_blend_ratio_followups` preset-aware T-0 markdown rows; `qualitative_numeric_tilt_followups` bans `+5/+10`-style qualitative numeric edits in synthesis); sections 9, 11, 12 echo weighting rules.
+
+### Qualitative overlay scope
+
+- **Rule:** Qualitative research and the horizon blend shape **which scenarios to foreground**, **how to narrate disagreements** between story and tape, and **tie-breaks on directional bias** when quant is ambiguous. They **must not** move numbers: **`prob_up_pct`** is **only** from the bounded-drift **`Φ((daily_drift_pct × N) / one_sigma_half_width_pct)`** pipeline; **σ band widths** and **option-implied dollars** stay **pure-quant** (cited chain / vol / realized-move inputs).
+- **Pointer:** `prompts/equity_analyst.j2` and `prompts/synthesizer_system.md` (**MUST — qualitative overlay does not move numbers**); `equity_analyst/synthesizer_blend.py` (`qualitative_numeric_tilt_followups`); verifier brief in `equity_analyst/iterative.py` (`VERIFIER_INSTRUCTION_PREFIX`).
 
 ### Verified options chain
 

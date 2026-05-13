@@ -266,6 +266,78 @@ def horizon_blend_ratio_followups(
     return deduped
 
 
+_GS_TILT = chr(0x03C3)
+_PHI = chr(0x03A6)
+_ENDASH = "\u2013"
+
+# Human-readable list of phrases/patterns the synthesis validator rejects (see docs / tests).
+QUALITATIVE_NUMERIC_TILT_FORBIDDEN_LITERALS_DOC: tuple[str, ...] = (
+    "+5 point",
+    "+5 pp",
+    "+5 percentage point",
+    f"+5{_ENDASH}<digit> (Unicode en dash U+2013, e.g. +5{_ENDASH}10)",
+    "+5 to +10",
+    "plus 5 (case-insensitive word boundary)",
+    "+10 point",
+    "+10 pp",
+    "+10 percentage point",
+    "mixed-quant tilt",
+    "qualitative tilt",
+    "point qualitative tilt",
+    f"tilt within {_GS_TILT} bands",
+    "tilt to scenario probabilities",
+    "tilt to scenario weights",
+)
+
+_QUALITATIVE_NUMERIC_TILT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\+5\s*point", re.IGNORECASE), "+5 point"),
+    (re.compile(r"\+5\s*pp\b", re.IGNORECASE), "+5 pp"),
+    (re.compile(r"\+5\s*percentage\s*point", re.IGNORECASE), "+5 percentage point"),
+    (re.compile(r"\+5\u2013\d"), "+5-en-dash+digit"),
+    (re.compile(r"\+5\s*to\s*\+10", re.IGNORECASE), "+5 to +10"),
+    (re.compile(r"(?i)\bplus\s+5\b"), "plus 5"),
+    (re.compile(r"\+10\s*point", re.IGNORECASE), "+10 point"),
+    (re.compile(r"\+10\s*pp\b", re.IGNORECASE), "+10 pp"),
+    (re.compile(r"\+10\s*percentage\s*point", re.IGNORECASE), "+10 percentage point"),
+    (re.compile(r"mixed-quant\s+tilt", re.IGNORECASE), "mixed-quant tilt"),
+    (re.compile(r"qualitative\s+tilt", re.IGNORECASE), "qualitative tilt"),
+    (re.compile(r"point\s+qualitative\s+tilt", re.IGNORECASE), "point qualitative tilt"),
+    (
+        re.compile(rf"tilt\s+within\s+({_GS_TILT}|sigma)\s+bands", re.IGNORECASE),
+        f"tilt within {_GS_TILT} bands",
+    ),
+    (re.compile(r"tilt\s+to\s+scenario\s+probabilities", re.IGNORECASE), "tilt to scenario probabilities"),
+    (re.compile(r"tilt\s+to\s+scenario\s+weights", re.IGNORECASE), "tilt to scenario weights"),
+)
+
+
+def qualitative_numeric_tilt_pattern_hits(text: str) -> list[str]:
+    """Return labels for each forbidden qualitative-numeric-tilt pattern found in ``text``."""
+    if not text:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for rx, label in _QUALITATIVE_NUMERIC_TILT_PATTERNS:
+        if rx.search(text) and label not in seen:
+            seen.add(label)
+            found.append(label)
+    return found
+
+
+def qualitative_numeric_tilt_followups(synthesis_text: str) -> list[str]:
+    """Flag synthesis prose that reintroduces undefined +5/+10 qualitative numeric shifts."""
+    hits = qualitative_numeric_tilt_pattern_hits(synthesis_text)
+    if not hits:
+        return []
+    joined = "; ".join(hits)
+    return [
+        "Synthesis qualitative overlay: remove forbidden numeric qualitative-adjustment phrasing "
+        f"({joined}). Use the canonical horizon blend ratio for narrative trust weighting only; "
+        f"do not hand-shift probabilities, {_GS_TILT} band widths, or scenario-weight numerics—`prob_up_pct` "
+        f"follows {_PHI} from bounded drift/{_GS_TILT} only. Rewrite or delete the offending sentence.",
+    ]
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 

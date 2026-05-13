@@ -77,6 +77,7 @@ from equity_analyst.synthesizer_blend import (
     T0BlendPreset,
     horizon_blend_ratio_followups,
     normalize_t0_blend_preset,
+    qualitative_numeric_tilt_followups,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -133,6 +134,8 @@ that are not represented in the excerpt.
 If the excerpt includes **section 8** bottom-up qualitative material, add an **unverifiable** item when the first 800 characters of that section-8 passage contain **no** `http://` or `https://` URL and **no** line starting with `Source:` (heuristic for missing citations—tune to reduce false positives).
 
 When the excerpt states **horizon blend** defaults, the equity/synthesizer prompts fix literals as **qual : quant** (qualitative first). For **T-0 / T+1..T+5** rows the digits must match the fenced table (**49 : 51**). For **T-3..T-1** use the fenced table (**55 : 45**). Flag **unverifiable** if the excerpt uses digit-inverted colon pairs, emits **both** canonical and inverted pairs, swaps **Quant**/**Qual** lens names against **qual**/**quant** ordering, uses a **quant-then-qual** colon label for the blend column, uses **qualitative-colon-quantitative** as a pseudo-blend header, or uses **%-wording** that contradicts the fenced digit pairs. (Deterministic post-pass also enforces this—still flag if you see it in your excerpt.)
+
+Synthesis MUST NOT introduce numeric qualitative tilts. Flag any '+5', '+10', or 'tilt' applied to quantitative values (probabilities, sigma bands, scenario weights).
 
 When the excerpt concerns **post-earnings sigma bands** (variance-additive horizons), require **machine-parseable** inputs before any band table: the literal tokens ``event_jump=`` and ``daily_vol=`` (exact spelling, ASCII ``=``) with **two decimals** and ``%/day`` on ``daily_vol``, inside a fenced code block—same mandatory shape as the equity prompt (no LaTeX ``\\_`` escapes, no Markdown italics, no Unicode multipliers). If either token is missing from the excerpt, add an **unverifiable** item demanding those two lines in that exact format (plus ``iv_crush_multiplier=`` / ``daily_vol_raw=`` / ``daily_vol=`` when IV crush context applies).
 
@@ -1265,6 +1268,7 @@ def augment_verifier_result_with_sigma_structural_checks(
         synthesis_text,
         t0_blend_preset=t0_blend_preset,
     )
+    tilt_followups = qualitative_numeric_tilt_followups(synthesis_text)
 
     syn_parsed = parse_sigma_summary_json(synthesis_text)
     if syn_parsed is not None:
@@ -1279,7 +1283,12 @@ def augment_verifier_result_with_sigma_structural_checks(
             extras.append(f"Note: {drift_note}")
 
     extras.extend(followups_from_unsourced_options_chain_numeric_claims(synthesis_text))
-    merged = blend_followups + extras + [u for u in prior if u not in blend_followups and u not in extras]
+    merged = (
+        blend_followups
+        + tilt_followups
+        + extras
+        + [u for u in prior if u not in blend_followups and u not in tilt_followups and u not in extras]
+    )
     deduped: list[str] = []
     seen: set[str] = set()
     for u in merged:

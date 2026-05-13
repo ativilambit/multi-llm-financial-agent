@@ -5,7 +5,10 @@ from pathlib import Path
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.provider_summarize import summarize_system_prompt
 from equity_analyst.synthesizer import SYNTHESIS_SYSTEM_PROMPT
-from equity_analyst.synthesizer_blend import assert_prompt_stack_excludes_horizon_blend_inversions
+from equity_analyst.synthesizer_blend import (
+    assert_prompt_stack_excludes_horizon_blend_inversions,
+    qualitative_numeric_tilt_pattern_hits,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = REPO_ROOT / "prompts"
@@ -54,31 +57,31 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     t0_pre_j2 = (
         "| T-0 pre-open (event day, no intraday yet) | {{ t0_blend_literal }} | "
         "Mixed: options skew and pre-print positioning already price much of the setup; "
-        "the default blend tilts slightly quantitative for directional trust while qualitative narrative still matters "
+        "the default blend leans slightly quantitative for **trust weighting** while qualitative narrative still matters "
         "and the Pure-quant rule governs $/σ. |"
     )
     t0_pre_synth = (
         "| T-0 pre-open (event day, no intraday yet) | __T0_BLEND_LITERAL__ | "
         "Mixed: options skew and pre-print positioning already price much of the setup; "
-        "the default blend tilts slightly quantitative for directional trust while qualitative narrative still matters "
+        "the default blend leans slightly quantitative for **trust weighting** while qualitative narrative still matters "
         "and the Pure-quant rule governs $/σ. |"
     )
     t0_intra_j2 = (
         "| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | {{ t0_blend_literal }} | "
-        "After the tape and chain update, realized range and flow carry slightly more weight for directional tilt; "
-        "qualitative drivers still shape narrative and scenarios; "
+        "After the tape and chain update, realized range and flow carry slightly more weight for **quantitative trust** "
+        "in the narrative; qualitative drivers still shape story and scenarios; "
         "quantitative levels anchor exact $/σ math via the Pure-quant rule. |"
     )
     t0_intra_synth = (
         "| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | __T0_BLEND_LITERAL__ | "
-        "After the tape and chain update, realized range and flow carry slightly more weight for directional tilt; "
-        "qualitative drivers still shape narrative and scenarios; "
+        "After the tape and chain update, realized range and flow carry slightly more weight for **quantitative trust** "
+        "in the narrative; qualitative drivers still shape story and scenarios; "
         "quantitative levels anchor exact $/σ math via the Pure-quant rule. |"
     )
     t1_t5 = (
         "| T+1 to T+5 (after the event, with intraday history) | 49 : 51 | "
-        "Realized post-event path and refreshed options data carry slightly more weight for directional tilt; "
-        "qualitative narrative still informs scenario emphasis; "
+        "Realized post-event path and refreshed options data carry slightly more weight for **quantitative trust** "
+        "in the narrative; qualitative drivers still inform scenario emphasis; "
         "exact $/σ bands remain quant-only. |"
     )
     assert t0_pre_j2 in j2 and t0_pre_synth in synth
@@ -94,6 +97,14 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
 
 def test_prompt_stack_has_no_horizon_blend_inversions() -> None:
     assert_prompt_stack_excludes_horizon_blend_inversions()
+
+
+def test_prompt_md_j2_exclude_qualitative_numeric_tilt_patterns() -> None:
+    """Regression: prompts must not reintroduce forbidden +5/+10 qualitative-tilt phrasing."""
+    for path in sorted(PROMPTS.glob("*.md")) + sorted(PROMPTS.glob("*.j2")):
+        raw = path.read_text(encoding="utf-8")
+        hits = qualitative_numeric_tilt_pattern_hits(raw)
+        assert not hits, f"{path.relative_to(REPO_ROOT)} matched {hits!r}"
 
 
 def test_section8_qualitative_evidence_subsections_and_limits() -> None:
@@ -116,11 +127,13 @@ def test_synthesizer_preserves_section8_qualitative_bullets() -> None:
 
 
 def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
-    """Option pricing and sigma band widths are mandatory pure-quant; blend is for tilt/weights."""
+    """Option pricing and sigma band widths are mandatory pure-quant; blend is narrative trust weighting only."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     assert "Pure-quant rule" in j2
     assert "Pure-quant rule" in synth
+    assert "qualitative overlay does not move numbers" in j2.lower()
+    assert "qualitative overlay does not move numbers" in synth.lower()
     assert "option pricing" in j2
     assert "option pricing" in synth
     sigma = "\N{GREEK SMALL LETTER SIGMA}"
