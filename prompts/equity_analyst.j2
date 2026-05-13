@@ -39,6 +39,10 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 
 {% endif %}
 
+{% if event_jump_chain_warning_markdown %}
+{{ event_jump_chain_warning_markdown }}
+
+{% endif %}
 {% if iv_crush_multiplier is not none %}
 **Pre-computed IV crush + HV30 (for σ-band Rule 2):**
 - `iv_crush_multiplier` = {{ "%.4f"|format(iv_crush_multiplier) }} (post-event weekly ATM IV ÷ event-week ATM IV; values outside [0.4, 1.2] are suppressed server-side).
@@ -57,6 +61,7 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 {{ computed_sigma_bands_markdown }}
 
 Use these dollar bounds and percentages **exactly as shown**. Do not recalculate σ bands from your own arithmetic — the server already applied variance-additive math (`σ(T+N) = √(event_jump² + N·daily_vol²)`) with verified inputs (`event_jump` from front weekly straddle, `daily_vol` from HV30 × IV-crush multiplier when applicable, `daily_drift_pct` bounded). The verifier will compare your σ outputs against this table and flag any deviation > 1 percentage point on the % half-widths.
+**Percent vs decimal (mandatory):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
 {% else %}
 **σ band construction — sanity rules (mandatory):**
 
@@ -109,6 +114,8 @@ Use these dollar bounds and percentages **exactly as shown**. Do not recalculate
      ```
 
      Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings calendar and BMO/AMC anchor (same rule as bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** post–T+1 horizon row (so the check can compare `σ²(T+N)−σ²(T+1)` vs `(N−1)·daily_vol²`). Use **strict JSON** (double quotes; no trailing commas).
+
+   - **Percent vs decimal (mandatory):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
 
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by `√(target_DTE / chosen_expiry_DTE)` from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 

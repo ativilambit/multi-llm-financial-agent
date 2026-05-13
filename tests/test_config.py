@@ -872,3 +872,22 @@ def test_drive_settings_loaded_from_dotenv_file(
     finally:
         for k in ("DRIVE_UPLOAD_ENABLED", "DRIVE_CREDENTIALS_PATH", "DRIVE_ROOT_FOLDER_ID"):
             os.environ.pop(k, None)
+
+
+def test_target_dates_day_of_week_validation_catches_may_16_2026_saturday() -> None:
+    bad = {
+        "symbol": "NBIS",
+        "today_date": "Tue May 12, 2026",
+        "today_session": "regular",
+        "earnings_date": "Wed May 13 2026",
+        "target_dates": ["Wed May 13", "Thu May 14", "Fri May 16"],
+        "next_trading_day": "Thu May 14",
+        "followup_open_date": "Wed May 20",
+        "providers": ["openai"],
+    }
+    with pytest.raises(ValueError, match="target_dates entry"):
+        RunConfig.model_validate(bad)
+
+    good = {**bad, "target_dates": ["Wed May 13", "Thu May 14", "Fri May 15"]}
+    cfg = RunConfig.model_validate(good)
+    assert "Fri May 15" in cfg.target_dates

@@ -9,7 +9,10 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from equity_analyst.config import RunConfig
-from equity_analyst.options_chain import iv_crush_multiplier
+from equity_analyst.options_chain import (
+    event_jump_implied_move_pct_from_prompt_dict,
+    iv_crush_multiplier,
+)
 from equity_analyst.outcome_tracker import (
     compute_pead_avg_drift_pct,
     compute_recent_momentum_drift_pct,
@@ -18,6 +21,7 @@ from equity_analyst.outcome_tracker import (
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.sigma_compute import (
     format_computed_probabilities_reference_markdown,
+    resolve_daily_vol_pct_for_sigma,
     try_build_computed_sigma_bundle,
 )
 
@@ -208,6 +212,21 @@ def render_prompt(cfg: RunConfig, prompt_path: Path, *, prior_synthesis_text: st
     context["computed_sigma_bands_available"] = sig_avail
     context["computed_sigma_bands_markdown"] = sig_md if sig_avail else ""
     context["computed_sigma_bands_table"] = sig_tbl
+
+    event_jump_chain_warning_md = ""
+    if not sig_avail and oc_data.get("options_chain_available"):
+        ej_dbg = event_jump_implied_move_pct_from_prompt_dict(oc_data, earnings_date=cfg.earnings_date)
+        dv_dbg, _ = resolve_daily_vol_pct_for_sigma(cfg.symbol, oc_data, earnings_date=cfg.earnings_date)
+        if ej_dbg is None and dv_dbg is not None:
+            event_jump_chain_warning_md = (
+                "**Server warning (`event_jump` not computed):** A verified options chain was fetched, but the "
+                "server could not derive an **ATM straddle / implied-move percent** for the event-week expiry "
+                "(missing or unusable straddle mid; IV fallback also failed). **Do not invent** an `event_jump=` "
+                "literal or event-week sigma from narrative — state that the figure is unavailable from the chain "
+                "payload or cite specific option rows with URLs. Do **not** substitute a silent pure-HV30√t "
+                "envelope when earnings implied volatility is the stated setup."
+            )
+    context["event_jump_chain_warning_markdown"] = event_jump_chain_warning_md
 
     prob_md = ""
     if prior_synthesis_text:

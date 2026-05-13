@@ -76,6 +76,31 @@ async def test_synthesizer_includes_all_provider_outputs_and_instructions() -> N
 
 
 @pytest.mark.asyncio
+async def test_computed_sigma_bands_in_synthesizer_prompt_when_chain_available() -> None:
+    p = _RecordingProvider()
+    s = Synthesizer(p)
+    csb = "**Fixture server σ table** | 1σ | 11.31% |\n|---|---:|"
+    responses = {
+        "openai": ProviderResponse(
+            provider_name="openai",
+            model="gpt",
+            text="body",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+    }
+    await s.synthesize(
+        original_prompt="ORIG",
+        responses=responses,
+        enable_web_search=False,
+        computed_sigma_bands_markdown=csb,
+    )
+    assert p.last_prompt is not None
+    assert "Server-computed" in p.last_prompt
+    assert "Fixture server σ table" in p.last_prompt
+
+
+@pytest.mark.asyncio
 async def test_synthesizer_passes_summarize_flag_to_maybe_summarize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

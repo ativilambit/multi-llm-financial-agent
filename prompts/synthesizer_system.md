@@ -72,7 +72,7 @@ When the equity prompt included a **Verified options chain** table (`options_cha
      **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`. When reconciling provider σ bands that diverge, prefer the provider whose `daily_vol` came from the earliest available source above.
    - **IV crush alignment:** When the equity run context includes `iv_crush_multiplier` (and typically `daily_vol_iv_adjusted` = HV30/√252 × that ratio), synthesized σ bands for **post-earnings** horizons should use that **IV-adjusted** `daily_vol` whenever HV30 is the canonical diffusion baseline. If providers disagree on whether to apply the adjustment, treat the **adjusted** figure as canonical when the multiplier is in the server-validated range **[0.4, 1.2]** (values outside that band are not injected into the prompt).
    - `N` = trading days from T+1 (the first post-event session, **inclusive**) to the target session. So `σ(T+1) = √(event_jump² + 1·daily_vol²)`, `σ(T+5) = √(event_jump² + 5·daily_vol²)`, etc.
-   - **MANDATORY (downstream verifier parses these; missing them will trigger a re-synthesis):** Your output must **also** include the `event_jump=` / `daily_vol=` literals at the **top** of the σ section (sections 1 / 9 / 11 wherever σ bands appear), in the same machine-parseable form as the equity prompt: **exactly** these two lines inside a fenced code block, with the literal tokens `event_jump=` and `daily_vol=` in this exact shape (no LaTeX, no Markdown italics, no Unicode multipliers):
+   - **MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** Before showing any σ bands, output **exactly** these two lines in a fenced code block (any backticks), with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, no Unicode multipliers):
 
      ```
      event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)
@@ -85,7 +85,24 @@ When the equity prompt included a **Verified options chain** table (`options_cha
      iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day
      ```
 
-   - **Mandatory `sigma_summary` JSON (merge + final output):** Each provider answer should carry a **last** fenced code block whose language tag is **`json`** and whose JSON root contains a **`sigma_summary`** object (same schema as the equity prompt: `anchor_price`, `anchor_type`, `sessions[]` with `date` **YYYY-MM-DD**, `label`, optional `N`, `one_sigma_half_width_pct`, `three_sigma_half_width_pct` as the **±% half-width** on the 1σ / 3σ lines). When reconciling σ bands, **prefer** rows from providers whose per-check table shows `passed=True`; if providers disagree, either (a) emit a **consolidated** markdown table of session σ % keyed by date with a footnote listing each provider’s numbers, **or** (b) re-emit a **single** merged `sigma_summary` JSON in your final synthesis (recommended for machine checks) with `sessions` covering every horizon you keep in sections 1 / 9 / 11. The final answer must still include human-readable **1σ / 2σ / 3σ** lines per the format rules above.
+   - **Percent vs decimal (anti foot-gun):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
+
+   - **MANDATORY machine-readable σ session table (downstream verifier):** Before any σ bands (or immediately after the `event_jump=` / `daily_vol=` fenced block(s) if you already emitted them), output a **second** fenced block tagged **`json`** whose JSON root contains **`sigma_summary`** (exact key). The verifier reads the **last** such block in your **final** synthesis. Schema (numeric fields must match the **±% half-width** you show on each session’s **1σ** line — one side of the band as **% of the anchor price**, not full width; if you accidentally computed full width, **halve** before emitting):
+
+     ```json
+     {
+       "sigma_summary": {
+         "anchor_price": 179.11,
+         "anchor_type": "prior_close",
+         "sessions": [
+           {"date": "2026-05-13", "label": "T0 BMO", "N": 0, "one_sigma_half_width_pct": 11.31, "three_sigma_half_width_pct": 33.93},
+           {"date": "2026-05-14", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 12.51, "three_sigma_half_width_pct": 37.53}
+         ]
+       }
+     }
+     ```
+
+     Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings calendar and BMO/AMC anchor (same rule as bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** post–T+1 horizon row (so the check can compare `σ²(T+N)−σ²(T+1)` vs `(N−1)·daily_vol²`). Use **strict JSON** (double quotes; no trailing commas). When **Server-computed σ bands** are present in this prompt, copy those `%` and `$` values into this JSON **verbatim** — do not re-derive different σ % by averaging provider outputs.
 
 3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by **√(target_DTE / chosen_expiry_DTE)** from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
 

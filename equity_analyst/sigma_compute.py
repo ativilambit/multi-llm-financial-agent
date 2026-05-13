@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import date
@@ -21,6 +22,14 @@ from equity_analyst.outcome_tracker import (
     parse_equity_session_date_hint,
 )
 from equity_analyst.sigma_summary import parse_sigma_summary_json
+
+logger = logging.getLogger(__name__)
+
+MISSING_VALID_SIGMA_SUMMARY_JSON_MESSAGE = (
+    "Cite or verify: PRIORITY — synthesis missing valid sigma_summary JSON; cannot match server σ table "
+    "(emit the last fenced json code block with root key sigma_summary; next pass is synthesize-only unless "
+    "contradictions require providers)."
+)
 
 
 @dataclass(frozen=True)
@@ -254,6 +263,13 @@ def try_build_computed_sigma_bundle(
         return False, "", None, ""
     ej = event_jump_implied_move_pct_from_prompt_dict(oc_data, earnings_date=earnings_date)
     dv, dv_src = resolve_daily_vol_pct_for_sigma(symbol, oc_data, earnings_date=earnings_date)
+    if ej is None and bool(oc_data.get("options_chain_available")):
+        logger.warning(
+            "try_build_computed_sigma_bundle: event_jump unavailable (symbol=%s earnings_date=%s); "
+            "computed σ bundle suppressed",
+            symbol,
+            earnings_date,
+        )
     if ej is None or dv is None:
         return False, "", None, ""
 
@@ -359,9 +375,7 @@ def verify_emitted_sigma_bands_match_computed(
         return []
     parsed = parse_sigma_summary_json(synthesis_text)
     if parsed is None:
-        return [
-            "Cite or verify: synthesis missing valid sigma_summary JSON; cannot match server σ table.",
-        ]
+        return [MISSING_VALID_SIGMA_SUMMARY_JSON_MESSAGE]
     by_date: dict[str, dict[str, Any]] = {}
     for r in rows:
         if not isinstance(r, dict):

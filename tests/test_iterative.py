@@ -266,6 +266,50 @@ def test_per_provider_sigma_check_extracts_with_whitespace_around_equals() -> No
     assert result["daily_vol"] == 8.0
 
 
+def test_per_provider_sigma_check_flags_decimal_form_event_jump() -> None:
+    import json as _json
+
+    text = (
+        "```\n"
+        "event_jump=0.11% (mis-scaled)\n"
+        "daily_vol=4.54%/day (HV30)\n"
+        "```\n"
+        "```json\n"
+        + _json.dumps(
+            {
+                "sigma_summary": {
+                    "anchor_price": 100.0,
+                    "anchor_type": "prior_close",
+                    "sessions": [
+                        {
+                            "date": "2026-05-14",
+                            "label": "T+1",
+                            "N": 1,
+                            "one_sigma_half_width_pct": 12.19,
+                            "three_sigma_half_width_pct": 36.57,
+                        },
+                        {
+                            "date": "2026-05-15",
+                            "label": "T+2",
+                            "N": 2,
+                            "one_sigma_half_width_pct": 13.01,
+                            "three_sigma_half_width_pct": 39.03,
+                        },
+                    ],
+                },
+            },
+        )
+        + "\n```\n"
+    )
+    r = per_provider_sigma_variance_check(
+        text,
+        earnings_date="Wed May 13 2026",
+        reference_event_jump_pct=11.31,
+    )
+    fus = [str(x) for x in (r.get("followups") or [])]
+    assert any("decimal form" in f for f in fus)
+
+
 def test_per_provider_sigma_variance_excludes_pre_anchor_rows_for_nbis_style_log() -> None:
     """Pre-earnings dated rows must not define N; BMO anchor is the earnings-day session."""
     sg = chr(0x03C3)
@@ -1670,6 +1714,29 @@ def test_compute_refinement_route_fan_out_high_unverifiable_low_confidence() -> 
     )
     cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
     assert cmd.goto == "fan_out"
+
+
+def test_compute_refinement_route_synthesize_only_when_missing_sigma_summary_json() -> None:
+    unver = [
+        "Cite or verify: PRIORITY — synthesis missing valid sigma_summary JSON; cannot match server σ table.",
+        "item 1",
+        "item 2",
+        "item 3",
+    ]
+    st = _route_state(
+        synthesis_text="Report body\nOVERALL_CONFIDENCE: 0.75\n",
+        verification={"contradicted": [], "unverifiable": unver},
+        snapshot={
+            "unverifiable_count_threshold_for_fanout": 3,
+            "unverifiable_fanout_confidence_below": 0.8,
+        },
+    )
+    cmd = compute_refinement_route_command(st)  # type: ignore[arg-type]
+    assert cmd.goto == "synthesize"
+    qs = (cmd.update or {}).get("followup_questions") or []
+    assert qs
+    assert "PRIORITY" in qs[0]
+    assert "sigma_summary" in qs[0].lower()
 
 
 def test_compute_refinement_route_stop_clean_verification() -> None:

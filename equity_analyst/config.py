@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import calendar
 import logging
 import os
+import re
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal, Self, TextIO, cast
 
@@ -12,6 +15,29 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
 
 logger = logging.getLogger(__name__)
+
+_TARGET_DATE_DOW_PREFIX_RE = re.compile(
+    r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|"
+    r"Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b[,\s]+(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _weekday_index_from_label(label: str) -> int | None:
+    low = label.strip().lower()
+    if len(low) < 3:
+        return None
+    key = low[:3]
+    mapping = {
+        "mon": 0,
+        "tue": 1,
+        "wed": 2,
+        "thu": 3,
+        "fri": 4,
+        "sat": 5,
+        "sun": 6,
+    }
+    return mapping.get(key)
 
 _FACTS_PACKET_MAX_OUT_MIN = 256
 _FACTS_PACKET_MAX_OUT_MAX = 128_000
@@ -595,6 +621,49 @@ class RunConfig(BaseModel):
             raise ValueError(
                 "same_day_intraday_min and same_day_intraday_max must both be set or both omitted"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _target_dates_weekday_matches_calendar(self) -> Self:
+        """Reject labels like ``Fri May 16`` when that calendar day is not a Friday for the inferred year."""
+        if not self.target_dates:
+            return self
+        from equity_analyst.outcome_tracker import _parse_earnings_date_fuzzy
+
+        year_candidates: list[int] = []
+        for hint in (
+            self.earnings_date,
+            self.today_date,
+            self.next_trading_day,
+            self.followup_open_date,
+        ):
+            parsed = _parse_earnings_date_fuzzy(str(hint))
+            if parsed is not None and parsed.year >= 1990:
+                year_candidates.append(parsed.year)
+        year = year_candidates[0] if year_candidates else date.today().year
+
+        for raw in self.target_dates:
+            s = str(raw).strip()
+            if not s:
+                continue
+            m = _TARGET_DATE_DOW_PREFIX_RE.match(s)
+            if not m:
+                continue
+            dow_label, rest = m.group(1), m.group(2).strip().strip(",")
+            claimed = _weekday_index_from_label(dow_label)
+            if claimed is None:
+                continue
+            blob = rest if re.search(r"\b(19|20)\d{2}\b", rest) else f"{rest} {year}"
+            dt = _parse_earnings_date_fuzzy(blob)
+            if dt is None:
+                continue
+            actual = int(dt.weekday())
+            if actual != claimed:
+                cal_name = calendar.day_name[actual]
+                raise ValueError(
+                    f"target_dates entry {s!r}: leading weekday does not match calendar date "
+                    f"{dt.date().isoformat()} ({cal_name}) for parsed `{blob}`; fix the weekday label or the day."
+                )
         return self
 
     @model_validator(mode="after")

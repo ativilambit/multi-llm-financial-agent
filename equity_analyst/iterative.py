@@ -35,6 +35,7 @@ from equity_analyst.facts_packet import (
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.options_chain import (
     _parse_earnings_calendar_date,
+    event_jump_implied_move_pct_from_prompt_dict,
     options_chain_expiry_audit_messages,
 )
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
@@ -899,6 +900,7 @@ def per_provider_sigma_variance_check(
     earnings_timing: str | None = None,
     enabled: bool = True,
     provider_label: str | None = None,
+    reference_event_jump_pct: float | None = None,
 ) -> dict[str, Any]:
     """Parse one provider's text for variance-additive sigma literals and verify the identity.
 
@@ -988,12 +990,27 @@ def per_provider_sigma_variance_check(
             }
         source = "legacy_regex"
 
-    followups = verify_variance_additive_sigma_band_sessions(
-        sessions_payload,
-        daily_vol_pct=dv_lit,
-        event_jump_pct=ej_lit,
-        tolerance=tolerance,
+    followups = list(
+        verify_variance_additive_sigma_band_sessions(
+            sessions_payload,
+            daily_vol_pct=dv_lit,
+            event_jump_pct=ej_lit,
+            tolerance=tolerance,
+        ),
     )
+    ref_ej = reference_event_jump_pct
+    if (
+        ref_ej is not None
+        and ref_ej > 5.0
+        and ej_lit is not None
+        and ej_lit < 1.0
+    ):
+        followups.insert(
+            0,
+            "Cite or verify: parsed event_jump="
+            f"{ej_lit:.2f}% appears to be decimal form; expected percent form ~{ref_ej:.2f}% "
+            "(from front weekly straddle).",
+        )
     ctx = (provider_label or "Provider").strip() or "Provider"
     drift_warn: str | None = None
     if parsed is not None:
@@ -1882,6 +1899,31 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
         if sq not in qs:
             qs.append(sq)
 
+    missing_synth_sigma_json = any(
+        "missing valid sigma_summary json" in str(u).lower() for u in (unver or [])
+    )
+    if n_contrad == 0 and missing_synth_sigma_json:
+        _gs = chr(0x03C3)
+        pr = (
+            f"PRIORITY — Before any {_gs} bands in sections 1/9/11, emit the mandatory fenced strict-JSON block "
+            "(language tag json) whose root contains sigma_summary; copy % half-widths from "
+            f"Server-computed {_gs} bands verbatim when that section is present."
+        )
+        qs_syn = [pr]
+        for x in qs:
+            if x not in qs_syn:
+                qs_syn.append(x)
+        logger.info(
+            "Route decision: continue (synthesize_only) reason=missing_synthesis_sigma_summary_json",
+        )
+        return Command(
+            goto="synthesize",
+            update={
+                "followup_questions": qs_syn,
+                "last_route_followup_questions": qs_syn,
+            },
+        )
+
     high_unver_fanout = (
         n_contrad == 0
         and n_unver >= unver_thr
@@ -2460,6 +2502,20 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         snap_fan = state.get("iterative_config_snapshot") or {}
         sigma_check_enabled = bool(snap_fan.get("per_provider_sigma_variance_check", True))
 
+        ref_ej: float | None = None
+        tbl_fan = state.get("computed_sigma_bands_table")
+        if isinstance(tbl_fan, dict):
+            raw_ej = tbl_fan.get("event_jump_pct")
+            if isinstance(raw_ej, (int, float)) and float(raw_ej) > 0:
+                ref_ej = float(raw_ej)
+        if ref_ej is None:
+            oc_fan = state.get("options_chain_data")
+            if isinstance(oc_fan, dict) and bool(oc_fan.get("options_chain_available")) and earn_date_s:
+                ref_ej = event_jump_implied_move_pct_from_prompt_dict(
+                    oc_fan,
+                    earnings_date=earn_date_s,
+                )
+
         per_provider_checks: list[dict[str, Any]] = []
         for name, resp in responses.items():
             check = per_provider_sigma_variance_check(
@@ -2468,6 +2524,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 earnings_timing=earn_timing_fan,
                 enabled=sigma_check_enabled,
                 provider_label=name,
+                reference_event_jump_pct=ref_ej,
             )
             rec: dict[str, Any] = {"provider": name, "model": resp.model}
             rec.update(check)

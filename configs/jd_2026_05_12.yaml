@@ -12,9 +12,9 @@ earnings_date: "Tue May 12 2026"
 
 target_dates:
   - "Tue May 12"
-  - "Fri May 16"
-  - "Fri May 23"
-  - "Fri May 30"
+  - "Fri May 15"
+  - "Fri May 22"
+  - "Fri May 29"
   - "Fri Jun 6"
 next_trading_day: "Wed May 13"
 followup_open_date: "Mon May 19"

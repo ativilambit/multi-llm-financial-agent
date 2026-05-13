@@ -4,7 +4,9 @@ import json
 
 import pytest
 
+from equity_analyst.options_chain import event_jump_implied_move_pct_from_prompt_dict
 from equity_analyst.sigma_compute import (
+    MISSING_VALID_SIGMA_SUMMARY_JSON_MESSAGE,
     compute_sigma_bands_server_side,
     format_computed_sigma_bands_markdown,
     resolve_daily_vol_pct_for_sigma,
@@ -212,3 +214,97 @@ def test_format_computed_sigma_bands_markdown_contains_rows() -> None:
     md = format_computed_sigma_bands_markdown(t)
     assert "2026-05-13" in md
     assert "11.31" in md or "4.54" in md
+
+
+def test_verify_emitted_sigma_bands_missing_json_message() -> None:
+    comp = {
+        "sessions": [
+            {
+                "session_date": "2026-05-13",
+                "one_sigma_half_width_pct": 11.31,
+                "three_sigma_half_width_pct": 33.93,
+            },
+        ],
+    }
+    out = verify_emitted_sigma_bands_match_computed("no json here", comp, tolerance_pp=1.0)
+    assert out == [MISSING_VALID_SIGMA_SUMMARY_JSON_MESSAGE]
+
+
+def test_event_jump_implied_move_pct_normalizes_decimal_ratio() -> None:
+    row = {
+        "expiry_date": "2026-05-16",
+        "dte": 4,
+        "atm_strike": 100.0,
+        "atm_call_bid": 1.0,
+        "atm_call_ask": 1.1,
+        "atm_call_mid": 1.05,
+        "atm_call_last": None,
+        "atm_call_iv": None,
+        "atm_put_bid": 0.9,
+        "atm_put_ask": 1.0,
+        "atm_put_mid": 0.95,
+        "atm_put_last": None,
+        "atm_put_iv": None,
+        "atm_straddle_mid": None,
+        "implied_move_pct": 0.1131,
+        "expected_move_dollar": None,
+        "skew_25d_call_minus_put_iv": None,
+        "skew_25d_note": "",
+        "total_call_volume": 0,
+        "total_put_volume": 0,
+        "put_call_ratio": None,
+        "total_call_oi": 0,
+        "total_put_oi": 0,
+        "put_call_ratio_oi": None,
+    }
+    oc = {
+        "options_chain_available": True,
+        "symbol": "TST",
+        "as_of": "2026-05-12T00:00:00Z",
+        "spot": 100.0,
+        "available_expiries": ["2026-05-16"],
+        "selected_expiries": [row],
+    }
+    ej = event_jump_implied_move_pct_from_prompt_dict(oc, earnings_date="Wed May 13 2026")
+    assert ej is not None
+    assert abs(float(ej) - 11.31) < 0.02
+
+
+def test_event_jump_falls_back_to_atm_iv_when_straddle_missing() -> None:
+    row = {
+        "expiry_date": "2026-05-16",
+        "dte": 4,
+        "atm_strike": 100.0,
+        "atm_call_bid": None,
+        "atm_call_ask": None,
+        "atm_call_mid": None,
+        "atm_call_last": None,
+        "atm_call_iv": 0.80,
+        "atm_put_bid": None,
+        "atm_put_ask": None,
+        "atm_put_mid": None,
+        "atm_put_last": None,
+        "atm_put_iv": 0.80,
+        "atm_straddle_mid": None,
+        "implied_move_pct": None,
+        "expected_move_dollar": None,
+        "skew_25d_call_minus_put_iv": None,
+        "skew_25d_note": "",
+        "total_call_volume": 0,
+        "total_put_volume": 0,
+        "put_call_ratio": None,
+        "total_call_oi": 0,
+        "total_put_oi": 0,
+        "put_call_ratio_oi": None,
+    }
+    oc = {
+        "options_chain_available": True,
+        "symbol": "TST",
+        "as_of": "2026-05-12T00:00:00Z",
+        "spot": 100.0,
+        "available_expiries": ["2026-05-16"],
+        "selected_expiries": [row],
+    }
+    ej = event_jump_implied_move_pct_from_prompt_dict(oc, earnings_date="2026-05-13")
+    assert ej is not None
+    assert ej > 1.0

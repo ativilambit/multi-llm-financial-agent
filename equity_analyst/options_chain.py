@@ -618,11 +618,39 @@ def event_jump_implied_move_pct_from_prompt_dict(
         return None
     im = _coerce_float(event_row.get("implied_move_pct"))
     if im is not None and im > 0:
+        # Snapshot stores implied move as straddle/spot **ratio** (e.g. 0.1131 == 11.31%), not percent.
+        if im < 2.0:
+            return float(im * 100.0)
         return float(im)
     spot = _coerce_float(oc_data.get("spot")) or snap.spot
     straddle = _coerce_float(event_row.get("atm_straddle_mid"))
     if straddle is not None and spot is not None and spot > 0 and straddle > 0:
         return float(straddle / spot * 100.0)
+    # Fallback when straddle / implied_move fields are missing: ATM IV * sqrt(calendar DTE / 365).
+    iv_atm = _atm_iv_proxy_ex(event_row)
+    exp_s = str(event_row.get("expiry_date") or "")[:10]
+    as_of_s = str(oc_data.get("as_of") or "")[:10]
+    cal_d: int | None = None
+    try:
+        exp_d = date.fromisoformat(exp_s)
+        as_d = date.fromisoformat(as_of_s[:10]) if len(as_of_s) >= 10 else None
+        if as_d is not None:
+            cal_d = max((exp_d - as_d).days, 1)
+    except ValueError:
+        cal_d = None
+    if cal_d is None:
+        td = _coerce_int(event_row.get("dte"))
+        cal_d = max(td, 1) if td > 0 else None
+    if iv_atm is not None and iv_atm > 0 and cal_d is not None and cal_d > 0:
+        move_pct = iv_atm * math.sqrt(float(cal_d) / 365.0) * 100.0
+        if move_pct > 0:
+            logger.info(
+                "event_jump_implied_move_pct: ATM IV * sqrt(DTE/365) fallback expiry=%s cal_d=%s move=%.2f%%",
+                exp_s,
+                cal_d,
+                move_pct,
+            )
+            return float(move_pct)
     return None
 
 
