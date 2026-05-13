@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Scheduled post-earnings outcome refresh: discovers tickers from outputs/*_<TS>/
-# directories (with run.json) and invokes the stock CLI batch recorder with Yahoo
-# auto-fetch. Intended for launchd; see scripts/launchd/*.plist.
+# directories (with run.json) and runs:
+#   python -m equity_analyst outcome-record-batch --auto-fetch ...
+#
+# Postgres: the CLI loads repo-root .env via python-dotenv (equity_analyst.cli main:
+# load_dotenv(override=False)) before connecting. Realized OHLC / direction are upserted
+# into the ``outcomes`` table (run_id PK, FK to ``runs``) by db_ops.best_effort_upsert_outcome;
+# connection string is ``DATABASE_URL`` (see equity_analyst/db.py, .env.example).
+#
+# launchd StartCalendarInterval uses the Mac system clock timezone; plist + this script
+# assume 1:30pm US/Pacific weekdays (see scripts/launchd/*.plist).
 #
 # Environment (optional):
 #   POST_EVENT_SINCE_DAYS  Calendar days back for --since (default: 30). macOS date(1).
