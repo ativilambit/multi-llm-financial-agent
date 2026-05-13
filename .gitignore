@@ -18,4 +18,5 @@ build/
 **/secrets/
 outputs/
 outputs/outcomes_registry.jsonl
+logs/
 

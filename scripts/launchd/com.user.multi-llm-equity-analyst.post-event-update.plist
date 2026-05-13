@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.user.multi-llm-equity-analyst.post-event-update</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/vibhavgarg/projects/multi-llm-equity-analyst</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/vibhavgarg/projects/multi-llm-equity-analyst/scripts/post_event_update_cron.sh</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Weekday</key>
+			<integer>1</integer>
+			<key>Hour</key>
+			<integer>17</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>2</integer>
+			<key>Hour</key>
+			<integer>17</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>3</integer>
+			<key>Hour</key>
+			<integer>17</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>4</integer>
+			<key>Hour</key>
+			<integer>17</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+		<dict>
+			<key>Weekday</key>
+			<integer>5</integer>
+			<key>Hour</key>
+			<integer>17</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+	</array>
+	<key>StandardOutPath</key>
+	<string>/Users/vibhavgarg/projects/multi-llm-equity-analyst/logs/post_event_update.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/vibhavgarg/projects/multi-llm-equity-analyst/logs/post_event_update.err.log</string>
+	<key>StandardEnvironmentVariables</key>
+	<dict>
+		<key>TZ</key>
+		<string>America/Los_Angeles</string>
+	</dict>
+</dict>
+</plist>
