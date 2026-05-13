@@ -98,9 +98,9 @@ When the equity prompt included a **Verified options chain** table (`options_cha
 | Horizon | Default blend (qual : quant) | Rationale |
 |---|---|---|
 | T-3 to T-1 (days before event) | **55 : 45** | Price / options have not absorbed the new narrative; qualitative drivers (mgmt commentary, positioning, setups) dominate directional bias. |
-| T-0 pre-open (event day, no intraday yet) | **51 : 49** | Mixed: options skew is informative but the print hasn't happened; lean slightly qualitative. |
-| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **40 : 60** | Stock + options already reflect the qualitative thesis; weight live tape, IV, and same-day intraday range higher. |
-| T+1 to T+5 (after the event, with intraday history) | **45 : 55** | Realized post-event action plus options remain the dominant anchor; qualitative narrative still informs the path. |
+| T-0 pre-open (event day, no intraday yet) | **51 : 49** | Mixed: options skew is informative but the print hasn't happened; qualitative narrative governs directional tilt slightly. |
+| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **51 : 49** | Even after the tape and chain react, qualitative drivers still inform direction; quantitative levels still anchor exact $/σ math via the Pure-quant rule. |
+| T+1 to T+5 (after the event, with intraday history) | **51 : 49** | Realized post-event action plus options anchor exact levels; qualitative narrative continues to govern directional tilt. |
 
 **Apply this lens to directional / narrative synthesis** — directional bias, scenario emphasis, probability tilt, and how much to trust each lens. **Pure-quant rule (mandatory):** **option pricing** and **σ band widths** are **off-limits** to qualitative adjustment — follow the **Pure-quant rule** block above; the table governs **tilt within bands** and **scenario probabilities**, **not** implied premiums or σ magnitudes. When **same-day intraday data is unavailable for the target session**, use the T-0 pre-open row (**51 : 49**). When **quantitative signals are mixed, conflicting, unsourced, or based on small-sample technicals**, tilt qualitative by **+5 to +10 percentage points** versus the row default. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent** (after applying the horizon row and any mixed-quant tilt). The percentages are **guidance** for trust in each lens in the blend, not a literal word-count quota.
 

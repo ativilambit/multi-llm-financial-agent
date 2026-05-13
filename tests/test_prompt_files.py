@@ -45,9 +45,29 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     assert "| Horizon | Default blend (qual : quant) | Rationale |" in j2
     assert "| Horizon | Default blend (qual : quant) | Rationale |" in synth
-    for ratio in ("55 : 45", "51 : 49", "40 : 60", "45 : 55"):
-        assert ratio in j2
-        assert ratio in synth
+    assert "55 : 45" in j2 and "55 : 45" in synth
+    assert j2.count("51 : 49") >= 3
+    assert synth.count("51 : 49") >= 3
+    t0_pre = (
+        "| T-0 pre-open (event day, no intraday yet) | **51 : 49** | "
+        "Mixed: options skew is informative but the print hasn't happened; "
+        "qualitative narrative governs directional tilt slightly. |"
+    )
+    t0_intra = (
+        "| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | **51 : 49** | "
+        "Even after the tape and chain react, qualitative drivers still inform direction; "
+        "quantitative levels still anchor exact $/σ math via the Pure-quant rule. |"
+    )
+    t1_t5 = (
+        "| T+1 to T+5 (after the event, with intraday history) | **51 : 49** | "
+        "Realized post-event action plus options anchor exact levels; "
+        "qualitative narrative continues to govern directional tilt. |"
+    )
+    assert t0_pre in j2 and t0_pre in synth
+    assert t0_intra in j2 and t0_intra in synth
+    assert t1_t5 in j2 and t1_t5 in synth
+    assert "40 : 60" not in j2 and "40 : 60" not in synth
+    assert "45 : 55" not in j2 and "45 : 55" not in synth
     assert "Qualitative vs quantitative weighting" in j2
     assert "Qualitative vs quantitative weighting" in synth
     assert "default to the qualitative side" in j2 and "unambiguous and recent" in j2
