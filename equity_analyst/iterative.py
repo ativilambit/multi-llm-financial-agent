@@ -75,10 +75,12 @@ from equity_analyst.synthesizer import (
     provider_finish_reason_label,
 )
 from equity_analyst.synthesizer_blend import (
+    ADVISORY_BLEND_PROVIDER_SPREAD_THRESHOLD_POINTS,
     T0BlendPreset,
     horizon_blend_ratio_followups,
     normalize_t0_blend_preset,
     qualitative_numeric_tilt_followups,
+    suggested_blend_consistency_followups,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
 
@@ -135,6 +137,9 @@ that are not represented in the excerpt.
 If the excerpt includes **section 8** bottom-up qualitative material, add an **unverifiable** item when the first 800 characters of that section-8 passage contain **no** `http://` or `https://` URL and **no** line starting with `Source:` (heuristic for missing citations—tune to reduce false positives).
 
 When the excerpt states **horizon blend** defaults, the equity/synthesizer prompts fix literals as **qual : quant** (qualitative first). For **T-0 / T+1..T+5** rows the digits must match the fenced table (**49 : 51**). For **T-3..T-1** use the fenced table (**55 : 45**). Flag **unverifiable** if the excerpt uses digit-inverted colon pairs, emits **both** canonical and inverted pairs, swaps **Quant**/**Qual** lens names against **qual**/**quant** ordering, uses a **quant-then-qual** colon label for the blend column, uses **qualitative-colon-quantitative** as a pseudo-blend header, or uses **%-wording** that contradicts the fenced digit pairs. (Deterministic post-pass also enforces this—still flag if you see it in your excerpt.)
+
+"""
+    + f"""When multi-provider material shows **advisory** (non-canonical) **`qual : quant`** integers for the **same** horizon bucket disagreeing by more than **{ADVISORY_BLEND_PROVIDER_SPREAD_THRESHOLD_POINTS}** points on **either** int, check that the synthesis includes a clearly labeled **`### Final suggested blend (advisory — consensus)`** table (four horizon rows). If that heading and table are **missing**, add one **unverifiable** item requesting them (short).
 
 Synthesis MUST NOT introduce numeric qualitative tilts. Flag any '+5', '+10', or 'tilt' applied to quantitative values (probabilities, sigma bands, scenario weights).
 
@@ -1131,6 +1136,24 @@ def _coerce_sigma_band_sessions(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _latest_provider_iteration_bundle(state: Any) -> str:
+    """Concatenate the most recent fan-out round's provider bodies for deterministic advisory checks."""
+    pr = state.get("provider_responses") or []
+    if not pr:
+        return ""
+    raw = pr[-1].get("responses") or {}
+    if not isinstance(raw, dict):
+        return ""
+    parts: list[str] = []
+    for name, v in raw.items():
+        if not isinstance(v, dict):
+            continue
+        txt = str(v.get("text") or "").strip()
+        if txt:
+            parts.append(f"## {name}\n{txt}")
+    return "\n\n".join(parts)
+
+
 def augment_verifier_result_with_sigma_structural_checks(
     synthesis_text: str,
     result: dict[str, Any],
@@ -1145,6 +1168,7 @@ def augment_verifier_result_with_sigma_structural_checks(
     earnings_timing: str | None = None,
     computed_sigma_bands_table: dict[str, Any] | None = None,
     t0_blend_preset: T0BlendPreset = "default",
+    provider_iteration_bundle: str | None = None,
 ) -> dict[str, Any]:
     """Append deterministic sigma-band structural items to ``unverifiable`` (router follow-ups)."""
     _ = earnings_timing  # reserved; structural sigma checks use earnings calendar date only.
@@ -1282,6 +1306,10 @@ def augment_verifier_result_with_sigma_structural_checks(
         t0_blend_preset=t0_blend_preset,
     )
     tilt_followups = qualitative_numeric_tilt_followups(synthesis_text)
+    blend_soft = suggested_blend_consistency_followups(
+        synthesis_text,
+        provider_iteration_bundle=provider_iteration_bundle or "",
+    )
 
     syn_parsed = parse_sigma_summary_json(synthesis_text)
     if syn_parsed is not None:
@@ -1305,6 +1333,7 @@ def augment_verifier_result_with_sigma_structural_checks(
             for u in prior
             if u not in blend_followups and u not in tilt_followups and u not in extras
         ]
+        + blend_soft
     )
     deduped: list[str] = []
     seen: set[str] = set()
@@ -2928,6 +2957,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 else None
             ),
             t0_blend_preset=normalize_t0_blend_preset(state.get("t0_blend_preset", "default")),
+            provider_iteration_bundle=_latest_provider_iteration_bundle(state),
         )
         verify_body = json.dumps(data, indent=2) + "\n"
         verify_path = iter_dir / f"iteration_{round_idx + 1}_verify.md"

@@ -324,6 +324,162 @@ def qualitative_numeric_tilt_pattern_hits(text: str) -> list[str]:
     return found
 
 
+SECTION_8B_HEAD = "### Qualitative deep-dive & suggested blend (advisory)"
+SECTION_8C_HEAD = "### Horizon & blend application"
+FINAL_ADVISORY_BLEND_HEAD_NEEDLE = "final suggested blend (advisory"
+
+# Verifier prompt / deterministic nudge: flag wide cross-provider advisory spreads without consensus heading.
+ADVISORY_BLEND_PROVIDER_SPREAD_THRESHOLD_POINTS = 10
+
+
+def _slice_section8b(text: str) -> str:
+    i = text.find(SECTION_8B_HEAD)
+    if i < 0:
+        return ""
+    rest = text[i:]
+    j = rest.find(SECTION_8C_HEAD)
+    if j < 0:
+        return rest
+    return rest[:j]
+
+
+def _bucket_id_for_horizon_cell(cell: str) -> str | None:
+    c = cell.lower().replace("\u2212", "-").replace("\u2013", "-")
+    c_ns = c.replace(" ", "")
+    if "t+1" in c_ns:
+        return "tplus"
+    if "pre-open" in c or "pre open" in c:
+        return "preopen"
+    if "same-dayintraday" in c_ns or "samedayintraday" in c_ns:
+        return "intra"
+    if ("intraday" in c or "post-print" in c or "post-amc" in c) and (
+        "t-0" in c_ns or "t0" in c_ns or "event day" in c
+    ):
+        return "intra"
+    if "t-3" in c or "days before" in c:
+        return "premkt"
+    return None
+
+
+def _table_row_bucket_and_pair(line: str) -> tuple[str, tuple[int, int]] | None:
+    cells = _markdown_row_cells(line)
+    if not cells or len(cells) < 2:
+        return None
+    bid = _bucket_id_for_horizon_cell(cells[0])
+    if bid is None:
+        return None
+    pair = _parse_qual_quant_pair(cells[1])
+    if pair is None:
+        return None
+    q, u = pair
+    if not (0 <= q <= 100 and 0 <= u <= 100 and q + u == 100):
+        return None
+    return bid, (q, u)
+
+
+def _fallback_prose_bucket_pairs(slice_text: str) -> dict[str, tuple[int, int]]:
+    """Parse ``qual : quant`` from non-table lines in section 8B (bullet-style advisories)."""
+    out: dict[str, tuple[int, int]] = {}
+    for line in slice_text.splitlines():
+        low = line.lower().replace("\u2212", "-").replace("\u2013", "-")
+        m = re.search(r"\b(\d{1,3})\s*:\s*(\d{1,3})\b", line)
+        if not m:
+            continue
+        q, u = int(m.group(1)), int(m.group(2))
+        if not (0 <= q <= 100 and 0 <= u <= 100 and q + u == 100):
+            continue
+        bid: str | None = None
+        low_ns = low.replace(" ", "")
+        if "t+1" in low_ns:
+            bid = "tplus"
+        elif "pre-open" in low or "pre open" in low:
+            bid = "preopen"
+        elif "intraday" in low or "post-print" in low or "post-amc" in low:
+            bid = "intra"
+        elif "t-3" in low or "daysbefore" in low_ns or "beforeevent" in low_ns:
+            bid = "premkt"
+        if bid is not None:
+            out[bid] = (q, u)
+    return out
+
+
+def _pairs_from_section8b_slice(slice_text: str) -> dict[str, tuple[int, int]]:
+    out: dict[str, tuple[int, int]] = {}
+    for line in slice_text.splitlines():
+        got = _table_row_bucket_and_pair(line)
+        if got is None:
+            continue
+        bid, pair = got
+        out[bid] = pair
+    for bid, pair in _fallback_prose_bucket_pairs(slice_text).items():
+        out.setdefault(bid, pair)
+    return out
+
+
+def _iter_provider_chunks(bundle: str) -> list[str]:
+    t = bundle.strip()
+    if not t:
+        return []
+    parts = re.split(r"(?m)^##\s+\S+\s*\n", t)
+    if len(parts) <= 1:
+        return [t]
+    chunks: list[str] = []
+    if parts[0].strip():
+        chunks.append(parts[0])
+    chunks.extend(p for p in parts[1:] if p.strip())
+    return chunks or [t]
+
+
+def max_advisory_qual_spread_across_providers(bundle: str) -> int:
+    """Largest |Δqual| for a single horizon bucket across provider section-8B table rows (0 if unknown)."""
+    per_bucket: dict[str, list[int]] = {}
+    for chunk in _iter_provider_chunks(bundle):
+        s8 = _slice_section8b(chunk)
+        if not s8:
+            continue
+        rowmap = _pairs_from_section8b_slice(s8)
+        for bid, (q, _u) in rowmap.items():
+            per_bucket.setdefault(bid, []).append(q)
+    best = 0
+    for quals in per_bucket.values():
+        if len(quals) < 2:
+            continue
+        span = max(quals) - min(quals)
+        if span > best:
+            best = span
+    return best
+
+
+def distinct_sum100_pairs_in_section8b(bundle: str) -> set[tuple[int, int]]:
+    """Distinct qual:quant pairs (summing to 100) parsed from section-8B markdown table rows."""
+    out: set[tuple[int, int]] = set()
+    for chunk in _iter_provider_chunks(bundle):
+        s8 = _slice_section8b(chunk)
+        for _bid, pair in _pairs_from_section8b_slice(s8).items():
+            out.add(pair)
+    return out
+
+
+def suggested_blend_consistency_followups(
+    synthesis_text: str,
+    *,
+    provider_iteration_bundle: str = "",
+) -> list[str]:
+    """Low-severity nudge when providers disagree on advisory blends but synthesis omits the final consensus heading."""
+    if not provider_iteration_bundle.strip():
+        return []
+    if FINAL_ADVISORY_BLEND_HEAD_NEEDLE in synthesis_text.lower():
+        return []
+    pairs = distinct_sum100_pairs_in_section8b(provider_iteration_bundle)
+    spread = max_advisory_qual_spread_across_providers(provider_iteration_bundle)
+    if len(pairs) < 2 and spread <= ADVISORY_BLEND_PROVIDER_SPREAD_THRESHOLD_POINTS:
+        return []
+    return [
+        "(follow-up) Section 8 advisory blends: providers diverge on suggested qual:quant table rows; "
+        "add `### Final suggested blend (advisory — consensus)` with a four-row reconciled grid per synthesizer merge rules.",
+    ]
+
+
 def qualitative_numeric_tilt_followups(synthesis_text: str) -> list[str]:
     """Flag synthesis prose that reintroduces undefined +5/+10 qualitative numeric shifts."""
     hits = qualitative_numeric_tilt_pattern_hits(synthesis_text)

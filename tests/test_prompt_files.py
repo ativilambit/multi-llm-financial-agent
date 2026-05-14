@@ -130,15 +130,15 @@ def test_prompt_md_j2_exclude_qualitative_numeric_tilt_patterns() -> None:
 
 
 def test_section8_qualitative_evidence_subsections_and_limits() -> None:
-    """Section 8 mandates sourced Qualitative evidence before short blend text."""
+    """Section 8 mandates sourced Qualitative evidence and expanded horizon/blend guidance."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     assert "### Qualitative evidence" in j2
     assert "### Qualitative deep-dive & suggested blend (advisory)" in j2
     assert "### Horizon & blend application" in j2
+    assert "### Suggested dynamic blend (advisory vs canonical)" in j2
     assert "### Directional resolution" in j2
     assert "minimum **6**" in j2 or "minimum 6" in j2
-    assert "120 words" in j2
-    assert "at most 4 sentences" in j2
+    assert "Conflict resolution playbook" in j2
     assert "Unable to verify from primary sources" in j2
 
 
@@ -146,17 +146,61 @@ def test_synthesizer_preserves_section8_qualitative_bullets() -> None:
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     assert "Preserve and dedupe" in synth and "Qualitative evidence" in synth
     assert "### Qualitative deep-dive & suggested blend (advisory)" in synth
+    assert "### Horizon & blend application" in synth
+    assert "### Suggested dynamic blend (advisory vs canonical)" in synth
     assert "methodology-only" in synth.lower()
     assert "conflicting" in synth.lower() and "sources" in synth.lower()
 
 
 def test_qualitative_deep_dive_subsection_title_in_equity_j2_and_synthesizer_md() -> None:
     title = "### Qualitative deep-dive & suggested blend (advisory)"
+    dynamic = "### Suggested dynamic blend (advisory vs canonical)"
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     assert title in j2
     assert title in synth
-    assert j2.find("### Qualitative evidence") < j2.find(title) < j2.find("### Horizon & blend application")
+    assert dynamic in j2 and dynamic in synth
+    assert (
+        j2.find("### Qualitative evidence")
+        < j2.find(title)
+        < j2.find("### Horizon & blend application")
+        < j2.find(dynamic)
+        < j2.find("### Directional resolution")
+    )
+
+
+def test_suggested_blend_advisory_grid_mandated_in_equity_j2_and_synthesizer() -> None:
+    """Section 8B requires a compact per-bucket advisory qual:quant grid after the ranked stack."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    heading = "#### Suggested blend (advisory)"
+    table_header = "| Horizon bucket | Suggested qual : quant (two ints summing to 100) |"
+    for text in (j2, synth):
+        assert heading in text
+        assert table_header in text
+        assert "differs from canonical" in text
+        assert "0..100" in text
+    assert "MUST — Suggested blend (advisory) grid after the ranked stack" in j2
+    assert "MUST — one consolidated advisory grid in subsection B" in synth
+
+
+def test_advisory_blend_reconciliation_prompts() -> None:
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert "MUST — advisory grid every round" in j2
+    assert "peer providers" in j2
+    assert "Resolving divergent advisory blends across providers" in synth
+    assert "### Final suggested blend (advisory — consensus)" in synth
+    assert "Dissent notes" in synth
+    assert "±3" in synth
+
+
+def test_verifier_instruction_prefix_mentions_final_advisory_consensus_heading() -> None:
+    from equity_analyst.iterative import VERIFIER_INSTRUCTION_PREFIX
+
+    low = VERIFIER_INSTRUCTION_PREFIX.lower()
+    assert "final suggested blend (advisory" in low
+    assert "10" in VERIFIER_INSTRUCTION_PREFIX
 
 
 def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
