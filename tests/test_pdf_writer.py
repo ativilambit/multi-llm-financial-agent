@@ -9,9 +9,14 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import markdown
 import pytest
 
-from equity_analyst.pdf_writer import _log_weasyprint_render_failure, write_markdown_as_pdf
+from equity_analyst.pdf_writer import (
+    _log_weasyprint_render_failure,
+    preprocess_markdown_for_pdf,
+    write_markdown_as_pdf,
+)
 
 
 def _patch_fake_weasyprint_module(fake_html: MagicMock):
@@ -70,6 +75,64 @@ def test_log_weasyprint_render_failure_routing(
     joined = " ".join(r.message for r in caplog.records)
     assert must_contain in joined
     assert must_not_contain not in joined
+
+
+def test_preprocess_markdown_for_pdf_inserts_blank_before_pipe_table() -> None:
+    """LLM often omits the blank line; Python-Markdown then keeps the table inside one <p>."""
+    broken = (
+        "**Confidence Summary**\n"
+        "| Section | Confidence | Main Reason |\n"
+        "|---|---|---|\n"
+        "| 1. Implied range | High (95%) | Sourced. |\n"
+    )
+    fixed = preprocess_markdown_for_pdf(broken)
+    assert "**Confidence Summary**\n\n|" in fixed
+    html = markdown.markdown(fixed, extensions=["tables"])
+    assert "<table>" in html
+    assert html.count("<tr>") >= 2
+
+
+def test_preprocess_markdown_for_pdf_splits_glued_pipe_rows() -> None:
+    glued = (
+        "| Section | Confidence | Main Reason |\n"
+        "|---|---|---|\n"
+        "| 1. Implied range | High (95%) | Strict adherence. | "
+        "| 2. Historical moves | Medium (80%) | Clear mapping. |\n"
+    )
+    fixed = preprocess_markdown_for_pdf(glued)
+    assert "| 1. Implied range | High (95%) | Strict adherence. |\n" in fixed
+    assert "| 2. Historical moves | Medium (80%) | Clear mapping. |" in fixed
+    html = markdown.markdown(fixed, extensions=["tables"])
+    assert "<table>" in html
+    assert html.count("<tr>") >= 3
+
+
+def test_preprocess_skips_fenced_code_blocks() -> None:
+    md = "```\n**Confidence Summary**\n| a | b |\n|---|---|\n```\n"
+    assert preprocess_markdown_for_pdf(md) == md
+
+
+def test_write_markdown_as_pdf_passes_preprocessed_markdown_to_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_markdown(text: str, **_kwargs: object) -> str:
+        captured["text"] = text
+        return "<html/>"
+
+    monkeypatch.setattr("equity_analyst.pdf_writer.markdown.markdown", fake_markdown)
+    fake_html = MagicMock()
+
+    def write_stub(path: str, **_kwargs: object) -> None:
+        Path(path).write_bytes(b"%PDF-1.4\n" + b"x" * 400)
+
+    fake_html.return_value.write_pdf.side_effect = write_stub
+    dest = tmp_path / "out.pdf"
+    md = "**Confidence Summary**\n| A | B |\n|---|---|\n| x | y |\n"
+    with _patch_fake_weasyprint_module(fake_html):
+        assert write_markdown_as_pdf(md, dest) is True
+    assert "**Confidence Summary**\n\n|" in captured["text"]
 
 
 @pytest.mark.skipif(

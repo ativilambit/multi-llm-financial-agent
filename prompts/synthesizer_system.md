@@ -277,6 +277,7 @@ Final consensus block:
 
 Confidence summary table:
 - Include a compact table with columns: Section, Confidence, Main reason.
+- **MUST — valid GitHub-flavored markdown table:** The Confidence summary must be a **valid GFM pipe table**: a header row, then a separator row using only dashes/colons/pipes/spaces (for example ``| --- | --- | --- |``), then **one data row per line**. Put a **blank line** between the preceding prose/heading and the first ``|`` row. **Do not** put multiple table rows on the same line; **do not** use line breaks inside a cell.
 - Keep reasons short and specific, such as "sourced date agreement", "options data stale", "unresolved short-interest conflict", or "qualitative split but bounded."
 
 Provider disagreement summary:

@@ -1,11 +1,100 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import markdown  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
+
+# Pipe-table row boundary when the model glued multiple GFM rows on one line (3-column
+# confidence-style tables: next row's first cell is like "2. Historical …").
+_GLUE_PIPE_TABLE_ROW = re.compile(r"(?<=\|)\s+(?=\|\s*\d+\.\s+[A-Za-z(])")
+
+
+def preprocess_markdown_for_pdf(markdown_text: str) -> str:
+    """Normalize markdown so ``markdown.markdown(..., extensions=['tables'])`` yields real <table> blocks.
+
+    Python-Markdown's table extension requires a blank line before a pipe table when the
+    previous line is non-table prose (e.g. ``**Confidence Summary**`` immediately above
+    ``| Section | ...``). Without it, the table is parsed as inline text inside one <p>.
+    Also splits a few common glued multi-row pipe lines back onto separate lines.
+    """
+    lines = markdown_text.split("\n")
+    expanded: list[str] = []
+    in_fence = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            expanded.append(line)
+            continue
+        if in_fence:
+            expanded.append(line)
+            continue
+        expanded.extend(_split_glued_pipe_table_rows_one_line(line).split("\n"))
+
+    out: list[str] = []
+    in_fence = False
+    for line in expanded:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        if out and _needs_blank_line_before_pipe_table_row(line, out[-1]):
+            out.append("")
+        out.append(line)
+
+    result = "\n".join(out)
+    if markdown_text.endswith("\n") and not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _is_probable_pipe_table_row(line: str) -> bool:
+    s = line.strip()
+    if not s.startswith("|"):
+        return False
+    return s.count("|") >= 2
+
+
+def _is_table_separator_row(line: str) -> bool:
+    s = line.strip()
+    if not s.startswith("|") or "|" not in s[1:]:
+        return False
+    inner = [c.strip() for c in s.strip("|").split("|")]
+    if not inner:
+        return False
+    for cell in inner:
+        if not cell:
+            return False
+        if not re.fullmatch(r":?-{3,}:?", cell):
+            return False
+    return True
+
+
+def _needs_blank_line_before_pipe_table_row(line: str, prev_line: str) -> bool:
+    if not _is_probable_pipe_table_row(line):
+        return False
+    if not prev_line.strip():
+        return False
+    return not (
+        _is_probable_pipe_table_row(prev_line) or _is_table_separator_row(prev_line)
+    )
+
+
+def _split_glued_pipe_table_rows_one_line(line: str) -> str:
+    """If multiple 3-column pipe rows were emitted on one physical line, split at row boundaries."""
+    if not _is_probable_pipe_table_row(line) or line.count("|") < 8:
+        return line
+    if not _GLUE_PIPE_TABLE_ROW.search(line):
+        return line
+    return _GLUE_PIPE_TABLE_ROW.sub("\n", line)
 
 
 def _native_pdf_lib_hint_in_exception(exc: BaseException) -> bool:
@@ -108,7 +197,7 @@ def write_markdown_as_pdf(markdown_text: str, dest_path: Path) -> bool:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         body_html = markdown.markdown(
-            markdown_text,
+            preprocess_markdown_for_pdf(markdown_text),
             extensions=["fenced_code", "tables", "toc"],
         )
     except Exception as exc:
