@@ -111,6 +111,7 @@ def test_section8_qualitative_evidence_subsections_and_limits() -> None:
     """Section 8 mandates sourced Qualitative evidence before short blend text."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     assert "### Qualitative evidence" in j2
+    assert "### Qualitative deep-dive & suggested blend (advisory)" in j2
     assert "### Horizon & blend application" in j2
     assert "### Directional resolution" in j2
     assert "minimum **6**" in j2 or "minimum 6" in j2
@@ -122,8 +123,18 @@ def test_section8_qualitative_evidence_subsections_and_limits() -> None:
 def test_synthesizer_preserves_section8_qualitative_bullets() -> None:
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     assert "Preserve and dedupe" in synth and "Qualitative evidence" in synth
+    assert "### Qualitative deep-dive & suggested blend (advisory)" in synth
     assert "methodology-only" in synth.lower()
     assert "conflicting" in synth.lower() and "sources" in synth.lower()
+
+
+def test_qualitative_deep_dive_subsection_title_in_equity_j2_and_synthesizer_md() -> None:
+    title = "### Qualitative deep-dive & suggested blend (advisory)"
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    assert title in j2
+    assert title in synth
+    assert j2.find("### Qualitative evidence") < j2.find(title) < j2.find("### Horizon & blend application")
 
 
 def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:

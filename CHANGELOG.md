@@ -6,6 +6,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+- **Prompts:** Section 8 adds **### Qualitative deep-dive & suggested blend (advisory)** (rank/stack drivers + per-horizon advisory `qual : quant` with reasoning; canonical fenced blend table stays binding) in `equity_analyst.j2`; `synthesizer_system.md` reconciles provider advisory splits against **__T0_BLEND_LITERAL__** / canonical rows. (`feat(prompts): add qualitative deep-dive & advisory qual:quant split`)
+
 ### 2026-05-13
 
 - **DB:** Alembic **`0002_add_runs_env`**: **`runs.env`** (**`production`** | **`test`**, default **`production`**). Postgres writes run when **`db_enabled`** and the DB are available and **`run_profile == production` OR `env == test`** (so **`env=test`** + **`run_profile=dev`** persists test-tier rows; **`env=production`** + **`run_profile=dev`** still skips DB). Test tier no longer forces **`db_enabled=false`**; use **`--no-db`** / YAML / **`DB_ENABLED=0`** to opt out. **`run.json`** includes top-level **`env`**; outcome and prediction upserts read **`env`** from **`run.json`**. (`feat(db): persist test-tier runs with runs.env column`)
