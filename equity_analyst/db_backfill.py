@@ -15,12 +15,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from equity_analyst.config import env_from_persisted_run_json
 from equity_analyst.db_models import ProviderResponseRow, RunRow
+from equity_analyst.run_json_serde import canonical_run_document_dict
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +65,9 @@ def _parse_dt_iso(v: Any) -> datetime | None:
 def _verifier_summary_from_history(history: Any) -> dict[str, Any] | None:
     if not isinstance(history, list) or not history:
         return None
-    verified = sum(
-        len(h.get("verified") or []) for h in history if isinstance(h, dict)
-    )
-    contradicted = sum(
-        len(h.get("contradicted") or []) for h in history if isinstance(h, dict)
-    )
-    unverifiable = sum(
-        len(h.get("unverifiable") or []) for h in history if isinstance(h, dict)
-    )
+    verified = sum(len(h.get("verified") or []) for h in history if isinstance(h, dict))
+    contradicted = sum(len(h.get("contradicted") or []) for h in history if isinstance(h, dict))
+    unverifiable = sum(len(h.get("unverifiable") or []) for h in history if isinstance(h, dict))
     return {
         "verified": verified,
         "contradicted": contradicted,
@@ -150,13 +145,9 @@ def build_run_row(*, run_id: str, run_dir: Path, data: dict[str, Any]) -> dict[s
     if not isinstance(symbol, str) or not symbol:
         # Fall back to the leading segment of the run dir name (e.g. CRCL_20260511T...).
         symbol = run_id.split("_", 1)[0] or "UNKNOWN"
-    earnings_date = (
-        cfg.get("earnings_date") if isinstance(cfg.get("earnings_date"), str) else None
-    )
+    earnings_date = cfg.get("earnings_date") if isinstance(cfg.get("earnings_date"), str) else None
     run_environment = (
-        cfg.get("run_environment")
-        if isinstance(cfg.get("run_environment"), str)
-        else None
+        cfg.get("run_environment") if isinstance(cfg.get("run_environment"), str) else None
     )
     iterative = bool(data.get("iterative", False))
     iterations_completed = _coerce_int(data.get("iterations_completed"))
@@ -175,9 +166,7 @@ def build_run_row(*, run_id: str, run_dir: Path, data: dict[str, Any]) -> dict[s
 
     verifier_summary = _verifier_summary_from_history(data.get("verification_history"))
     drive_folder_url = (
-        data.get("drive_folder_url")
-        if isinstance(data.get("drive_folder_url"), str)
-        else None
+        data.get("drive_folder_url") if isinstance(data.get("drive_folder_url"), str) else None
     )
 
     return {
@@ -190,7 +179,8 @@ def build_run_row(*, run_id: str, run_dir: Path, data: dict[str, Any]) -> dict[s
         "finished_at_utc": finished_at,
         "iterative": iterative,
         "iterations_completed": iterations_completed,
-        "config_snapshot": data,
+        "config_snapshot": canonical_run_document_dict(data),
+        "run_document": canonical_run_document_dict(data),
         "synthesis_path": synthesis_rel,
         "synthesizer_provider": syn_provider,
         "synthesizer_model": syn_model,
@@ -200,9 +190,7 @@ def build_run_row(*, run_id: str, run_dir: Path, data: dict[str, Any]) -> dict[s
     }
 
 
-def _provider_response_path(
-    *, outputs_parent: str, run_id: str, relative: str
-) -> str:
+def _provider_response_path(*, outputs_parent: str, run_id: str, relative: str) -> str:
     return f"{outputs_parent}/{run_id}/{relative}"
 
 
@@ -283,7 +271,12 @@ def build_provider_response_rows(
                     ),
                 }
             )
-    elif iterative and providers_cfg and isinstance(iterations_completed, int) and iterations_completed > 0:
+    elif (
+        iterative
+        and providers_cfg
+        and isinstance(iterations_completed, int)
+        and iterations_completed > 0
+    ):
         for it in range(1, iterations_completed + 1):
             rel = f"iterations/iteration_{it}_providers.md"
             file_path = run_dir / rel
@@ -392,26 +385,18 @@ async def backfill_run_directory(
             skipped_reasons=["run.json is not an object"],
         )
 
-    existing_q = await session.execute(
-        select(RunRow.run_id).where(RunRow.run_id == run_id)
-    )
+    existing_q = await session.execute(select(RunRow.run_id).where(RunRow.run_id == run_id))
     already_present = existing_q.scalar_one_or_none() is not None
 
     run_row = build_run_row(run_id=run_id, run_dir=run_dir, data=data)
     stmt = pg_insert(RunRow).values(**run_row)
     stmt = stmt.on_conflict_do_update(
         index_elements=[RunRow.run_id],
-        set_={
-            k: stmt.excluded[k]
-            for k in run_row
-            if k not in ("run_id", "created_at_utc")
-        },
+        set_={k: stmt.excluded[k] for k in run_row if k not in ("run_id", "created_at_utc")},
     )
     await session.execute(stmt)
 
-    await session.execute(
-        delete(ProviderResponseRow).where(ProviderResponseRow.run_id == run_id)
-    )
+    await session.execute(delete(ProviderResponseRow).where(ProviderResponseRow.run_id == run_id))
     pr_rows = build_provider_response_rows(run_id=run_id, run_dir=run_dir, data=data)
     if pr_rows:
         await session.execute(pg_insert(ProviderResponseRow).values(pr_rows))
@@ -439,6 +424,42 @@ def _parse_run_dir_timestamp(name: str) -> datetime | None:
         return datetime.strptime(tail, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     except ValueError:
         return None
+
+
+
+
+
+async def hydrate_missing_run_documents_from_disk(
+    session: AsyncSession, run_dirs: list[Path]
+) -> tuple[int, int]:
+    """Populate ``runs.run_document`` from ``run.json`` for rows where it is NULL."""
+    now = datetime.now(tz=UTC)
+    updated = 0
+    skipped = 0
+    for run_dir in run_dirs:
+        run_id = run_dir.name
+        rj = run_dir / "run.json"
+        if not rj.is_file():
+            skipped += 1
+            continue
+        try:
+            raw = json.loads(rj.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            skipped += 1
+            continue
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        doc = canonical_run_document_dict(raw)
+        res = await session.execute(
+            update(RunRow)
+            .where(RunRow.run_id == run_id, RunRow.run_document.is_(None))
+            .values(run_document=doc, updated_at_utc=now)
+        )
+        rc = getattr(res, "rowcount", None)
+        if isinstance(rc, int) and rc > 0:
+            updated += 1
+    return updated, skipped
 
 
 def iter_run_directories(

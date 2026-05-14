@@ -41,6 +41,7 @@ def _weekday_index_from_label(label: str) -> int | None:
     }
     return mapping.get(key)
 
+
 _FACTS_PACKET_MAX_OUT_MIN = 256
 _FACTS_PACKET_MAX_OUT_MAX = 128_000
 
@@ -153,7 +154,9 @@ def resolve_drive_oauth_client_secrets_path_from_optional(raw: str | None) -> Pa
 
 def resolve_drive_oauth_client_secrets_path(cfg: RunConfig) -> Path:
     """Resolved client secrets path for a loaded :class:`RunConfig`."""
-    return resolve_drive_oauth_client_secrets_path_from_optional(cfg.drive_oauth_client_secrets_path)
+    return resolve_drive_oauth_client_secrets_path_from_optional(
+        cfg.drive_oauth_client_secrets_path
+    )
 
 
 class ProviderConfig(BaseModel):
@@ -537,11 +540,18 @@ class RunConfig(BaseModel):
     )
     db_enabled: bool = Field(
         default=True,
-        description="When True, write best-effort structured metadata to Postgres (additive; files remain source of truth).",
+        description="When True, write best-effort structured metadata to Postgres (additive). "
+        "Hybrid storage: normalized ``runs`` columns plus ``runs.run_document`` JSONB mirroring ``run.json``.",
     )
     database_url: str | None = Field(
         default=None,
         description="Optional DB connection override; when omitted, uses env DATABASE_URL (loaded via python-dotenv).",
+    )
+    persist_run_json_to_disk: bool = Field(
+        default=True,
+        description="When True (default), write ``outputs/<run_id>/run.json``. When False, skip the file while "
+        "still upserting ``runs.run_document`` when DB writes run. Set ``EQUITY_PERSIST_RUN_JSON=0`` to opt out. "
+        "``drive_upload_enabled`` forces this True so Drive can read ``run.json``.",
     )
 
     @field_validator("drive_auth_mode", mode="before")
@@ -779,6 +789,13 @@ class RunConfig(BaseModel):
         return self.model_copy(update=updates) if updates else self
 
     @model_validator(mode="after")
+    def _drive_upload_requires_run_json_on_disk(self) -> Self:
+        """Drive append reads ``run.json`` on disk; keep a file mirror when uploads are enabled."""
+        if self.drive_upload_enabled and not self.persist_run_json_to_disk:
+            return self.model_copy(update={"persist_run_json_to_disk": True})
+        return self
+
+    @model_validator(mode="after")
     def _run_environment_env_override(self) -> Self:
         raw = os.environ.get("RUN_ENVIRONMENT")
         if raw is None or not str(raw).strip():
@@ -809,6 +826,10 @@ class RunConfig(BaseModel):
             raw = os.environ.get("DATABASE_URL")
             if raw is not None and str(raw).strip():
                 updates["database_url"] = str(raw).strip()
+        prj = os.environ.get("EQUITY_PERSIST_RUN_JSON")
+        if prj is not None and str(prj).strip():
+            s = str(prj).strip().lower()
+            updates["persist_run_json_to_disk"] = s in ("1", "true", "yes", "on")
         return self.model_copy(update=updates) if updates else self
 
     @model_validator(mode="after")
@@ -904,7 +925,12 @@ class RunConfig(BaseModel):
             and str(cf).strip()
             and "conditional_fanout_enabled" not in self.model_fields_set
         ):
-            updates["conditional_fanout_enabled"] = str(cf).strip().lower() in ("1", "true", "yes", "on")
+            updates["conditional_fanout_enabled"] = str(cf).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
         foc = os.environ.get("FAN_OUT_ON_CONTINUE")
         if (
             foc is not None
@@ -918,7 +944,12 @@ class RunConfig(BaseModel):
             and str(rm).strip()
             and "refinement_mode_prompt_enabled" not in self.model_fields_set
         ):
-            updates["refinement_mode_prompt_enabled"] = str(rm).strip().lower() in ("1", "true", "yes", "on")
+            updates["refinement_mode_prompt_enabled"] = str(rm).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
         ocf = os.environ.get("OPTIONS_CHAIN_AUTO_FETCH")
         if (
             ocf is not None

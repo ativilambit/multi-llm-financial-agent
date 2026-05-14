@@ -13,7 +13,13 @@ from equity_analyst.config import (
     env_from_persisted_run_json,
     run_profile_from_persisted_run_json,
 )
-from equity_analyst.db_ops import best_effort_replace_predictions as db_replace_predictions
+from equity_analyst.db import is_db_available
+from equity_analyst.db_ops import (
+    best_effort_replace_predictions as db_replace_predictions,
+)
+from equity_analyst.db_ops import (
+    load_run_document_from_db,
+)
 from equity_analyst.outcome_tracker import _pick_synthesis_path
 from equity_analyst.prompt_export import logical_prompt_split, prompt_call_context
 from equity_analyst.prompt_parts import _load_prompt_file
@@ -304,7 +310,10 @@ async def _invoke_prediction_extract_llm(
     timeout_s = float(config.prediction_extract_timeout_s)
 
     async def _call() -> ProviderResponse:
-        with prompt_call_context(node="prediction_extract"), logical_prompt_split(system, user_message):
+        with (
+            prompt_call_context(node="prediction_extract"),
+            logical_prompt_split(system, user_message),
+        ):
             return await provider.generate(
                 prompt,
                 enable_web_search=False,
@@ -396,9 +405,17 @@ async def run_prediction_extract_for_run_dir(
         run_json_path = run_dir / "run.json"
         db_profile = cfg.run_profile
         db_env = cfg.env
+        blob: dict[str, Any] | None = None
         if run_json_path.is_file():
             try:
-                blob = json.loads(run_json_path.read_text(encoding="utf-8"))
+                raw = json.loads(run_json_path.read_text(encoding="utf-8"))
+                blob = raw if isinstance(raw, dict) else None
+            except Exception:
+                blob = None
+        if blob is None and cfg.db_enabled and await is_db_available(database_url=cfg.database_url):
+            blob = await load_run_document_from_db(run_id, database_url=cfg.database_url)
+        if isinstance(blob, dict):
+            try:
                 db_profile = run_profile_from_persisted_run_json(blob)
                 db_env = env_from_persisted_run_json(blob)
             except Exception:

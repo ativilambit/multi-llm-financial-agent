@@ -6,7 +6,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
-- **Prompts:** Section 8 adds **### Qualitative deep-dive & suggested blend (advisory)** (rank/stack drivers + per-horizon advisory `qual : quant` with reasoning; canonical fenced blend table stays binding) in `equity_analyst.j2`; `synthesizer_system.md` reconciles provider advisory splits against **__T0_BLEND_LITERAL__** / canonical rows. (`feat(prompts): add qualitative deep-dive & advisory qual:quant split`)
+- **DB (hybrid run storage):** Alembic **`0003_runs_run_document`** adds nullable **`runs.run_document`** JSONB (full **`run.json`** snapshot; canonical serialization in **`equity_analyst/run_json_serde.py`**). Normalized **`runs`** columns are derived from the **same** in-memory dict as **`run_document`** / **`config_snapshot`** on upsert. Default dual-write to **`outputs/.../run.json`**; **`RunConfig.persist_run_json_to_disk`**, **`EQUITY_PERSIST_RUN_JSON`**, and CLI **`--persist-run-json` / `--no-persist-run-json`** skip disk when disabled (Drive upload still forces disk). **`db-backfill --hydrate-run-document`** (alias **`--include-run-document`**) fills null JSONB from on-disk **`run.json`**. **`load_run_document_from_db`** / **`async_load_run_json_dict_for_run_dir`** back outcome and prediction tooling when **`run.json`** is absent. (`feat(db): hybrid run storage (runs.run_document JSONB)`)
 
 ### 2026-05-13
 

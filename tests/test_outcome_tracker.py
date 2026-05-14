@@ -3,7 +3,39 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from equity_analyst.outcome_tracker import record_outcome
+
+
+def test_record_outcome_loads_from_db_when_run_json_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run_dir = tmp_path / "outputs" / "ACME_20260511T123456Z"
+    run_dir.mkdir(parents=True)
+    (run_dir / "synthesis.md").write_text("# synthesis\n", encoding="utf-8")
+
+    async def _fake_load(_run_id: str, *, database_url: str | None = None) -> dict[str, object]:
+        return {
+            "dry_run": False,
+            "timestamp_utc": "2026-05-11T12:34:56Z",
+            "config": {"symbol": "ACME", "earnings_date": "2026-05-11", "current_price": 10.0},
+        }
+
+    monkeypatch.setattr("equity_analyst.db_ops.load_run_document_from_db", _fake_load)
+
+    record_outcome(
+        run_dir=run_dir,
+        earnings_day_close=12.34,
+        next_trading_day_close=12.0,
+        direction_vs_prior_close="up",
+        notes="ok",
+        source="manual",
+    )
+
+    payload = json.loads((run_dir / "outcome.json").read_text(encoding="utf-8"))
+    assert payload["symbol"] == "ACME"
+    assert "postgres:runs.run_document:" in payload["run_json_path"]
 
 
 def test_record_outcome_writes_outcome_json_and_registry(tmp_path: Path) -> None:

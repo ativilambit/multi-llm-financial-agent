@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
-import json
 import logging
 import time
 from dataclasses import asdict, dataclass
@@ -37,6 +36,7 @@ from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
+from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.synthesizer import (
     SynthesisResult,
     Synthesizer,
@@ -124,33 +124,29 @@ class Orchestrator:
                 rendered.text.rstrip(),
                 "",
             ]
-            run_json.write_text(
-                json.dumps(
-                    {
-                        "dry_run": True,
-                        "run_profile": self._config.run_profile,
-                        "env": self._config.env,
-                        "started_at_utc": started_at_utc.isoformat(),
-                        "finished_at_utc": datetime.now(tz=UTC).replace(microsecond=0).isoformat(),
-                        "timestamp_utc": datetime.now(tz=UTC).isoformat(),
-                        "config": self._config.model_dump(),
-                        "template_path": rendered.template_path,
-                        "providers": {
-                            pc.name: {
-                                "enabled": True,
-                                "web_search": effective_web_search(
-                                    run_default=enable_web_search, pc=pc
-                                ),
-                            }
-                            for pc in self._config.providers
-                        },
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            dry_meta: dict[str, Any] = {
+                "dry_run": True,
+                "run_profile": self._config.run_profile,
+                "env": self._config.env,
+                "started_at_utc": started_at_utc.isoformat(),
+                "finished_at_utc": datetime.now(tz=UTC).replace(microsecond=0).isoformat(),
+                "timestamp_utc": datetime.now(tz=UTC).isoformat(),
+                "config": self._config.model_dump(),
+                "template_path": rendered.template_path,
+                "providers": {
+                    pc.name: {
+                        "enabled": True,
+                        "web_search": effective_web_search(
+                            run_default=enable_web_search, pc=pc
+                        ),
+                    }
+                    for pc in self._config.providers
+                },
+            }
+            run_json_text = format_run_json_for_disk(dry_meta)
+            if self._config.persist_run_json_to_disk:
+                run_json.write_text(run_json_text, encoding="utf-8")
+            run_json_data = canonical_run_document_dict(dry_meta)
             preview_md = "\n".join(preview_lines)
             synthesis_file.write_text(preview_md, encoding="utf-8")
             maybe_write_pdf_sibling(
@@ -163,10 +159,6 @@ class Orchestrator:
                     self._config, out_dir, append_synthesis_footer=False
                 )
             finished_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
-            try:
-                run_json_data = json.loads(run_json.read_text(encoding="utf-8"))
-            except Exception:
-                run_json_data = {}
             with contextlib.suppress(Exception):
                 await best_effort_upsert_run_and_responses(
                     cfg=self._config,
@@ -177,6 +169,7 @@ class Orchestrator:
                     provider_responses=[],
                     synthesis_path=synthesis_file,
                     database_url=self._config.database_url,
+                    run_document=run_json_data,
                 )
             logger.info("Run end (dry-run) output_dir=%s", str(out_dir.resolve()))
             return ("\n".join(preview_lines), artifacts)
@@ -445,16 +438,15 @@ class Orchestrator:
                     else None
                 ),
             }
-            run_json.write_text(json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            run_json_text = format_run_json_for_disk(run_meta)
+            if self._config.persist_run_json_to_disk:
+                run_json.write_text(run_json_text, encoding="utf-8")
+            run_json_data = canonical_run_document_dict(run_meta)
 
             if self._config.drive_upload_enabled:
                 await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
 
             finished_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
-            try:
-                run_json_data = json.loads(run_json.read_text(encoding="utf-8"))
-            except Exception:
-                run_json_data = {}
             with contextlib.suppress(Exception):
                 provider_rows: list[tuple[int | None, str, ProviderResponse, str, bool]] = []
                 for pc in self._config.providers:
@@ -500,6 +492,7 @@ class Orchestrator:
                     provider_responses=provider_rows,
                     synthesis_path=synthesis_file,
                     database_url=self._config.database_url,
+                    run_document=run_json_data,
                 )
 
             if self._config.prediction_extract_enabled:

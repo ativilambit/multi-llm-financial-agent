@@ -24,7 +24,9 @@ def test_get_async_engine_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(db, "create_async_engine", _fake_create_async_engine)
 
     e1 = db.get_async_engine(database_url="postgresql+psycopg://x:y@localhost:5432/z")
-    e2 = db.get_async_engine(database_url="postgresql+psycopg://different:ignored@localhost:5432/ignored")
+    e2 = db.get_async_engine(
+        database_url="postgresql+psycopg://different:ignored@localhost:5432/ignored"
+    )
 
     assert e1 is e2
     assert created == ["postgresql+psycopg://x:y@localhost:5432/z"]
@@ -105,3 +107,21 @@ def test_postgres_metadata_writes_enabled_gate() -> None:
     assert postgres_metadata_writes_enabled(run_profile="production", env="test") is True
     assert postgres_metadata_writes_enabled(run_profile="dev", env="production") is False
 
+
+@pytest.mark.asyncio
+async def test_load_run_document_from_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    from equity_analyst.db_ops import load_run_document_from_db
+
+    monkeypatch.setattr("equity_analyst.db_ops.is_db_available", AsyncMock(return_value=True))
+
+    class _S:
+        async def scalar(self, *_a: object, **_kw: object) -> dict[str, object]:
+            return {"run_id": "X_20260101T000000Z", "config": {"symbol": "X"}}
+
+    @contextlib.asynccontextmanager
+    async def _sess(*_a: object, **_kw: object):
+        yield _S()
+
+    monkeypatch.setattr("equity_analyst.db_ops.get_async_session", _sess)
+    got = await load_run_document_from_db("X_20260101T000000Z")
+    assert got == {"run_id": "X_20260101T000000Z", "config": {"symbol": "X"}}

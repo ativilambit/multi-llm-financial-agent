@@ -95,6 +95,8 @@ def test_build_run_row_full_metadata(tmp_path: Path) -> None:
     assert row["finished_at_utc"] is not None
     assert row["synthesis_path"] == "outputs/CRCL_20260511T023700Z/synthesis.md"
     assert row["config_snapshot"]["config"]["symbol"] == "CRCL"
+    assert isinstance(row.get("run_document"), dict)
+    assert row["run_document"]["config"]["symbol"] == "CRCL"
 
 
 def test_build_run_row_env_from_top_level(tmp_path: Path) -> None:
@@ -158,7 +160,9 @@ def test_build_provider_response_rows_non_iterative(tmp_path: Path) -> None:
 
     # One fan-out provider row + one synthesizer row.
     assert len(rows) == 2
-    fanout = next(r for r in rows if r["iteration"] is None and r["response_path"].endswith("openai.md"))
+    fanout = next(
+        r for r in rows if r["iteration"] is None and r["response_path"].endswith("openai.md")
+    )
     assert fanout["provider"] == "openai"
     assert fanout["model"] == "gpt-5.5"
     assert fanout["succeeded"] is True
@@ -278,6 +282,7 @@ def test_iter_run_directories_skips_batch_dirs_and_filters(tmp_path: Path) -> No
     ]
 
     from datetime import UTC, datetime
+
     cutoff = datetime(2026, 5, 11, tzinfo=UTC)
     since = iter_run_directories(outputs, since=cutoff)
     assert [p.name for p in since] == ["CRCL_20260511T120000Z"]

@@ -7,16 +7,36 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, insert
+from sqlalchemy import delete, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from equity_analyst.config import RunConfig, RunEnvironment, RunProfile
+from equity_analyst.config import RunConfig, RunEnvironment, RunProfile, env_from_persisted_run_json
 from equity_analyst.db import get_async_session, is_db_available
 from equity_analyst.db_models import OutcomeRow, PredictionRow, ProviderResponseRow, RunRow
 from equity_analyst.provider_runtime import is_failed_provider_response
+from equity_analyst.run_json_serde import canonical_run_document_dict
 from equity_analyst.types import ProviderResponse
 
 logger = logging.getLogger(__name__)
+
+
+async def load_run_document_from_db(
+    run_id: str, *, database_url: str | None = None
+) -> dict[str, Any] | None:
+    """Return ``runs.run_document`` for ``run_id``, or ``None`` if missing / unavailable."""
+    if not await is_db_available(database_url=database_url):
+        return None
+    try:
+        async with get_async_session(database_url=database_url) as session:
+            doc = await session.scalar(select(RunRow.run_document).where(RunRow.run_id == run_id))
+    except Exception as exc:
+        logger.warning("load_run_document_from_db failed run_id=%s error=%r", run_id, exc)
+        return None
+    if doc is None:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    return doc
 
 
 def postgres_metadata_writes_enabled(*, run_profile: RunProfile, env: RunEnvironment) -> bool:
@@ -71,10 +91,13 @@ async def best_effort_upsert_run_and_responses(
     provider_responses: Iterable[tuple[int | None, str, ProviderResponse, str, bool]],
     synthesis_path: Path,
     database_url: str | None = None,
+    run_document: dict[str, Any] | None = None,
 ) -> None:
     if not cfg.db_enabled:
         return
-    if run_json_data.get("dry_run") is True:
+
+    source_meta = run_document if run_document is not None else run_json_data
+    if source_meta.get("dry_run") is True:
         logger.info("DB write skipped: dry_run=True")
         return
     if not postgres_metadata_writes_enabled(run_profile=cfg.run_profile, env=cfg.env):
@@ -92,32 +115,58 @@ async def best_effort_upsert_run_and_responses(
     run_id = run_dir.name
     now = datetime.now(tz=UTC)
 
-    synth_raw = run_json_data.get("synthesis")
+    doc_row = canonical_run_document_dict(source_meta)
+    cfg_snap = doc_row.get("config")
+    cfg_d: dict[str, Any] = cfg_snap if isinstance(cfg_snap, dict) else {}
+
+    symbol = cfg.symbol
+    sym_raw = cfg_d.get("symbol")
+    if isinstance(sym_raw, str) and sym_raw.strip():
+        symbol = sym_raw.strip()
+
+    earnings_date = cfg.earnings_date
+    earn_raw = cfg_d.get("earnings_date")
+    if isinstance(earn_raw, str) and earn_raw.strip():
+        earnings_date = earn_raw.strip()
+
+    run_env_raw = cfg_d.get("run_environment")
+    if isinstance(run_env_raw, str) and run_env_raw.strip():
+        run_environment = run_env_raw.strip()
+    else:
+        run_environment = str(cfg.run_environment)
+
+    env_tier = env_from_persisted_run_json(doc_row)
+
+    started_eff = _parse_dt_iso(doc_row.get("started_at_utc")) or started_at_utc
+    finished_eff = _parse_dt_iso(doc_row.get("finished_at_utc")) or finished_at_utc
+
+    synth_raw = doc_row.get("synthesis")
     synth: dict[str, Any] = synth_raw if isinstance(synth_raw, dict) else {}
-    drive_folder_url = run_json_data.get("drive_folder_url")
+    drive_folder_url = doc_row.get("drive_folder_url")
     if drive_folder_url is not None and not isinstance(drive_folder_url, str):
         drive_folder_url = None
 
-    iterative = bool(run_json_data.get("iterative", False))
-    iterations_completed = int(run_json_data.get("iterations_completed", 0) or 0) or None
+    iterative = bool(doc_row.get("iterative", False))
+    iterations_completed = int(doc_row.get("iterations_completed", 0) or 0) or None
 
     verifier_summary = _verifier_summary_from_history(
-        run_json_data.get("verification_history")
-        if isinstance(run_json_data.get("verification_history"), list)
+        doc_row.get("verification_history")
+        if isinstance(doc_row.get("verification_history"), list)
         else None
     )
 
     run_row: dict[str, Any] = {
         "run_id": run_id,
-        "symbol": cfg.symbol,
-        "earnings_date": cfg.earnings_date,
-        "env": cfg.env,
-        "run_environment": cfg.run_environment,
-        "started_at_utc": started_at_utc,
-        "finished_at_utc": finished_at_utc,
+        "symbol": symbol,
+        "earnings_date": earnings_date,
+        "env": env_tier,
+        "run_environment": run_environment,
+        "started_at_utc": started_eff,
+        "finished_at_utc": finished_eff,
         "iterative": iterative,
         "iterations_completed": iterations_completed,
-        "config_snapshot": run_json_data,
+        "config_snapshot": doc_row,
+        "run_document": doc_row,
         "synthesis_path": _relative_under_outputs(run_dir, synthesis_path),
         "synthesizer_provider": synth.get("provider"),
         "synthesizer_model": synth.get("model"),

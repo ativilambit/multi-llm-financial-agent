@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import logging
 import sys
@@ -40,6 +39,7 @@ from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_export import use_prompt_exporter
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
+from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.synthesizer_blend import normalize_t0_blend_preset
 
 logger = logging.getLogger(__name__)
@@ -292,7 +292,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     outcome = sub.add_parser("outcome-record", help="Record realized outcomes for a prior run")
-    outcome.add_argument("--run-dir", required=True, help="Absolute or relative path to outputs/<run>/")
+    ocx = outcome.add_mutually_exclusive_group(required=True)
+    ocx.add_argument(
+        "--run-dir",
+        help="Absolute or relative path to outputs/<run>/ (must contain synthesis artifacts).",
+    )
+    ocx.add_argument(
+        "--run-id",
+        help="Run folder name (e.g. CRCL_20260511T000000Z) under --outputs-dir; "
+        "loads config from Postgres runs.run_document when run.json is missing.",
+    )
+    outcome.add_argument(
+        "--outputs-dir",
+        default="outputs",
+        help="Parent directory for --run-id (default: outputs/). Ignored with --run-dir.",
+    )
     outcome.add_argument(
         "--interactive",
         action="store_true",
@@ -496,6 +510,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only backfill runs whose directory timestamp is >= this date (YYYY-MM-DD).",
     )
     backfill.add_argument(
+        "--hydrate-run-document",
+        action="store_true",
+        dest="hydrate_run_document",
+        help="After each run upsert, set runs.run_document from on-disk run.json when JSONB is null.",
+    )
+    backfill.add_argument(
+        "--include-run-document",
+        action="store_true",
+        dest="hydrate_run_document",
+        help="Deprecated alias for --hydrate-run-document.",
+    )
+    backfill.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default="INFO",
@@ -647,11 +673,14 @@ async def _run_iterative_cli(
         )
         nodes = dry_run_compile_only(registry=reg)
         return (
-            "# Iterative dry-run\n\n"
-            f"Graph nodes: {', '.join(nodes)}\n\n"
-            "## Rendered prompt (excerpt)\n\n"
-            + rendered.text[:8000]
-        ), Path("."), {}
+            (
+                "# Iterative dry-run\n\n"
+                f"Graph nodes: {', '.join(nodes)}\n\n"
+                "## Rendered prompt (excerpt)\n\n" + rendered.text[:8000]
+            ),
+            Path("."),
+            {},
+        )
     out_dir: Path
     thread_id: str
     resume = bool(args.resume)
@@ -690,10 +719,8 @@ async def _run_iterative_cli(
         "confidence_threshold": args.confidence_threshold,
         "errors": [],
     }
-    if not resume:
-        (out_dir / "run.json").write_text(
-            json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+    if not resume and cfg.persist_run_json_to_disk:
+        (out_dir / "run.json").write_text(format_run_json_for_disk(meta), encoding="utf-8")
     async with AsyncSqliteSaver.from_conn_string(str(ckpt)) as saver:
         app = compile_refinement_workflow(registry=reg, checkpointer=saver)
         config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
@@ -705,6 +732,7 @@ async def _run_iterative_cli(
                 st["max_iterations"] = args.max_iterations
                 st["confidence_threshold"] = args.confidence_threshold
                 st["enable_web_search"] = args.enable_web_search
+                st["run_meta_seed"] = meta
                 final_state = await app.ainvoke(st, config=config)
     logger.info("Iterative run finished output_dir=%s", str(out_dir.resolve()))
     return str(final_state.get("final_report", "")), out_dir, final_state
@@ -792,8 +820,16 @@ def _run_outcome_record_batch_cli(args: argparse.Namespace) -> int:
         o = res.outcome
         sym = o.symbol
         run_id = run_dir.name
-        artifact_note = "dry-run: no files written" if args.dry_run else "outcome.json written with nulls; rerun later"
-        partial_note = "dry-run: no files written" if args.dry_run else "outcome.json written; rerun later if needed"
+        artifact_note = (
+            "dry-run: no files written"
+            if args.dry_run
+            else "outcome.json written with nulls; rerun later"
+        )
+        partial_note = (
+            "dry-run: no files written"
+            if args.dry_run
+            else "outcome.json written; rerun later if needed"
+        )
         if res.auto_fetch_used and res.yfinance_empty:
             partial += 1
             _print_outcome_batch_warn_line(
@@ -889,9 +925,19 @@ def _run_predictions_extract_batch_cli(args: argparse.Namespace) -> int:
         try:
             if not run_dir.is_dir():
                 raise FileNotFoundError(f"missing run directory: {run_dir}")
-            if not run_json.is_file():
-                raise FileNotFoundError(f"missing run.json: {run_json}")
-            data = json.loads(run_json.read_text(encoding="utf-8"))
+            data: dict[str, Any] | None = None
+            if run_json.is_file():
+                try:
+                    raw = json.loads(run_json.read_text(encoding="utf-8"))
+                    data = raw if isinstance(raw, dict) else None
+                except (OSError, json.JSONDecodeError):
+                    data = None
+            if data is None:
+                from equity_analyst.db_ops import load_run_document_from_db
+
+                data = asyncio.run(load_run_document_from_db(run_dir.name))
+            if not isinstance(data, dict):
+                raise FileNotFoundError(f"missing run.json and no runs.run_document: {run_json}")
             cfg_raw = data.get("config")
             if not isinstance(cfg_raw, dict):
                 raise ValueError("run.json missing config snapshot")
@@ -942,67 +988,77 @@ def main(argv: list[str] | None = None) -> int:
         if args.iterative:
             text, out_dir, final_state = asyncio.run(_run_iterative_cli(args, cfg, prompt_path))
             if not args.dry_run:
-                with contextlib.suppress(Exception):
-                    run_json = out_dir / "run.json"
-                    if run_json.is_file():
-                        data = json.loads(run_json.read_text(encoding="utf-8"))
-                        data["finished_at_utc"] = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-                        data["run_profile"] = cfg.run_profile
-                        data["env"] = cfg.env
-                        run_json.write_text(
-                            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-                        )
-                        run_json_data = json.loads(run_json.read_text(encoding="utf-8"))
-                    else:
-                        run_json_data = {}
-
-                    # Build per-provider rows from in-memory final_state (avoids parsing files).
-                    provider_map = {pc.name: pc for pc in cfg.providers}
-                    pr_rows: list[tuple[int | None, str, Any, str, bool]] = []
-                    resp_rounds = (
-                        final_state.get("provider_responses")
-                        if isinstance(final_state, dict)
-                        else None
+                meta_blob: dict[str, Any] | None = None
+                if isinstance(final_state.get("final_run_meta"), dict):
+                    meta_blob = final_state["final_run_meta"]
+                elif (out_dir / "run.json").is_file():
+                    try:
+                        meta_blob = json.loads((out_dir / "run.json").read_text(encoding="utf-8"))
+                    except Exception:
+                        meta_blob = None
+                if isinstance(meta_blob, dict):
+                    meta_blob["finished_at_utc"] = (
+                        datetime.now(tz=UTC).replace(microsecond=0).isoformat()
                     )
-                    if isinstance(resp_rounds, list):
-                        for i, round_blob in enumerate(resp_rounds, start=1):
-                            if not isinstance(round_blob, dict):
-                                continue
-                            raw = round_blob.get("responses")
-                            if not isinstance(raw, dict):
-                                continue
-                            try:
-                                response_path = str(
-                                    (out_dir / "iterations" / f"iteration_{i}_providers.md").relative_to(
-                                        out_dir.parent
-                                    )
-                                )
-                            except Exception:
-                                response_path = str(out_dir / "iterations" / f"iteration_{i}_providers.md")
-                            for prov_name, d in raw.items():
-                                if not isinstance(d, dict):
-                                    continue
-                                resp = _dict_to_provider_response(d)
-                                pc = provider_map.get(prov_name)
-                                ws_enabled = (
-                                    bool(pc.web_search) if pc and pc.web_search is not None else bool(args.enable_web_search)
-                                )
-                                pr_rows.append((i, prov_name, resp, response_path, ws_enabled))
+                    meta_blob["run_profile"] = cfg.run_profile
+                    meta_blob["env"] = cfg.env
+                    body = format_run_json_for_disk(meta_blob)
+                    if cfg.persist_run_json_to_disk:
+                        (out_dir / "run.json").write_text(body, encoding="utf-8")
+                    run_json_data = canonical_run_document_dict(meta_blob)
+                else:
+                    run_json_data = {}
 
-                    started_at = run_json_data.get("started_at_utc")
-                    finished_at = run_json_data.get("finished_at_utc")
-                    asyncio.run(
-                        best_effort_upsert_run_and_responses(
-                            cfg=cfg,
-                            run_dir=out_dir,
-                            run_json_data=run_json_data,
-                            started_at_utc=_parse_dt_iso(started_at),
-                            finished_at_utc=_parse_dt_iso(finished_at),
-                            provider_responses=pr_rows,
-                            synthesis_path=out_dir / "synthesis.md",
-                            database_url=cfg.database_url,
-                        )
+                # Build per-provider rows from in-memory final_state (avoids parsing files).
+                provider_map = {pc.name: pc for pc in cfg.providers}
+                pr_rows: list[tuple[int | None, str, Any, str, bool]] = []
+                resp_rounds = (
+                    final_state.get("provider_responses") if isinstance(final_state, dict) else None
+                )
+                if isinstance(resp_rounds, list):
+                    for i, round_blob in enumerate(resp_rounds, start=1):
+                        if not isinstance(round_blob, dict):
+                            continue
+                        raw = round_blob.get("responses")
+                        if not isinstance(raw, dict):
+                            continue
+                        try:
+                            response_path = str(
+                                (
+                                    out_dir / "iterations" / f"iteration_{i}_providers.md"
+                                ).relative_to(out_dir.parent)
+                            )
+                        except Exception:
+                            response_path = str(
+                                out_dir / "iterations" / f"iteration_{i}_providers.md"
+                            )
+                        for prov_name, d in raw.items():
+                            if not isinstance(d, dict):
+                                continue
+                            resp = _dict_to_provider_response(d)
+                            pc = provider_map.get(prov_name)
+                            ws_enabled = (
+                                bool(pc.web_search)
+                                if pc and pc.web_search is not None
+                                else bool(args.enable_web_search)
+                            )
+                            pr_rows.append((i, prov_name, resp, response_path, ws_enabled))
+
+                started_at = run_json_data.get("started_at_utc")
+                finished_at = run_json_data.get("finished_at_utc")
+                asyncio.run(
+                    best_effort_upsert_run_and_responses(
+                        cfg=cfg,
+                        run_dir=out_dir,
+                        run_json_data=run_json_data,
+                        started_at_utc=_parse_dt_iso(started_at),
+                        finished_at_utc=_parse_dt_iso(finished_at),
+                        provider_responses=pr_rows,
+                        synthesis_path=out_dir / "synthesis.md",
+                        database_url=cfg.database_url,
+                        run_document=run_json_data if run_json_data else None,
                     )
+                )
         else:
             if not args.config:
                 raise SystemExit("--config is required for non-iterative runs")
@@ -1015,7 +1071,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "outcome-record":
         configure_cli_logging(logging.INFO)
-        run_dir = Path(str(args.run_dir))
+        if getattr(args, "run_id", None):
+            run_dir = Path(str(args.outputs_dir)).expanduser().resolve() / str(args.run_id)
+        else:
+            run_dir = Path(str(args.run_dir)).expanduser().resolve()
+        if not run_dir.is_dir():
+            raise SystemExit(f"run directory does not exist: {run_dir}")
 
         def _prompt_float(label: str, cur: float | None) -> float | None:
             if cur is not None:
@@ -1078,8 +1139,12 @@ def main(argv: list[str] | None = None) -> int:
                 earnings_day_high = _prompt_float("earnings_day_high", earnings_day_high)
                 earnings_day_low = _prompt_float("earnings_day_low", earnings_day_low)
                 earnings_day_close = _prompt_float("earnings_day_close", earnings_day_close)
-                next_trading_day_open = _prompt_float("next_trading_day_open", next_trading_day_open)
-                next_trading_day_close = _prompt_float("next_trading_day_close", next_trading_day_close)
+                next_trading_day_open = _prompt_float(
+                    "next_trading_day_open", next_trading_day_open
+                )
+                next_trading_day_close = _prompt_float(
+                    "next_trading_day_close", next_trading_day_close
+                )
                 one_week_later_close = _prompt_float("one_week_later_close", one_week_later_close)
                 direction_vs_prior_close = _prompt_choice(
                     "direction_vs_prior_close", direction_vs_prior_close, ["up", "down", "flat"]
@@ -1116,15 +1181,30 @@ def main(argv: list[str] | None = None) -> int:
         configure_cli_logging(getattr(logging, str(args.log_level)))
         run_dir = Path(str(args.run_dir)).expanduser().resolve()
         run_json = run_dir / "run.json"
-        if not run_json.is_file():
-            raise SystemExit(f"missing run.json at {run_json}")
-        data = json.loads(run_json.read_text(encoding="utf-8"))
+        data: dict[str, Any] | None = None
+        if run_json.is_file():
+            try:
+                raw = json.loads(run_json.read_text(encoding="utf-8"))
+                data = raw if isinstance(raw, dict) else None
+            except (OSError, json.JSONDecodeError):
+                data = None
+        if data is None:
+            from equity_analyst.db_ops import load_run_document_from_db
+
+            data = asyncio.run(load_run_document_from_db(run_dir.name))
+        if not isinstance(data, dict):
+            raise SystemExit(
+                f"missing run.json and no runs.run_document for run_id={run_dir.name} "
+                f"(path {run_json})"
+            )
         cfg_raw = data.get("config")
         if not isinstance(cfg_raw, dict):
             raise SystemExit("run.json missing config snapshot")
         cfg = RunConfig.model_validate(cfg_raw)
         rows = asyncio.run(run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg))
-        sys.stdout.write(json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n")
+        sys.stdout.write(
+            json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n"
+        )
         return 0
 
     if args.command == "predictions-extract-batch":
@@ -1167,15 +1247,31 @@ def _run_db_backfill_cli(args: argparse.Namespace) -> int:
         )
         for d in dirs:
             sys.stdout.write(f"DRY-RUN run_id={d.name}\n")
-        _print_backfill_summary(scanned=len(dirs), inserted=0, skipped=len(dirs), errors=0, dry_run=True)
+        _print_backfill_summary(
+            scanned=len(dirs), inserted=0, skipped=len(dirs), errors=0, dry_run=True
+        )
         return 0
 
-    return asyncio.run(_run_db_backfill_async(dirs, run_dirs_count=len(dirs)))
+    return asyncio.run(
+        _run_db_backfill_async(
+            dirs,
+            run_dirs_count=len(dirs),
+            hydrate_run_document=bool(getattr(args, "hydrate_run_document", False)),
+        )
+    )
 
 
-async def _run_db_backfill_async(dirs: list[Path], *, run_dirs_count: int) -> int:
+async def _run_db_backfill_async(
+    dirs: list[Path],
+    *,
+    run_dirs_count: int,
+    hydrate_run_document: bool = False,
+) -> int:
     from equity_analyst.db import get_async_session, is_db_available
-    from equity_analyst.db_backfill import backfill_run_directory
+    from equity_analyst.db_backfill import (
+        backfill_run_directory,
+        hydrate_missing_run_documents_from_disk,
+    )
 
     if not await is_db_available():
         raise SystemExit(
@@ -1193,6 +1289,8 @@ async def _run_db_backfill_async(dirs: list[Path], *, run_dirs_count: int) -> in
             scanned += 1
             try:
                 result = await backfill_run_directory(session, d)
+                if hydrate_run_document:
+                    await hydrate_missing_run_documents_from_disk(session, [d])
                 await session.commit()
             except Exception as exc:
                 logger.error("Backfill failed run_id=%s error=%r", d.name, exc)

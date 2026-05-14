@@ -61,6 +61,7 @@ from equity_analyst.providers.gemini_provider import (
 from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
+from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.sigma_summary import (
     SigmaSummaryFileModel,
     parse_sigma_summary_json,
@@ -271,9 +272,7 @@ _SESSION_HEAD_RE = re.compile(
 )
 
 # Month + day with optional weekday (incl. abbreviations) and optional 4-digit year.
-_WDAY_HEAD = (
-    r"(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)"
-)
+_WDAY_HEAD = r"(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)"
 _SESSION_HEAD_RELAXED_RE = re.compile(
     rf"\b((?:(?:{_WDAY_HEAD})\s*,?\s+)?"
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
@@ -358,7 +357,10 @@ def _line_opens_sigma_horizon_block(line: str, *, year: int) -> bool:
         return True
     if _SESSION_HEAD_RELAXED_RE.search(head_window) is not None:
         return True
-    if re.search(r"(?i)\bT\s*\+\s*\d+\b|\bT0\b", head_window) and _SESSION_HEAD_RELAXED_RE.search(s) is not None:
+    if (
+        re.search(r"(?i)\bT\s*\+\s*\d+\b|\bT0\b", head_window)
+        and _SESSION_HEAD_RELAXED_RE.search(s) is not None
+    ):
         return True
     if s.startswith("**") and len(s) < 260:
         if _SESSION_HEAD_MONTH_FIRST_RE.match(s) is None:
@@ -689,7 +691,9 @@ def sigma_sessions_payload_from_sigma_summary_model(
     if not by_date:
         return [], 0, "missing_sigma_summary_sessions"
 
-    by_rows = _dated_rows_for_variance_additive_check(by_date, earn_cal if earn_cal is not None else None)
+    by_rows = _dated_rows_for_variance_additive_check(
+        by_date, earn_cal if earn_cal is not None else None
+    )
 
     if earn_cal is not None and not by_rows and by_date:
         return [], 0, "missing_on_or_after_earnings_date_rows"
@@ -795,7 +799,9 @@ def _legacy_sigma_variance_sessions(
     if not by_s1:
         return [], 0, "missing_dated_rows"
 
-    by_rows = _dated_rows_for_variance_additive_check(by_s1, earn_cal if earn_cal is not None else None)
+    by_rows = _dated_rows_for_variance_additive_check(
+        by_s1, earn_cal if earn_cal is not None else None
+    )
     if earn_cal is not None and not by_rows and by_s1:
         return [], 0, "missing_on_or_after_earnings_date_rows"
 
@@ -898,7 +904,9 @@ def per_provider_sigma_variance_check(
         )
         if err is not None:
             reason_out = err
-            if err == "missing_dated_rows" and sigma_summary_json_present_but_invalid(provider_text):
+            if err == "missing_dated_rows" and sigma_summary_json_present_but_invalid(
+                provider_text
+            ):
                 reason_out = "missing_sigma_summary_json"
             return {
                 "passed": None,
@@ -921,12 +929,7 @@ def per_provider_sigma_variance_check(
         ),
     )
     ref_ej = reference_event_jump_pct
-    if (
-        ref_ej is not None
-        and ref_ej > 5.0
-        and ej_lit is not None
-        and ej_lit < 1.0
-    ):
+    if ref_ej is not None and ref_ej > 5.0 and ej_lit is not None and ej_lit < 1.0:
         followups.insert(
             0,
             "Cite or verify: parsed event_jump="
@@ -984,7 +987,8 @@ def compute_severity_for_sigma_variance_results(
     n_miss = sum(
         1
         for r in results
-        if r.get("applicable") is not True and str(r.get("reason", "")).strip() == "missing_literals"
+        if r.get("applicable") is not True
+        and str(r.get("reason", "")).strip() == "missing_literals"
     )
 
     for r in results:
@@ -1149,7 +1153,9 @@ def augment_verifier_result_with_sigma_structural_checks(
     extras: list[str] = []
     tbl_sigma = computed_sigma_bands_table or {}
 
-    sigma_lines = [ln for ln in synthesis_text.splitlines() if f"3{_GS}" in ln and "±" in ln and "%" in ln]
+    sigma_lines = [
+        ln for ln in synthesis_text.splitlines() if f"3{_GS}" in ln and "±" in ln and "%" in ln
+    ]
     ej_lit, dv_lit = _parse_variance_additive_literals(synthesis_text)
     variance_mode = ej_lit is not None and dv_lit is not None
 
@@ -1235,10 +1241,14 @@ def augment_verifier_result_with_sigma_structural_checks(
         sess = str(row.get("session", "")).strip()
         base = str(row.get("sigma_baseline", "")).strip()
         if sess and not base:
-            extras.append(f"{_GS} baseline missing for {sess}; name YYYY-MM-DD expiry or HV30 sqrt(t).")
+            extras.append(
+                f"{_GS} baseline missing for {sess}; name YYYY-MM-DD expiry or HV30 sqrt(t)."
+            )
         passed = row.get("sigma_scaling_check_passed")
         if passed is False:
-            extras.append(f"{_GS} scaling failed for {sess}; re-derive or document vol regime split.")
+            extras.append(
+                f"{_GS} scaling failed for {sess}; re-derive or document vol regime split."
+            )
 
     extras.extend(
         options_chain_expiry_audit_messages(
@@ -1258,10 +1268,13 @@ def augment_verifier_result_with_sigma_structural_checks(
         ),
     )
 
-    if str(tbl_sigma.get("expiry_class") or "") == "monthly" and "monthly-expiry sourced" not in synthesis_text.lower():
+    if (
+        str(tbl_sigma.get("expiry_class") or "") == "monthly"
+        and "monthly-expiry sourced" not in synthesis_text.lower()
+    ):
         extras.append(
             "MUST (warning): when server `expiry_class` is `monthly`, synthesis must include the verbatim "
-            "label **\"Monthly-expiry sourced\"** (case-insensitive match) describing the sigma ladder sourcing.",
+            'label **"Monthly-expiry sourced"** (case-insensitive match) describing the sigma ladder sourcing.',
         )
 
     blend_followups = horizon_blend_ratio_followups(
@@ -1287,7 +1300,11 @@ def augment_verifier_result_with_sigma_structural_checks(
         blend_followups
         + tilt_followups
         + extras
-        + [u for u in prior if u not in blend_followups and u not in tilt_followups and u not in extras]
+        + [
+            u
+            for u in prior
+            if u not in blend_followups and u not in tilt_followups and u not in extras
+        ]
     )
     deduped: list[str] = []
     seen: set[str] = set()
@@ -1331,9 +1348,7 @@ def round_summary_for_changelog(
         sentence_cut = max(candidates)
         cut = sentence_cut + 1 if sentence_cut >= max_chars // 2 else max_chars
     preview = text[:cut].rstrip()
-    pointer = (
-        f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
-    )
+    pointer = f"…(abridged; full text in `iterations/iteration_{iteration_index}_synthesis.md`)"
     return f"{preview}\n\n{pointer}"
 
 
@@ -1621,7 +1636,9 @@ def _build_verification_result(best_data: dict[str, Any], *, truncated: bool) ->
     if sbs:
         result["sigma_band_sessions"] = sbs
     if "sigma_scaling_aggregate_passed" in best_data:
-        result["sigma_scaling_aggregate_passed"] = bool(best_data.get("sigma_scaling_aggregate_passed"))
+        result["sigma_scaling_aggregate_passed"] = bool(
+            best_data.get("sigma_scaling_aggregate_passed")
+        )
     if truncated:
         result["_truncated"] = True
     return result
@@ -1676,8 +1693,7 @@ def parse_verifier_json(
     max_tokens_hit, _ = detect_max_tokens_truncation(provider_raw)
     if repair_used:
         truncated = bool(
-            max_tokens_hit
-            or _finish_reason_implies_provider_truncation(provider_finish_reason),
+            max_tokens_hit or _finish_reason_implies_provider_truncation(provider_finish_reason),
         )
     result = _build_verification_result(best_data, truncated=truncated)
     if truncated:
@@ -1784,6 +1800,10 @@ class RefinementState(TypedDict, total=False):
     earnings_timing: NotRequired[str | None]
     computed_sigma_bands_table: NotRequired[dict[str, Any] | None]
     t0_blend_preset: NotRequired[str]
+    persist_run_json_to_disk: NotRequired[bool]
+    run_meta_seed: NotRequired[dict[str, Any]]
+    final_run_meta: NotRequired[dict[str, Any]]
+
 
 def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
     """Decide next graph node after verification (stop / verify-only / provider fan-out)."""
@@ -1825,7 +1845,13 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
         logger.info("Route decision: finalize (max_iterations reached)")
         return Command(goto="finalize")
 
-    if conf is not None and conf >= threshold and n_contrad == 0 and n_unver == 0 and not sigma_router_qs:
+    if (
+        conf is not None
+        and conf >= threshold
+        and n_contrad == 0
+        and n_unver == 0
+        and not sigma_router_qs
+    ):
         logger.info(
             "Route decision: stop confidence=%s contradicted=0 unverifiable=0",
             f"{conf:.2f}",
@@ -1867,17 +1893,10 @@ def compute_refinement_route_command(state: RefinementState) -> Command[Any]:
         )
 
     high_unver_fanout = (
-        n_contrad == 0
-        and n_unver >= unver_thr
-        and conf is not None
-        and conf < conf_cut
+        n_contrad == 0 and n_unver >= unver_thr and conf is not None and conf < conf_cut
     )
     cite_only_mode = (
-        n_contrad == 0
-        and n_unver > 0
-        and skip_unver
-        and not force_fan
-        and not high_unver_fanout
+        n_contrad == 0 and n_unver > 0 and skip_unver and not force_fan and not high_unver_fanout
     )
 
     if force_fan:
@@ -2000,7 +2019,9 @@ def _build_synthesis_refinement_markdown(state: RefinementState) -> str | None:
     parts.append("## Prior synthesis to revise\n\n" + sh[-1].strip())
     vh = state.get("verification_history") or []
     if vh:
-        parts.append("## Latest verification JSON\n\n```json\n" + json.dumps(vh[-1], indent=2) + "\n```")
+        parts.append(
+            "## Latest verification JSON\n\n```json\n" + json.dumps(vh[-1], indent=2) + "\n```"
+        )
     fu = state.get("followup_questions") or []
     if fu:
         parts.append("## Router follow-up targets\n\n" + "\n".join(f"- {x}" for x in fu))
@@ -2169,8 +2190,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         facts_md = (state.get("facts_packet_md") or "").strip()
         state_update: dict[str, Any] = {}
 
-        if facts_enabled and it_no >= 2 and ver_for_directives.get("refresh_facts") and state.get(
-            "synthesis_history"
+        if (
+            facts_enabled
+            and it_no >= 2
+            and ver_for_directives.get("refresh_facts")
+            and state.get("synthesis_history")
         ):
             snap = state.get("iterative_config_snapshot") or {}
             try:
@@ -2198,7 +2222,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         refan_set = {str(x).strip().lower() for x in raw_refan if str(x).strip()} & allowed_names
 
         fan_out_on_continue = bool(state.get("fan_out_on_continue", True))
-        last_route_followups = [str(x).strip() for x in (state.get("last_route_followup_questions") or []) if str(x).strip()]
+        last_route_followups = [
+            str(x).strip()
+            for x in (state.get("last_route_followup_questions") or [])
+            if str(x).strip()
+        ]
         router_requests_fanout = fan_out_on_continue and bool(last_route_followups)
 
         skip_fanout = (
@@ -2279,7 +2307,10 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         with prompt_call_context(node="fan_out", iteration=it_no, analyst_render_context=fan_ctx):
             pcs_raw = state.get("provider_configs")
             if not pcs_raw:
-                pcs_raw = [{"name": n, "web_search": None, "request_timeout_s": None} for n in state["providers"]]
+                pcs_raw = [
+                    {"name": n, "web_search": None, "request_timeout_s": None}
+                    for n in state["providers"]
+                ]
             pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
             cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
             cfg_mot = int(state.get("max_output_tokens", 16_000))
@@ -2313,7 +2344,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     gemini_cache_ttl_s=gemini_ttl,
                 )
                 ws = effective_web_search(run_default=state["enable_web_search"], pc=pc)
-                to = float(pc.request_timeout_s) if pc.request_timeout_s is not None else cfg_req_timeout
+                to = (
+                    float(pc.request_timeout_s)
+                    if pc.request_timeout_s is not None
+                    else cfg_req_timeout
+                )
 
                 async def _attempt() -> ProviderResponse:
                     mot = fan_out_max_output_tokens(pc, cfg_mot)
@@ -2321,7 +2356,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     if isinstance(p, AnthropicProvider):
                         static = EQUITY_ANALYST_SYSTEM_PROMPT
                         sep = f"{static}\n\n"
-                        user_only = prompt_body[len(sep) :] if prompt_body.startswith(sep) else prompt_body
+                        user_only = (
+                            prompt_body[len(sep) :] if prompt_body.startswith(sep) else prompt_body
+                        )
                         return await p.generate(
                             prompt_body,
                             enable_web_search=ws,
@@ -2352,7 +2389,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                                 cacheable_prefix=static,
                                 user_message_for_cache=prompt_body[len(sep) :],
                             )
-                    return await p.generate(prompt_body, enable_web_search=ws, max_output_tokens=mot)
+                    return await p.generate(
+                        prompt_body, enable_web_search=ws, max_output_tokens=mot
+                    )
 
                 try:
                     return await asyncio.wait_for(
@@ -2425,7 +2464,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 )
             else:
                 lines_out.append(f"## {name}\n\n{resp.text}\n")
-        (iter_dir / f"iteration_{round_idx + 1}_providers.md").write_text("\n".join(lines_out), encoding="utf-8")
+        (iter_dir / f"iteration_{round_idx + 1}_providers.md").write_text(
+            "\n".join(lines_out), encoding="utf-8"
+        )
 
         ser = {"responses": {k: _response_to_dict(v) for k, v in responses.items()}}
 
@@ -2457,7 +2498,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 ref_ej = float(raw_ej)
         if ref_ej is None:
             oc_fan = state.get("options_chain_data")
-            if isinstance(oc_fan, dict) and bool(oc_fan.get("options_chain_available")) and earn_date_s:
+            if (
+                isinstance(oc_fan, dict)
+                and bool(oc_fan.get("options_chain_available"))
+                and earn_date_s
+            ):
                 mwl = int(oc_fan.get("max_weekly_lookahead_days") or 14)
                 ref_ej = event_jump_implied_move_pct_from_prompt_dict(
                     oc_fan,
@@ -2480,7 +2525,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             per_provider_checks.append(rec)
 
         sigma_quorum = int(snap_fan.get("sigma_variance_check_quorum_for_error", 2))
-        compute_severity_for_sigma_variance_results(per_provider_checks, quorum_for_error=sigma_quorum)
+        compute_severity_for_sigma_variance_results(
+            per_provider_checks, quorum_for_error=sigma_quorum
+        )
 
         for rec in per_provider_checks:
             name = str(rec.get("provider", "")).strip()
@@ -2569,11 +2616,15 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         syn_max_in = int(state.get("synthesizer_max_input_tokens", 100_000))
         retry_max = int(state.get("retry_max_attempts", 3))
         retry_base = float(state.get("retry_base_delay_s", 2.0))
-        syn_ws = effective_synthesizer_web_search(run_default=state["enable_web_search"], syn=syn_cfg)
+        syn_ws = effective_synthesizer_web_search(
+            run_default=state["enable_web_search"], syn=syn_cfg
+        )
         summarize_fallback_llm = None
         fb_name = state.get("oversized_summarize_fallback_provider")
         if not fb_name and state.get("iterative_config_snapshot"):
-            fb_name = (state["iterative_config_snapshot"] or {}).get("oversized_summarize_fallback_provider")
+            fb_name = (state["iterative_config_snapshot"] or {}).get(
+                "oversized_summarize_fallback_provider"
+            )
         if fb_name:
             pcs_fb = [ProviderConfig.model_validate(d) for d in state["provider_configs"]]
             for pc in pcs_fb:
@@ -2604,11 +2655,15 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         retry_base_delay_s=retry_base,
                         anthropic_force_tool_use=bool(state.get("anthropic_force_tool_use", True)),
                         symbol=state.get("symbol"),
-                        summarize_oversized_providers=bool(state.get("summarize_oversized_providers", True)),
+                        summarize_oversized_providers=bool(
+                            state.get("summarize_oversized_providers", True)
+                        ),
                         summarize_threshold_input_tokens=int(
                             state.get("summarize_threshold_input_tokens", 8000),
                         ),
-                        oversized_summarize_provider=str(state.get("oversized_summarize_provider", "gemini")),
+                        oversized_summarize_provider=str(
+                            state.get("oversized_summarize_provider", "gemini")
+                        ),
                         oversized_summarize_model=str(
                             state.get("oversized_summarize_model", "gemini-3-flash-preview"),
                         ),
@@ -2625,7 +2680,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         refinement_markdown=refinement,
                         per_provider_sigma_checks_markdown=sigma_checks_md,
                         computed_sigma_bands_markdown=csb_md or None,
-                        t0_blend_preset=normalize_t0_blend_preset(state.get("t0_blend_preset", "default")),
+                        t0_blend_preset=normalize_t0_blend_preset(
+                            state.get("t0_blend_preset", "default")
+                        ),
                     ),
                     timeout=timeout_syn,
                 )
@@ -2676,8 +2733,12 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             markdown_text=syn_body,
         )
         facts_state: dict[str, Any] = {}
-        if bool(state.get("facts_packet_enabled", True)) and round_idx == 0 and not result.response.model.startswith(
-            "error:",
+        if (
+            bool(state.get("facts_packet_enabled", True))
+            and round_idx == 0
+            and not result.response.model.startswith(
+                "error:",
+            )
         ):
             snap = state.get("iterative_config_snapshot") or {}
             try:
@@ -2795,7 +2856,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
+            err_ev.append(
+                run_error_record(stage="verify", provider=state["verifier_name"], exc=exc)
+            )
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         except Exception as exc:
             logger.error(
@@ -2804,7 +2867,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 type(exc).__name__,
                 exc,
             )
-            err_ev.append(run_error_record(stage="verify", provider=state["verifier_name"], exc=exc))
+            err_ev.append(
+                run_error_record(stage="verify", provider=state["verifier_name"], exc=exc)
+            )
             resp = failure_response_from_completed(state["verifier_name"], exc, started_perf=v0)
         ver_wall = time.perf_counter() - v0
         if resp.model.startswith("error:"):
@@ -2815,7 +2880,9 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
             )
         iter_dir = out / "iterations"
         iter_dir.mkdir(parents=True, exist_ok=True)
-        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(resp.text, encoding="utf-8")
+        (iter_dir / f"iteration_{round_idx + 1}_verify_raw.md").write_text(
+            resp.text, encoding="utf-8"
+        )
         data = parse_verifier_json(
             resp.text,
             provider_finish_reason=provider_finish_reason_label(resp.raw),
@@ -2883,16 +2950,26 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
     async def finalize(state: RefinementState) -> dict[str, Any]:
         out = Path(state["output_dir"])
-        logger.info("Node finalize output_dir=%s rounds=%s", str(out.resolve()), len(state["provider_responses"]))
+        logger.info(
+            "Node finalize output_dir=%s rounds=%s",
+            str(out.resolve()),
+            len(state["provider_responses"]),
+        )
         parts: list[str] = [
             f"# Refined equity report: {state['symbol']}\n",
             "## Iteration changelog\n",
         ]
         full_changelog = bool(state.get("final_report_full_synthesis", True))
         for i, syn in enumerate(state["synthesis_history"], start=1):
-            body = syn.rstrip() if full_changelog else round_summary_for_changelog(syn, iteration_index=i)
+            body = (
+                syn.rstrip()
+                if full_changelog
+                else round_summary_for_changelog(syn, iteration_index=i)
+            )
             round_heading = (
-                f"### Round {i} synthesis\n\n" if full_changelog else f"### Round {i} synthesis (summary)\n\n"
+                f"### Round {i} synthesis\n\n"
+                if full_changelog
+                else f"### Round {i} synthesis (summary)\n\n"
             )
             parts.append(f"{round_heading}{body}\n\n")
         parts.append("## Verification summary\n\n")
@@ -2920,7 +2997,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         )
         iter_dir = out / "iterations"
         for i, syn in enumerate(state["synthesis_history"], start=1):
-            ver = state["verification_history"][i - 1] if i <= len(state["verification_history"]) else {}
+            ver = (
+                state["verification_history"][i - 1]
+                if i <= len(state["verification_history"])
+                else {}
+            )
             block = f"# Iteration {i}\n\n## Synthesis\n\n{syn}\n\n## Verification\n\n{json.dumps(ver, indent=2)}\n"
             iter_md = iter_dir / f"iteration_{i}.md"
             iter_md.write_text(block, encoding="utf-8")
@@ -2932,11 +3013,15 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         run_json = out / "run.json"
         timing_summary = merge_timing_events(state.get("timing_events", []))
-        meta = (
-            json.loads(run_json.read_text(encoding="utf-8"))
-            if run_json.is_file()
-            else {}
-        )
+        seed = state.get("run_meta_seed")
+        if run_json.is_file():
+            meta = json.loads(run_json.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                meta = {}
+        elif isinstance(seed, dict):
+            meta = copy.deepcopy(seed)
+        else:
+            meta = {}
         meta["timing"] = timing_summary
         meta["iterations_completed"] = len(state.get("provider_responses", []))
         meta["verification_history"] = state.get("verification_history", [])
@@ -2960,7 +3045,13 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 rc = RunConfig.model_validate(snap_cfg)
                 meta["run_profile"] = rc.run_profile
                 meta["env"] = rc.env
-        run_json.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        snap = state.get("iterative_config_snapshot") or {}
+        persist_rj = bool(
+            snap.get("persist_run_json_to_disk", state.get("persist_run_json_to_disk", True))
+        )
+        run_doc = canonical_run_document_dict(meta)
+        if persist_rj:
+            run_json.write_text(format_run_json_for_disk(meta), encoding="utf-8")
         logger.info("Iterative wall-clock timing summary: %s", timing_summary)
 
         cfg_for_extract: RunConfig | None = None
@@ -3002,10 +3093,12 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
 
         maybe_delete_iterative_checkpoint(
             out,
-            delete_checkpoint_after_success=bool(state.get("delete_checkpoint_after_success", True)),
+            delete_checkpoint_after_success=bool(
+                state.get("delete_checkpoint_after_success", True)
+            ),
         )
 
-        return {"final_report": report}
+        return {"final_report": report, "final_run_meta": run_doc}
 
     return {
         "fan_out": fan_out,
@@ -3104,6 +3197,7 @@ def build_initial_refinement_state(
             else None
         ),
         "t0_blend_preset": cfg.t0_blend_preset,
+        "persist_run_json_to_disk": cfg.persist_run_json_to_disk,
     }
 
 

@@ -68,6 +68,7 @@ Graph nodes in `equity_analyst/iterative.py`: **`fan_out` → `synthesize` → `
 | `options_chain.py` | Yahoo chain snapshot → markdown table; **expiry audit** strings; **weekly vs standard monthly** front-expiry resolution for event straddle / sigma anchoring (`is_standard_monthly_expiration`, `pick_front_listed_expiry_for_earnings`). |
 | `pdf_writer.py` | Markdown → HTML → PDF (WeasyPrint). |
 | `db_models.py` / `db_ops.py` | SQLAlchemy schema and best-effort upserts. |
+| `run_json_serde.py` | Canonical `json.dumps(..., default=str)` round-trip for `run.json` / `runs.run_document`. |
 | `drive_uploader.py` | Service account or OAuth upload to Shared Drive / user folder. |
 
 ### Data flow
@@ -108,7 +109,7 @@ Production YAML typically sets **`web_search: true`** on fan-out, synthesizer, a
 
 Authoritative ORM definitions: **`equity_analyst/db_models.py`**.
 
-- **`runs`**: `run_id`, `symbol`, `earnings_date`, iterative flags, `config_snapshot` JSONB, synthesis path, synthesizer metadata, verifier summary JSON, Drive URL, timestamps.
+- **`runs`**: `run_id`, `symbol`, `earnings_date`, iterative flags, `config_snapshot` JSONB, **`run_document`** JSONB (full `run.json` snapshot; nullable), synthesis path, synthesizer metadata, verifier summary JSON, Drive URL, timestamps, **`env`** (production vs test tier). Example: `SELECT run_id, pg_column_size(run_document) FROM runs LIMIT 5;` (NULL when never upserted / pre-migration rows).
 - **`provider_responses`**: per-provider rows with model, latency, token usage, `response_path`, iteration index.
 - **`outcomes`**: realized OHLC windows and `direction_vs_prior_close` for calibration (linked by `run_id`).
 - **`predictions`**: five horizons with probability/ranges/point estimates (`prediction_extract.py`).

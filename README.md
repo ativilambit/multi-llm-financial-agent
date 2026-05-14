@@ -53,6 +53,8 @@ The Postgres DB layer is **additive**: it stores structured metadata for queryin
 - `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down, `db_enabled` is false, writes are blocked by **profile + env** gating, or the insert fails; see prediction extraction below)
 - `outputs/outcomes_registry.jsonl`
 
+**Hybrid run storage:** each `runs` row keeps **normalized columns** (`run_id`, `symbol`, `started_at_utc`, `earnings_date`, `env`, …) for hot filters plus a nullable **`runs.run_document`** JSONB that mirrors the full **`run.json`** payload (canonical serialization via `equity_analyst/run_json_serde.py`). Upserts derive both from the same in-memory dict so scalars stay aligned with the JSON snapshot. By default the orchestrator still writes **`outputs/<run-id>/run.json`**; set **`persist_run_json_to_disk: false`** in YAML or **`EQUITY_PERSIST_RUN_JSON=0`** to skip the disk file while keeping DB writes (**Drive uploads** still force a disk mirror). Operators can repair null JSONB from existing trees with **`python -m equity_analyst db-backfill --hydrate-run-document`** (alias **`--include-run-document`**). **`load_run_document_from_db`** backs **`outcome_tracker`** / **`prediction_extract`** when `run.json` is missing locally.
+
 **Postgres persistence:** rows are written when **`db_enabled`** is true (default), **`DATABASE_URL`** resolves, and either **`run_profile: production`** (typical scheduled batches) or **`RunConfig.env: test`** (CLI **`--env test`**, YAML **`env: test`**, or **`EQUITY_ENV=test`**). **`run_profile: dev`** with **`env: production`** skips Postgres (local smoke without polluting prod analytics). The **`runs.env`** column stores **`production`** or **`test`** so you can filter test-tier rows. Use **`python -m equity_analyst run ... --profile production`** (and **`--env production`**, the default) for prod-style runs; **`scripts/run_all_symbols.sh`** passes **`--profile production`** by default. For a **test tier**, use **`--env test`** (or **`scripts/run_all_symbols.sh ... --env test`**): defaults keep **`run_profile=dev`** unless **`--profile production`**, while Postgres stays on by default—use **`--no-db`**, YAML **`db_enabled: false`**, or **`DB_ENABLED=0`** to skip DB. **`run.json`** carries top-level **`run_profile`** and **`env`** (also inside **`config`**); outcome and prediction tooling prefers the top-level keys, then **`config`**, then legacy defaults (**production** profile, **production** env) for older trees.
 
 **T-0 horizon blend preset (`RunConfig.t0_blend_preset`):** only the **T-0** rows in the fenced horizon table use this **qual : quant** digit pair; **T−3..T−1** stays **55 : 45** and **T+1..T+5** stays **49 : 51**. Presets: **`default`** (49:51), **`quant_lean`** (40:60), **`quant_dominant`** (1:99), **`qual_dominant`** (99:1). Set in YAML, or override with **`EQUITY_T0_BLEND_PRESET`**, or **`python -m equity_analyst run ... --t0-blend <preset>`** (CLI wins over env and YAML for that field). The equity Jinja template and synthesizer system prompt are injected at render/synthesis time; the verifier rejects wrong T-0 literals for the active preset.
@@ -117,6 +119,15 @@ SELECT
 FROM predictions p
 GROUP BY 1
 ORDER BY 1;
+```
+
+JSONB footprint sample (hybrid `run_document`):
+
+```sql
+SELECT run_id, pg_column_size(run_document) AS run_document_bytes
+FROM runs
+WHERE run_document IS NOT NULL
+LIMIT 5;
 ```
 
 ## Google Drive auto-upload

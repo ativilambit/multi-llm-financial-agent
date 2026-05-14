@@ -24,6 +24,44 @@ from equity_analyst.config import (
 logger = logging.getLogger(__name__)
 
 
+async def async_load_run_json_dict_for_run_dir(
+    run_dir: Path, *, database_url: str | None = None
+) -> dict[str, Any] | None:
+    """Load ``run.json`` from disk, else ``runs.run_document`` when DB is reachable."""
+    resolved = run_dir.expanduser().resolve()
+    rj = resolved / "run.json"
+    if rj.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            blob = json.loads(rj.read_text(encoding="utf-8"))
+            if isinstance(blob, dict):
+                return blob
+    from equity_analyst.db_ops import load_run_document_from_db
+
+    return await load_run_document_from_db(resolved.name, database_url=database_url)
+
+
+def load_run_json_dict_for_run_dir(
+    run_dir: Path, *, database_url: str | None = None
+) -> dict[str, Any] | None:
+    """Sync helper: disk first, then DB (``asyncio.run``) when no active event loop."""
+    resolved = run_dir.expanduser().resolve()
+    rj = resolved / "run.json"
+    if rj.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            blob = json.loads(rj.read_text(encoding="utf-8"))
+            if isinstance(blob, dict):
+                return blob
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(async_load_run_json_dict_for_run_dir(run_dir, database_url=database_url))
+    logger.warning(
+        "load_run_json_dict_for_run_dir: event loop active; DB fallback skipped run_dir=%s",
+        run_dir,
+    )
+    return None
+
+
 class RunOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -82,19 +120,7 @@ def _pick_synthesis_path(run_dir: Path) -> Path:
     return best[1] if best is not None else direct
 
 
-def _parse_baseline_close_hint(run_dir: Path) -> float | None:
-    """
-    Best-effort, non-brittle baseline hint for calibration.
-
-    Currently reads RunConfig.current_price from run.json (YAML alias: reference_last_price).
-    """
-    run_json = run_dir / "run.json"
-    if not run_json.is_file():
-        return None
-    try:
-        data = json.loads(run_json.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+def _parse_baseline_close_hint_from_data(data: dict[str, Any]) -> float | None:
     cfg = data.get("config")
     if not isinstance(cfg, dict):
         return None
@@ -103,6 +129,18 @@ def _parse_baseline_close_hint(run_dir: Path) -> float | None:
         return float(v) if v is not None else None
     except Exception:
         return None
+
+
+def _parse_baseline_close_hint(run_dir: Path) -> float | None:
+    """
+    Best-effort, non-brittle baseline hint for calibration.
+
+    Currently reads RunConfig.current_price from run metadata (``run.json`` or ``runs.run_document``).
+    """
+    data = load_run_json_dict_for_run_dir(run_dir)
+    if data is None:
+        return None
+    return _parse_baseline_close_hint_from_data(data)
 
 
 def record_outcome(
@@ -124,11 +162,11 @@ def record_outcome(
     if not run_dir.is_dir():
         raise FileNotFoundError(f"--run-dir does not exist: {run_dir!s}")
 
-    run_json = run_dir / "run.json"
-    if not run_json.is_file():
-        raise FileNotFoundError(f"Missing run.json at {run_json!s}")
-
-    data = json.loads(run_json.read_text(encoding="utf-8"))
+    data = load_run_json_dict_for_run_dir(run_dir)
+    if data is None:
+        raise FileNotFoundError(
+            f"Missing run.json and no runs.run_document for run_id={run_dir.name} under {run_dir}"
+        )
     cfg = data.get("config")
     if not isinstance(cfg, dict):
         raise ValueError("run.json missing config snapshot")
@@ -142,6 +180,8 @@ def record_outcome(
 
     synthesis_path = _pick_synthesis_path(run_dir)
     repo_root = _infer_repo_root_from_run_dir(run_dir)
+    run_json = run_dir / "run.json"
+    run_json_path = str(run_json) if run_json.is_file() else f"postgres:runs.run_document:{run_dir.name}"
 
     outcome = RunOutcome(
         run_output_dir=str(run_dir),
@@ -149,7 +189,7 @@ def record_outcome(
         recorded_at_utc=_iso_utc_z_now(),
         earnings_date=earnings_date,
         synthesis_path=str(synthesis_path),
-        run_json_path=str(run_json),
+        run_json_path=run_json_path,
         earnings_day_open=earnings_day_open,
         earnings_day_high=earnings_day_high,
         earnings_day_low=earnings_day_low,
@@ -337,9 +377,8 @@ def record_outcome_for_run_dir(
         persisted_profile: RunProfile = "production"
         persisted_env: RunEnvironment = "production"
         try:
-            rj = resolved_dir / "run.json"
-            if rj.is_file():
-                blob = json.loads(rj.read_text(encoding="utf-8"))
+            blob = load_run_json_dict_for_run_dir(resolved_dir)
+            if isinstance(blob, dict):
                 persisted_profile = run_profile_from_persisted_run_json(blob)
                 persisted_env = env_from_persisted_run_json(blob)
         except Exception:
@@ -506,9 +545,7 @@ def auto_fetch_outcome(
     result["earnings_day_open"] = _coerce_float_safe(getattr(earnings_bar, "Open", None))
     result["earnings_day_high"] = _coerce_float_safe(getattr(earnings_bar, "High", None))
     result["earnings_day_low"] = _coerce_float_safe(getattr(earnings_bar, "Low", None))
-    result["earnings_day_close"] = _coerce_float_safe(
-        getattr(earnings_bar, "Close", None)
-    )
+    result["earnings_day_close"] = _coerce_float_safe(getattr(earnings_bar, "Close", None))
 
     if len(bars) >= 2:
         nb = bars[1]
@@ -640,7 +677,9 @@ def fetch_earnings_day_intraday_high_low_yfinance(
 
 _LAST_CLOSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"last\s+verified\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
-    re.compile(r"last\s+regular[- ]session\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
+    re.compile(
+        r"last\s+regular[- ]session\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE
+    ),
     re.compile(r"last\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
     re.compile(r"closing\s+price[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
 )
@@ -777,11 +816,12 @@ def resolve_baseline_close_for_auto_fetch(run_dir: Path) -> float | None:
 
 
 def read_run_metadata(run_dir: Path) -> tuple[str, str]:
-    """Return ``(symbol, earnings_date)`` from ``run.json``; raises on missing fields."""
-    run_json = run_dir / "run.json"
-    if not run_json.is_file():
-        raise FileNotFoundError(f"Missing run.json at {run_json!s}")
-    data = json.loads(run_json.read_text(encoding="utf-8"))
+    """Return ``(symbol, earnings_date)`` from persisted run metadata; raises on missing fields."""
+    data = load_run_json_dict_for_run_dir(run_dir)
+    if data is None:
+        raise FileNotFoundError(
+            f"Missing run.json and no runs.run_document for run_id={run_dir.expanduser().resolve().name}"
+        )
     cfg = data.get("config")
     if not isinstance(cfg, dict):
         raise ValueError("run.json missing config snapshot")
@@ -1043,4 +1083,3 @@ def plan_shape_b_run_directories(
         else:
             out.extend((sym, d) for d in dirs)
     return out
-

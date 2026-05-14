@@ -48,6 +48,9 @@ class RunRow(Base):
     verifier_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     drive_folder_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    #: Full ``run.json`` payload (denormalized); scalar columns above remain hot filters.
+    run_document: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
     created_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -173,4 +176,3 @@ class PredictionRow(Base):
     )
 
     run: Mapped[RunRow] = relationship(back_populates="predictions")
-
