@@ -349,6 +349,9 @@ def iter_prompt_stack_text_files() -> tuple[Path, ...]:
     files: list[Path] = []
     for pat in ("*.md", "*.j2"):
         files.extend(sorted(prompts_dir.glob(pat)))
+    inv = prompts_dir / "policy" / "invariants.md"
+    if inv.is_file():
+        files.append(inv)
     for rel in (
         "equity_analyst/iterative.py",
         "equity_analyst/synthesizer.py",

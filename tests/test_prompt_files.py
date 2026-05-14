@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
+from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, _load_prompt_file
 from equity_analyst.provider_summarize import summarize_system_prompt
 from equity_analyst.synthesizer import SYNTHESIS_SYSTEM_PROMPT
 from equity_analyst.synthesizer_blend import (
@@ -12,6 +12,19 @@ from equity_analyst.synthesizer_blend import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = REPO_ROOT / "prompts"
+
+
+def _policy_invariants_text() -> str:
+    return (PROMPTS / "policy" / "invariants.md").read_text(encoding="utf-8")
+
+
+def _effective_equity_rules_surface() -> str:
+    """Rules in `policy/invariants.md` plus the `.j2` body (matches render-time text surface)."""
+    return _policy_invariants_text() + "\n" + (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+
+
+def _effective_synthesizer_system_prompt() -> str:
+    return _load_prompt_file("synthesizer_system.md")
 
 
 def test_equity_analyst_system_prompt_file_exists_nonempty_and_matches_export() -> None:
@@ -26,10 +39,10 @@ def test_equity_analyst_system_prompt_file_exists_nonempty_and_matches_export() 
 
 def test_synthesizer_system_prompt_file_exists_nonempty_and_matches_export() -> None:
     path = PROMPTS / "synthesizer_system.md"
-    assert path.is_file()
     raw = path.read_text(encoding="utf-8")
     assert raw.strip() != ""
-    assert raw.rstrip() == SYNTHESIS_SYSTEM_PROMPT
+    loaded = _load_prompt_file("synthesizer_system.md")
+    assert loaded == SYNTHESIS_SYSTEM_PROMPT
     assert "preserve ALL standard deviation levels" in SYNTHESIS_SYSTEM_PROMPT
     sigma = "\N{GREEK SMALL LETTER SIGMA}"
     assert f"1{sigma}" in SYNTHESIS_SYSTEM_PROMPT
@@ -46,13 +59,15 @@ def test_synthesizer_system_prompt_covers_same_day_sd_anchor() -> None:
 def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> None:
     """Prompts include horizon-aware qualitative vs quantitative blend table."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
-    assert "| Horizon | Blend (qual : quant) | Notes |" in j2
+    inv = _policy_invariants_text()
+    synth = _effective_synthesizer_system_prompt()
+    assert '{% include "policy/invariants.md" %}' in j2
+    assert "| Horizon | Blend (qual : quant) | Notes |" in inv
     assert "| Horizon | Blend (qual : quant) | Notes |" in synth
     assert "__T0_BLEND_LITERAL__" in synth
-    assert "{{ t0_blend_literal }}" in j2
-    assert "55 : 45" in j2 and "55 : 45" in synth
-    assert j2.count("49 : 51") >= 1
+    assert "{{ t0_blend_literal }}" in inv
+    assert "55 : 45" in inv and "55 : 45" in synth
+    assert inv.count("49 : 51") >= 1
     assert synth.count("49 : 51") >= 1
     t0_pre_j2 = (
         "| T-0 pre-open (event day, no intraday yet) | {{ t0_blend_literal }} | "
@@ -84,14 +99,14 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
         "in the narrative; qualitative drivers still inform scenario emphasis; "
         "exact $/σ bands remain quant-only. |"
     )
-    assert t0_pre_j2 in j2 and t0_pre_synth in synth
-    assert t0_intra_j2 in j2 and t0_intra_synth in synth
-    assert t1_t5 in j2 and t1_t5 in synth
-    assert "40 : 60" not in j2 and "40 : 60" not in synth
-    assert "45 : 55" not in j2 and "45 : 55" not in synth
-    assert "Qualitative vs quantitative weighting" in j2
+    assert t0_pre_j2 in inv and t0_pre_synth in synth
+    assert t0_intra_j2 in inv and t0_intra_synth in synth
+    assert t1_t5 in inv and t1_t5 in synth
+    assert "40 : 60" not in inv and "40 : 60" not in synth
+    assert "45 : 55" not in inv and "45 : 55" not in synth
+    assert "Qualitative vs quantitative weighting" in inv
     assert "Qualitative vs quantitative weighting" in synth
-    assert "default to the qualitative side" in j2 and "unambiguous and recent" in j2
+    assert "default to the qualitative side" in inv and "unambiguous and recent" in j2
     assert "**default to the qualitative side**" in synth
 
 
@@ -101,7 +116,14 @@ def test_prompt_stack_has_no_horizon_blend_inversions() -> None:
 
 def test_prompt_md_j2_exclude_qualitative_numeric_tilt_patterns() -> None:
     """Regression: prompts must not reintroduce forbidden +5/+10 qualitative-tilt phrasing."""
-    for path in sorted(PROMPTS.glob("*.md")) + sorted(PROMPTS.glob("*.j2")):
+    paths: list[Path] = []
+    for path in sorted(PROMPTS.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix not in {".md", ".j2"}:
+            continue
+        paths.append(path)
+    for path in paths:
         raw = path.read_text(encoding="utf-8")
         hits = qualitative_numeric_tilt_pattern_hits(raw)
         assert not hits, f"{path.relative_to(REPO_ROOT)} matched {hits!r}"
@@ -140,24 +162,28 @@ def test_qualitative_deep_dive_subsection_title_in_equity_j2_and_synthesizer_md(
 def test_pure_quant_rule_in_equity_template_and_synthesizer() -> None:
     """Option pricing and sigma band widths are mandatory pure-quant; blend is narrative trust weighting only."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    inv = _policy_invariants_text()
+    synth = _effective_synthesizer_system_prompt()
     assert "Pure-quant rule" in j2
+    assert "Pure-quant rule" in inv
     assert "Pure-quant rule" in synth
-    assert "qualitative overlay does not move numbers" in j2.lower()
+    assert "qualitative overlay does not move numbers" in inv.lower()
     assert "qualitative overlay does not move numbers" in synth.lower()
     assert "option pricing" in j2
+    assert "option pricing" in inv
     assert "option pricing" in synth
     sigma = "\N{GREEK SMALL LETTER SIGMA}"
     assert f"{sigma} band widths" in j2
+    assert f"{sigma} band widths" in inv
     assert f"{sigma} band widths" in synth
 
 
 def test_unsourced_options_numbers_rule_in_equity_j2_and_synthesizer_md() -> None:
-    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
-    assert "Unsourced numbers prohibited (Pure-quant addendum)" in j2
-    assert "options_chain_data" in j2
-    assert "1-week-prior PCR" in j2
+    inv = _policy_invariants_text()
+    synth = _effective_synthesizer_system_prompt()
+    assert "Unsourced numbers — options metrics (Pure-quant addendum)" in inv
+    assert "options_chain_data" in inv
+    assert "1-week-prior PCR" in inv
     assert "Unsourced numbers — options metrics (Pure-quant addendum)" in synth
     assert "historical chain data unavailable" in synth
     assert "strip it from the synthesis" in synth.lower()
@@ -165,15 +191,15 @@ def test_unsourced_options_numbers_rule_in_equity_j2_and_synthesizer_md() -> Non
 
 def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
     """Sigma band construction rules: variance-additive canonical, sqrt(t) fallback, checks."""
-    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    surface = _effective_equity_rules_surface()
+    synth = _effective_synthesizer_system_prompt()
     sig = chr(0x03C3)
-    flat_j2 = j2.replace("**", "")
+    flat_surface = surface.replace("**", "")
     flat_synth = synth.replace("**", "")
-    assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_j2
+    assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_surface
     assert f"{sig}(T+N) = √(event_jump² + N · daily_vol²)" in flat_synth
-    assert f"{sig}-scaling check (variance):" in j2
-    assert "ej² + n·daily_vol²" in j2.replace("**", "")
+    assert f"{sig}-scaling check (variance):" in surface
+    assert "ej² + n·daily_vol²" in surface.replace("**", "")
     assert f"{sig}-scaling check (variance):" in synth
     assert "ej² + n·daily_vol²" in synth.replace("**", "")
     for needle in (
@@ -182,32 +208,32 @@ def test_sigma_band_sanity_rules_in_equity_template_and_synthesizer() -> None:
         "√(target_DTE / chosen_expiry_DTE)",
         "HV30 √t scaling",
     ):
-        assert needle in j2
+        assert needle in surface
         assert needle in synth
 
 
 def test_equity_analyst_template_canonical_daily_vol_source_order() -> None:
     """Rule 2 must enumerate canonical daily_vol source order: HV30 -> realized -> calendar IV."""
-    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    assert "Canonical `daily_vol` source order" in j2
-    hv30_idx = j2.find("**HV30**")
-    realized_idx = j2.find("**Realized post-earnings daily vol**")
-    calspread_idx = j2.find("**Forward IV calendar-spread**")
+    inv = _policy_invariants_text()
+    assert "Canonical `daily_vol` source order" in inv
+    hv30_idx = inv.find("**HV30**")
+    realized_idx = inv.find("**Realized post-earnings daily vol**")
+    calspread_idx = inv.find("**Forward IV calendar-spread**")
     assert 0 < hv30_idx < realized_idx < calspread_idx, (
         "Canonical daily_vol order must list HV30 first, realized post-earnings second, "
         "calendar-spread IV third"
     )
     minus = "\N{MINUS SIGN}"
-    assert "annualized 30-day historical volatility / \N{SQUARE ROOT}252" in j2
-    assert "the **last 4** earnings windows" in j2
-    assert f"T_far {minus} T_event" in j2
-    assert "State which source was used" in j2
-    assert "daily_vol=3.15%/day (HV30 50.0% ann / \N{SQUARE ROOT}252)" in j2
+    assert "annualized 30-day historical volatility / \N{SQUARE ROOT}252" in inv
+    assert "the **last 4** earnings windows" in inv
+    assert f"T_far {minus} T_event" in inv
+    assert "State which source was used" in inv
+    assert "daily_vol=3.15%/day (HV30 50.0% ann / \N{SQUARE ROOT}252)" in inv
 
 
 def test_mandatory_sigma_literal_format_block_in_equity_j2_and_synthesizer_md() -> None:
-    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    inv = _policy_invariants_text()
+    synth = _effective_synthesizer_system_prompt()
     sg = chr(0x03C3)
     mandatory_equity = (
         "**MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** "
@@ -215,30 +241,30 @@ def test_mandatory_sigma_literal_format_block_in_equity_j2_and_synthesizer_md() 
         "with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, "
         "no Unicode multipliers):"
     )
-    assert mandatory_equity in j2
+    assert mandatory_equity in inv
     assert (
         "event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)"
-        in j2
+        in inv
     )
     assert (
-        "daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)" in j2
+        "daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)" in inv
     )
     assert (
-        "iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day" in j2
+        "iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day" in inv
     )
     assert mandatory_equity in synth
     assert (
-        "MANDATORY machine-readable σ session table (downstream verifier)" in j2
+        "MANDATORY machine-readable σ session table (downstream verifier)" in inv
         and "MANDATORY machine-readable σ session table (downstream verifier)" in synth
     )
 
 
 def test_sigma_summary_json_contract_in_equity_and_synthesizer_prompts() -> None:
-    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
-    assert "MANDATORY machine-readable" in j2 and "sigma_summary" in j2
-    assert "one_sigma_half_width_pct" in j2 and "three_sigma_half_width_pct" in j2
-    assert "anchor_type" in j2
+    inv = _policy_invariants_text()
+    synth = _effective_synthesizer_system_prompt()
+    assert "MANDATORY machine-readable" in inv and "sigma_summary" in inv
+    assert "one_sigma_half_width_pct" in inv and "three_sigma_half_width_pct" in inv
+    assert "anchor_type" in inv
     assert "MANDATORY machine-readable σ session table (downstream verifier)" in synth
 
 
@@ -270,7 +296,7 @@ def test_provider_summarize_system_prompt_file_exists_nonempty_and_matches_expor
 
 
 def test_synthesizer_prompt_has_mandatory_sigma_summary_block() -> None:
-    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    synth = _effective_synthesizer_system_prompt()
     assert "Before showing any σ bands" in synth
     assert "MANDATORY machine-readable σ session table (downstream verifier)" in synth
     assert "sigma_summary" in synth
@@ -304,3 +330,38 @@ def test_synthesizer_system_requires_explicit_bands_in_sections_9_11() -> None:
     assert "**Sections 9 and 11 — σ band adjacency:**" in synth
     assert "never** need to scroll back to section 1" in synth
     assert "not** condensed prose-only references" in synth
+
+
+def test_prompts_index_maps_every_prompt_file() -> None:
+    index_path = PROMPTS / "INDEX.md"
+    assert index_path.is_file()
+    idx = index_path.read_text(encoding="utf-8")
+    rels = sorted(
+        p.relative_to(PROMPTS).as_posix()
+        for p in PROMPTS.rglob("*")
+        if p.is_file() and p.suffix in {".md", ".j2"}
+    )
+    assert rels, "expected at least one prompt file"
+    for rel in rels:
+        assert rel in idx, f"INDEX.md must mention {rel} (table row or inline path)"
+
+
+def test_policy_invariants_nonempty() -> None:
+    assert _policy_invariants_text().strip() != ""
+
+
+def test_extracted_invariants_not_duplicated_on_disk() -> None:
+    """Moved MUST blocks must not still appear in the old on-disk locations (single source)."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth_src = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    inv = _policy_invariants_text()
+    needle = (
+        "**MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** "
+        "Before showing any σ bands, output **exactly** these two lines in a fenced code block"
+    )
+    assert needle in inv
+    assert needle not in j2
+    assert needle not in synth_src
+    assert "**MUST — literal horizon blend table:**" in inv
+    assert "**MUST — literal horizon blend table:**" not in j2
+    assert "**MUST — literal horizon blend table:**" not in synth_src

@@ -41,109 +41,23 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 
 **Per-provider σ variance pre-check (use `per_provider_sigma_checks_markdown` when present):** When the assembled synthesis context includes a `### Per-provider σ-band variance checks` table (template variable `per_provider_sigma_checks_markdown`), read it before reconciling section 1 / 9 / 11 σ bands. Each provider row reflects a deterministic check over **`sigma_summary` JSON** (preferred; last fenced ``json`` code block in the provider body) with **legacy markdown fallback** when JSON is absent. The table includes a **`severity`** column (`info` / `warning` / `error` / `na`) computed **per round** after all providers return: **`info`** when `passed=True`; **`warning`** when that row shows `passed=False` but it is the **only** provider in the round failing the variance identity (or an isolated missing-literals omission when peers met the literals); **`error`** when **multiple** providers in the same round fail the applicable check (quorum default **2**, configurable via run config / env). If `severity` is **`warning`** for a single provider, **note** the disagreement but **trust the consensus** of the providers marked **`info`**. If `severity` is **`error`** for multiple providers, treat **all** σ bands as suspect and reconcile carefully—**surface** the disagreement explicitly in the σ section (which providers were `info` vs `error`, and how you resolved magnitudes). Providers with missing mandatory literals appear as `passed=n/a`; router fan-out follow-ups fire only when **`severity`** is **`error`** for that signal (quorum of omitters). The qualitative section 8 weighting still applies; this pre-check governs σ magnitudes only, per the **Pure-quant rule**.
 
-**Pure-quant rule (mandatory) — option pricing and σ band widths:** When reconciling or restating **option-implied prices**, **expected-move** ranges, IV skew, premium estimates, straddles / butterflies / breakevens, or **any chain-derived dollar level** (**option pricing**), use **only quantitative inputs** reflected in the provider answers: chain IV, historical IV, bid/ask, prior realized moves (including post-earnings), ATR, beta, days-to-expiry, risk-free rate. **Do not** widen, tighten, or skew those levels based on qualitative narrative, management tone, or sentiment. If narrative warrants different **probabilities** across scenarios, state that in **scenario weighting**, not by altering implied prices.
-
-For **1σ / 2σ / 3σ** **σ band widths** around the prompt's anchor, preserve or reconcile magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings statistics as given in the sources. **Do not** widen or tighten **σ band widths** on qualitative grounds — bands are a **statistical envelope**. The **horizon-aware qual:quant blend** applies to **narrative emphasis** (which scenarios to foreground, how to narrate likely paths **within** the fixed envelope) and **how you discuss** scenario paths—**not** to **σ band widths** or **option pricing**. When consolidating, keep anchors and σ-sources explicit.
-
 **Sections 9 and 11 — σ band adjacency:** Sections **9** and **11** must each show the **full per-session 1σ / 2σ / 3σ** band table **verbatim** from the consolidated section 1 (or **Server-computed σ bands** when authoritative), **not** condensed prose-only references such as "within the 1σ band ($X–$Y)". The reader should **never** need to scroll back to section 1 to see all three σ levels beside predictions and probabilities.
-
-**Unsourced numbers — options metrics (Pure-quant addendum):** Same rule as the equity prompt: every PCR / IV / OI / volume / premium / breakeven figure must trace to `options_chain_data`, a citable URL or a `Source:` line in the same passage, or be labeled unavailable. If a provider cites an options metric that fails these checks (especially historical PCR or IV not in the verified chain), **strip it from the synthesis** and briefly note **"historical chain data unavailable"** (or the precise gap) rather than carrying the number forward.
 
 When the equity prompt included a **Verified options chain** table (`options_chain_markdown`), treat those strikes, expiries, IV, and straddle mids as **authoritative** for consolidation: prefer them **verbatim** over conflicting provider chain numbers. If providers disagree on chain inputs, defer to the verified table; still flag stale timestamps or missing fields if the table itself is thin.
 
 **Pre-computed σ bands (server):** When the synthesis prompt includes a **### Server-computed σ bands** section (from the equity run), treat those **±% half-widths**, **dollar bounds**, and **P(up)%** as **authoritative** — use them **verbatim** in the consolidated `sigma_summary` JSON and in sections 1 / 9 / 11; do not re-derive different σ % by averaging provider outputs.
 
-**MUST — monthly-expiry σ sourcing:** When the equity context / server bundle indicates **monthly** expiries (thin chain; no weekly inside the lookahead window), your synthesis **must** include the verbatim label **"Monthly-expiry sourced"** — event premium estimated via forward-variance / residual; consider widening uncertainty. When the server indicates **diffusion-only** σ (event premium not isolable), include the sentence **"Event premium not isolable; σ bands are diffusion-only (HV-driven)."**
-
 **Probabilities in the consolidated output** must use the same `Φ(μN/σ)` form with bounded `daily_drift_pct`. When providers disagree on drift, resolve toward the most-sourced value (**PEAD_avg** or **options_skew** preferred over **manual_override**). Recompute `prob_up_pct` from the consolidated drift and σ; do not average provider-emitted probabilities directly.
-
-**σ band construction — sanity rules (mandatory) — same as equity prompt:** When merging provider σ bands, enforce coherence, not ad hoc % picks.
-
-1. **No fake same-day implied move.** If **no options contract expires on the target session** for the ticker, the synthesis must **not** present a same-day "implied-move" σ band without relabeling: use the **nearest real weekly expiry**, state `"derived from <YYYY-MM-DD> weekly expiry"`, and scale by **√(target_DTE / chosen_expiry_DTE)** (constant IV); or **HV30 (annualized) × √(target_DTE / 252)** labeled `"HV30 √t scaling"`. **State explicitly** which path applies per session.
-
-2. **Variance-additive event+diffusion decomposition (canonical for horizons crossing the earnings event).** When the target session is **after** the earnings print, use:
-
-   > σ(T+N) = √(**event_jump²** + N · **daily_vol²**)
-
-   applied to the anchor (same-day intraday `[min−1, max+1]` if available, else prior-session close per the SD anchoring rule).
-
-   - `event_jump` = ATM straddle-implied move (%) from the **front weekly expiry covering the earnings session** in `options_chain_data` (or, if unavailable, from a cited public chain).
-   - **Canonical `daily_vol` source order (use the first that is computable from the provided context):**
-     1. **HV30** = annualized 30-day historical volatility / √252. Compute from the daily history already injected via `outcome_tracker`. Always available unless the ticker has < 30 trading days of history (rare).
-     2. **Realized post-earnings daily vol** — average of |close-to-close return| over the first 5 trading days after the **last 4** earnings windows. Use this only when HV30 is missing.
-     3. **Forward IV calendar-spread** — only when both event-week and post-event weekly expiries exist in `options_chain_data`. Computation: `daily_vol_post = √((IV_far² × T_far − IV_event² × T_event) / (T_far − T_event)) / √252`. Use only when both (1) and (2) are unavailable, **and** when `iv_crush_multiplier` / `daily_vol_iv_adjusted` are **not** supplied in the equity synthesis context.
-
-     **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`. When reconciling provider σ bands that diverge, prefer the provider whose `daily_vol` came from the earliest available source above.
-   - **IV crush alignment:** When the equity run context includes `iv_crush_multiplier` (and typically `daily_vol_iv_adjusted` = HV30/√252 × that ratio), synthesized σ bands for **post-earnings** horizons should use that **IV-adjusted** `daily_vol` whenever HV30 is the canonical diffusion baseline. If providers disagree on whether to apply the adjustment, treat the **adjusted** figure as canonical when the multiplier is in the server-validated range **[0.4, 1.2]** (values outside that band are not injected into the prompt).
-   - `N` = **post-earnings diffusion index** for the variance-additive formula: count **NYSE weekdays strictly after** the earnings **calendar** date through the target session’s date (inclusive of the target). **`n=0` on the earnings calendar session** (e.g. AMC pre-print row) means **only `event_jump`** — no `daily_vol` term yet. The next trading day is **`n=1`**, then **`n=2`**, etc., so `σ(n) = √(event_jump² + n·daily_vol²)` (same half-width % units as the table).
-   - **MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** Before showing any σ bands, output **exactly** these two lines in a fenced code block (any backticks), with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, no Unicode multipliers):
-
-     ```
-     event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)
-     daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)
-     ```
-
-     Numbers are percentages with 2 decimals. `<source>` is a short parenthetical. If `iv_crush_multiplier` is provided in context, also output:
-
-     ```
-     iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day
-     ```
-
-   - **Percent vs decimal (anti foot-gun):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
-
-   - **MANDATORY machine-readable σ session table (downstream verifier):** Before any σ bands (or immediately after the `event_jump=` / `daily_vol=` fenced block(s) if you already emitted them), output a **second** fenced block tagged **`json`** whose JSON root contains **`sigma_summary`** (exact key). The verifier reads the **last** such block in your **final** synthesis. Schema (numeric fields must match the **±% half-width** you show on each session’s **1σ** line — one side of the band as **% of the anchor price**, not full width; if you accidentally computed full width, **halve** before emitting):
-
-     ```json
-     {
-       "sigma_summary": {
-         "anchor_price": 179.11,
-         "anchor_type": "prior_close",
-         "sessions": [
-           {"date": "2026-05-13", "label": "T0 BMO", "N": 0, "one_sigma_half_width_pct": 11.31, "three_sigma_half_width_pct": 33.93},
-           {"date": "2026-05-14", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 12.51, "three_sigma_half_width_pct": 37.53}
-         ]
-       }
-     }
-     ```
-
-     Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings **calendar** date (same weekday-count rule as the bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** later horizon row with **`n≥1`** so the check can compare **`σ²(n₂)−σ²(n₁)`** vs **`(n₂−n₁)·daily_vol²`**. Use **strict JSON** (double quotes; no trailing commas). When **Server-computed σ bands** are present in this prompt, copy those `%` and `$` values into this JSON **verbatim** — do not re-derive different σ % by averaging provider outputs.
-
-3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by **√(target_DTE / chosen_expiry_DTE)** from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
-
-4. **Sanity check line in final synthesis (variance-additive form).** Preserve or add: `σ-scaling check (variance): spot-check σ² ≈ ej² + n·daily_vol² per row and pairwise deltas vs (n₂−n₁)·daily_vol²; within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`. When providers used only the **fallback** (no event in the horizon), preserve or add the legacy check: `σ-scaling check: 3σ(T+N)/3σ(T+1) = X.XX (expected ~√(N) = Y.YY); within tolerance: yes/no`.
-
-5. **Reject implausible 0-DTE bands.** If any session shows 3σ **< 5%** while the setup implies ≥ 15% pre-earnings event vol, flag as likely missing event-vol inputs and downgrade confidence until fixed.
-
-**Qualitative vs quantitative weighting — by horizon (directional bias vs price levels):** When reconciling the **bottom-up qualitative overlay (section 8)** with quantitative sections (1–7 and numeric predictions), the default blend depends on **how close the target session is to "now" and whether same-day intraday/options data already reflects the qualitative thesis**. The **Blend** column is always **qual : quant** (qualitative first, quantitative second).
-
-**MUST — literal horizon blend table:** Copy the following table exactly character-for-character into the synthesis wherever you show the horizon default blend (for example in section 8 **Horizon & blend application**); do not reorder columns, do not swap the two numbers in any cell, do not substitute synonyms like "slightly qualitative" for the digit pairs, and do not paraphrase the **Notes** cells.
-
-```
-| Horizon | Blend (qual : quant) | Notes |
-|---|---|---|
-| T-3 to T-1 (days before event) | 55 : 45 | Price / options have not absorbed the new narrative; qualitative drivers (mgmt commentary, positioning, setups) dominate directional bias. |
-| T-0 pre-open (event day, no intraday yet) | __T0_BLEND_LITERAL__ | Mixed: options skew and pre-print positioning already price much of the setup; the default blend leans slightly quantitative for **trust weighting** while qualitative narrative still matters and the Pure-quant rule governs $/σ. |
-| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | __T0_BLEND_LITERAL__ | After the tape and chain update, realized range and flow carry slightly more weight for **quantitative trust** in the narrative; qualitative drivers still shape story and scenarios; quantitative levels anchor exact $/σ math via the Pure-quant rule. |
-| T+1 to T+5 (after the event, with intraday history) | 49 : 51 | Realized post-event path and refreshed options data carry slightly more weight for **quantitative trust** in the narrative; qualitative drivers still inform scenario emphasis; exact $/σ bands remain quant-only. |
-```
 
 ### Qualitative deep-dive & suggested blend (advisory)
 
-Providers may emit a **rank/stack** of qualitative drivers and **per-horizon-row** suggested `qual : quant` integer pairs (**qual first**, two integers summing to **100**) that can differ from the canonical cells above. Reconcile that material **against** this **canonical fenced blend table** (T−3..T−1; T-0 pre-open and T-0 intraday rows both **__T0_BLEND_LITERAL__**; T+1..T+5)—the table remains the **literal default** for verification unless a future user flag explicitly overrides (none today).
+Providers may emit a **rank/stack** of qualitative drivers and **per-horizon-row** suggested `qual : quant` integer pairs (**qual first**, two integers summing to **100**) that can differ from the canonical cells in **Policy invariants** (prepended to this system prompt). Reconcile that material **against** this **canonical fenced blend table** (T−3..T−1; T-0 pre-open and T-0 intraday rows both **__T0_BLEND_LITERAL__**; T+1..T+5)—the table remains the **literal default** for verification unless a future user flag explicitly overrides (none today).
 
 - **Majority vs outlier:** When advisory suggested pairs **disagree** for the same horizon row, cite the **majority** cluster (two-of-three or two-of-two) and explicitly label **outliers** by provider label or "one provider"; prefer the advisory view with **stronger overlapping citations** across providers when counts tie.
-- **Canonical literals win:** **Never** replace, average, or paraphrase the **Blend** cells in the fenced table above—**always** copy them **verbatim** into the final synthesis section 8; provider **`advisory`** pairs live only in **prose** (or a clearly labeled **advisory** mini-table), never as substitutes for **55 : 45**, **__T0_BLEND_LITERAL__**, or **49 : 51** in the canonical block.
+- **Canonical literals win:** **Never** replace, average, or paraphrase the **Blend** cells in the canonical fenced table—**always** copy them **verbatim** into the final synthesis section 8; provider **`advisory`** pairs live only in **prose** (or a clearly labeled **advisory** mini-table), never as substitutes for **55 : 45**, **__T0_BLEND_LITERAL__**, or **49 : 51** in the canonical block.
 - **Use advisory prose for tension:** When providers' suggested splits **diverge** from canonical rows, explain the **story vs tape** tension (which ranked drivers vs which **RSI / PCR / skew** or other cited quant signals) **without** hand-shifting **`prob_up_pct`**, **σ** half-widths, scenario-weight numerics, or option-implied dollars away from pure-quant rules.
 - **Missing grids:** If **no** provider supplied per-row advisory pairs, **do not fabricate** a full advisory matrix; still merge **rank/stack** lists when present and sourced.
 - **Conflicting driver stacks:** When ranked-driver **orders** conflict, prefer the stack best supported by **shared primary or clearly dated sources**; if orders remain irreconcilable, present **both** stacks briefly and lower confidence rather than forcing a single false ordering.
-
-**MANDATORY — horizon blend literals (section 8; deterministic verifier checks this):** Use **one** canonical digit pair per row everywhere in the synthesis (prose, subsection titles, tables); **do not** vary wording or swap digits between sections or rounds. **Never emit** digit-inverted colon pairs for either row, **both** the canonical pair and its inversion in the same answer, **Quant**/**Qual** lens names reversed against the table, a **`quant`-then-`qual`** colon label for the blend column, a **`qualitative`-colon-`quantitative`** word pair as a pseudo-blend header, or **%-wording** that assigns the larger share to qualitative for **T-0 / T+1..T+5** or the smaller share to qualitative for **T−3..T−1** — copy the fenced table instead.
-
-**Forbidden literals (synthesis output — same checks as the server validator):** digit-inverted colon pairs for the fenced rows; **Quant**/**Qual** lens swap against **qual**/**quant** ordering; **`quant` `:` `qual`** as a blend-column label; **`qualitative` `:` `quantitative`** as a blend restatement; inverted %-pair wording for either horizon class. **σ** half-widths and option-implied dollars stay **pure-quant** regardless of blend.
-
-**MUST — qualitative overlay does not move numbers:** When qualitative signals conflict with quantitative signals, **narrate the disagreement** and use the **canonical horizon blend row** for **trust weighting / narrative emphasis only**. **Do not** apply any numeric adjustment (including ad hoc percentage-point shifts) to **probabilities**, **σ band half-widths**, **scenario-weight numerics**, or any other quantitative value. **`prob_up_pct` is governed strictly by** **`Φ((daily_drift_pct × N) / one_sigma_half_width_pct)`** with **bounded** `daily_drift_pct` as in the equity prompt—the qualitative overlay **does not** rescale that formula or average provider-emitted probabilities as a substitute.
-
-**Apply this lens to directional / narrative synthesis** — directional bias, scenario emphasis, how you **word** confidence in probabilities, and how much to trust each lens. **Pure-quant rule (mandatory):** **option pricing** and **σ band widths** are **off-limits** to qualitative adjustment — follow the **Pure-quant rule** block above; the table governs **rhetorical trust weighting** and **which paths you emphasize first**, **not** implied premiums, σ magnitudes, or **numeric edits** to **`prob_up_pct`**. When **same-day intraday data is unavailable for the target session**, use the T-0 pre-open row (**__T0_BLEND_LITERAL__**). When **quantitative signals are mixed, conflicting, unsourced, or based on small-sample technicals**, keep the **same fenced digit pair**—resolve the conflict in **prose** (call out thin data, widen uncertainty, or downgrade confidence), **not** by nudging percentages away from the table. When views **diverge on direction**, **default to the qualitative side** unless quantitative evidence is **unambiguous and recent** (after applying the horizon row only). The percentages are **guidance** for trust in each lens in the blend, not a literal word-count quota and **not** a license to hand-shift scenario or probability numbers.
 
 ## Disagreement Classification
 

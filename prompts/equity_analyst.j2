@@ -1,3 +1,5 @@
+{% include "policy/invariants.md" %}
+
 Market data (mandatory): Use **web_search** (or equivalent live or recently sourced quote tools you have) to obtain **{{ symbol }}**'s **last regular-session official closing price**, the **last session high and low**, and—only if you rely on them for the thesis—**after-hours or overnight last** with clear labeling. State **exchange**, **session date**, and **quote timestamp**, and **cite** the vendor or primary source. **Do not** treat any price figures from this YAML/config as authoritative.
 
 Optional YAML hints only: Fields such as `reference_session_low` / `reference_session_high` / `reference_last_price` (or legacy `today_low` / `today_high` / `current_price`) are **unverified reference hints** for rescaling or rough orientation. If present, you may use them as a cross-check but must **reconcile** them against freshly fetched data and call out discrepancies.
@@ -18,12 +20,6 @@ Date anchors (use only to map relational phrasing in sections below to concrete 
 - Follow-up open date (~1 week after earnings): {{ followup_open_date }}
 
 **SD / range anchoring (1σ / 2σ / 3σ dollar bands for the {{ earnings_date }} session, and the same logic for any other horizon when same-session intraday high/low is already known):** When same-day intraday data for the target session is available, anchor those **dollar** bands on the **same-day regular-session trading range** widened by **one price unit on each side** — **`[intraday_min − 1.00, intraday_max + 1.00]`** (use the **same unit as the stock price**; for U.S. listings treat this as **±1.00 USD**, not ±1%). This run sets **`same_day_intraday_available`={{ same_day_intraday_available }}**{% if same_day_intraday_available %} with `same_day_intraday_min`={{ same_day_intraday_min }}, `same_day_intraday_max`={{ same_day_intraday_max }} (implementing bracket **[{{ "%.2f"|format(same_day_intraday_anchor_band_low) }}, {{ "%.2f"|format(same_day_intraday_anchor_band_high) }}]** for `[intraday_min − 1.00, intraday_max + 1.00]`){% endif %}. **When `same_day_intraday_available` is false**, same-day intraday is not yet available (e.g. T0 pre-open or no bar) — **fall back** to anchoring 1σ/2σ/3σ **dollar** targets on the **previous trading day's official regular-session close** (fetch and cite it) and **label** your ranges as **prior-close anchored**. Do not silently mix anchors: state which branch you used.
-
-**Pure-quant rule (mandatory) — option pricing and σ band widths:** When computing **option-implied prices**, **expected-move** ranges, **IV skew**, **premium estimates**, straddles / butterflies / breakevens, or **any chain-derived dollar level** (**option pricing** and related math), use **only quantitative inputs**: current chain IV, historical IV, observed bid/ask and mid, prior realized moves (including post-earnings windows), recent ATR, beta, risk-free rate, and days-to-expiry. **Do not** widen, tighten, or skew those figures based on qualitative narrative, management tone, or sentiment. If qualitative factors warrant different **probabilities** across paths, express that in **scenario weighting** (this overlay and prediction sections), **not** by adjusting implied prices or premiums.
-
-When computing **1σ / 2σ / 3σ** **σ band widths** around the anchor (same-day **`[intraday_min − 1.00, intraday_max + 1.00]`** or prior-close per the **SD / range anchoring rule** above), derive σ magnitudes using **only** historical volatility, IV, ATR, and realized post-earnings move statistics (with sources). **Do not** widen or tighten **σ band widths** for qualitative reasons — the bands are a **statistical confidence interval**, not a directional view. The **horizon-aware qual:quant blend** in section 8 governs **narrative emphasis** (which scenarios to foreground, how to narrate likely paths **within** the fixed envelope) and **how you discuss** scenario paths—**not** **σ band widths** and **not** **option pricing**. State each band's anchor and σ-source explicitly.
-
-**Unsourced numbers prohibited (Pure-quant addendum):** For options chain metrics (IV, PCR, OI, volume, premium, breakeven, etc.), every numeric claim must either (a) appear in `options_chain_data` (the verified chain), OR (b) come from a single named, citable source (Yahoo Options snapshot URL, CBOE, brokerage feed), OR (c) be explicitly stated as **"unavailable from primary sources"**. Do **not** estimate or infer historical option metrics (e.g. "1-week-prior PCR", "average IV over the past month") from memory or pattern matching. If `options_chain_data` doesn't include it and you cannot find a citable snapshot, write `unavailable`.
 
 **Verified options chain (use these numbers, do not fabricate):**
 
@@ -67,67 +63,8 @@ Use these expiry dates, ATM strikes, IV, and straddle prices verbatim. Compute e
 **MUST:** If event premium is not isolable (diffusion-only server ladder), state explicitly: **"Event premium not isolable; σ bands are diffusion-only (HV-driven)."**
 {% endif %}
 Use these dollar bounds and percentages **exactly as shown**. Do not recalculate σ bands from your own arithmetic — the server already applied variance-additive math (`σ(T+N) = √(event_jump² + N·daily_vol²)`) with verified inputs (`event_jump` from front weekly straddle, `daily_vol` from HV30 × IV-crush multiplier when applicable, `daily_drift_pct` bounded). The verifier will compare your σ outputs against this table and flag any deviation > 1 percentage point on the % half-widths.
-**Percent vs decimal (mandatory):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
 {% else %}
-**σ band construction — sanity rules (mandatory):**
-
-1. **No fake same-day implied move.** If **no options contract expires on the target session** for this ticker, you must **not** report an "implied-move" σ figure for that session. Instead:
-   - Use the **nearest weekly expiry that exists**, label the σ width as `"derived from <YYYY-MM-DD> weekly expiry"`, and **scale to the target session by √(target_DTE / chosen_expiry_DTE)** under a constant-IV assumption.
-   - If no weekly expiry exists within a reasonable horizon, fall back to **30-day historical volatility (annualized) × √(target_DTE / 252)**, label as `"HV30 √t scaling"`.
-   - **State explicitly** which path you used per session.
-
-2. **Variance-additive event+diffusion decomposition (canonical for horizons crossing the earnings event).** When the target session is **after** the earnings print, use:
-
-   > σ(T+N) = √(**event_jump²** + N · **daily_vol²**)
-
-   applied to the anchor (same-day intraday `[min−1, max+1]` if available, else prior-session close per the SD anchoring rule).
-
-   - `event_jump` = ATM straddle-implied move (%) from the **front weekly expiry covering the earnings session** in `options_chain_data` (or, if unavailable, from a cited public chain).
-   - **IV-crush adjustment (apply when an event sits inside the horizon and both pre- and post-event weekly expiries are listed in `options_chain_data`):** If `iv_crush_multiplier` is provided (see the pre-computed block above when present), your `daily_vol` for **post-event** horizons when using the **HV30** baseline is **`(HV30 / √252) × iv_crush_multiplier`**. This scales realized HV30 by the implied IV crush between the event-week and the next listed weekly expiry. **State both** the raw HV30/√252 figure and the adjusted value in your output, for example: `daily_vol_raw=5.35%/day (HV30 84.9% ann / √252), iv_crush_multiplier=0.59 (post/event weekly IV), daily_vol=3.16%/day`.
-   - **Canonical `daily_vol` source order (use the first that is computable from the provided context):**
-     1. **HV30** = annualized 30-day historical volatility / √252. Compute from the daily history already injected via `outcome_tracker`. Always available unless the ticker has < 30 trading days of history (rare).
-     2. **Realized post-earnings daily vol** — average of |close-to-close return| over the first 5 trading days after the **last 4** earnings windows. Use this only when HV30 is missing.
-     3. **Forward IV calendar-spread** — only when both event-week and post-event weekly expiries exist in `options_chain_data`. Computation: `daily_vol_post = √((IV_far² × T_far − IV_event² × T_event) / (T_far − T_event)) / √252`. Use only when both (1) and (2) are unavailable, **and** when `iv_crush_multiplier` / `daily_vol_iv_adjusted` are **not** provided above.
-
-     **State which source was used** with the numeric output: e.g. `daily_vol=3.15%/day (HV30 50.0% ann / √252)`.
-   - `N` = **post-earnings diffusion index** for the variance-additive formula: count **NYSE weekdays strictly after** the earnings **calendar** date through the target session’s date (inclusive of the target). **`n=0` on the earnings calendar session** (e.g. AMC pre-print row) means **only `event_jump`** — no `daily_vol` term yet. The next trading day is **`n=1`**, then **`n=2`**, etc., so `σ(n) = √(event_jump² + n·daily_vol²)` (same half-width % units as the table).
-   - **MANDATORY (verifier will flag missing literals; you will be re-fanned-out to refine):** Before showing any σ bands, output **exactly** these two lines in a fenced code block (any backticks), with the literal tokens `event_jump=` and `daily_vol=` in this exact form (no LaTeX, no Markdown italics, no Unicode multipliers):
-
-     ```
-     event_jump=<X.XX>% (<source description, e.g. May 15 weekly ATM straddle from options_chain_data>)
-     daily_vol=<Y.YY>%/day (<source: HV30 / realized post-earnings / IV-adjusted with multiplier>)
-     ```
-
-     Numbers are percentages with 2 decimals. `<source>` is a short parenthetical. If `iv_crush_multiplier` is provided, also output:
-
-     ```
-     iv_crush_multiplier=<Z.ZZ> daily_vol_raw=<W.WW>%/day daily_vol=<Y.YY>%/day
-     ```
-
-   - **MANDATORY machine-readable σ session table (downstream verifier):** Immediately after the `event_jump=` / `daily_vol=` fenced block(s), output a **second** fenced block tagged **`json`** whose JSON root contains **`sigma_summary`** (exact key). The verifier reads the **last** such block in your answer. Schema (numeric fields must match the **±% half-width** you show on each session’s **1σ** line — one side of the band as **% of the anchor price**, not full width; if you accidentally computed full width, **halve** before emitting):
-
-     ```json
-     {
-       "sigma_summary": {
-         "anchor_price": 179.11,
-         "anchor_type": "prior_close",
-         "sessions": [
-           {"date": "2026-05-13", "label": "T0 BMO", "N": 0, "one_sigma_half_width_pct": 11.31, "three_sigma_half_width_pct": 33.93},
-           {"date": "2026-05-14", "label": "T+1", "N": 1, "one_sigma_half_width_pct": 12.51, "three_sigma_half_width_pct": 37.53}
-         ]
-       }
-     }
-     ```
-
-     Rules: `date` is **YYYY-MM-DD** for each session row you report σ bands for. `label` is a short human label (e.g. T+1, earnings week close). **`N`** is optional metadata you may fill; the server **recomputes** `N` from the earnings **calendar** date (same weekday-count rule as the bullet above) and uses **`one_sigma_half_width_pct`** for variance-additive checks. Include **at least one** later horizon row with **`n≥1`** so the check can compare **`σ²(n₂)−σ²(n₁)`** vs **`(n₂−n₁)·daily_vol²`**. Use **strict JSON** (double quotes; no trailing commas).
-
-   - **Percent vs decimal (mandatory):** In `event_jump=<X.XX>%` and `daily_vol=<Y.YY>%/day`, **X.XX and Y.YY are percents** (e.g. `event_jump=11.31%` for ~11.31% straddle-implied move, **not** `event_jump=0.11%` from wrongly treating 0.1131 as a percent). Same for `daily_vol`. Verifier flags sub-1% `event_jump` on liquid names as likely decimal-form error unless sourced.
-
-3. **Fallback — √t scaling within a single IV baseline** (only when the horizon does **not** cross an earnings event, e.g. T−3 → T−1 pre-event, or T+5 → T+10 post-event with a single forward-IV baseline): scale `σ` by `√(target_DTE / chosen_expiry_DTE)` from a named real expiry, **labeling** which expiry was used; or **HV30 × √t** when no suitable expiry exists.
-
-4. **Sanity check (state in output, variance-additive form).** After computing all post-event σ bands, output one line: `σ-scaling check (variance): spot-check σ² ≈ ej² + n·daily_vol² per row and pairwise deltas vs (n₂−n₁)·daily_vol²; within tolerance: yes/no` (tolerance: ±25% of expected). If "no", **re-derive** with a corrected `daily_vol`.
-
-5. **Reject implausible 0-DTE bands.** If 3σ width for any session is **< 5%** for a stock that has implied earnings move ≥ 15% pre-print, flag the calculation as likely missing an event-vol input and re-derive.
+**No server σ ladder for this run:** Apply the full **σ band construction — sanity rules** (mandatory literals, `sigma_summary` JSON, variance-additive checks) in the **Policy invariants** block at the top of this prompt.
 {% endif %}
 {% if earnings_timing %}
 Earnings timing (from this brief): {{ earnings_timing }}. Anchor sections 1, 9, and 11 to this schedule; cross-check via web_search if it materially affects probabilities and flag any material conflict.
@@ -178,25 +115,6 @@ Do NOT collapse to just 1σ or omit 2σ/3σ; if data limits prevent precise calc
 
 ### Directional resolution
 - **Fourth** inside section 8. **2–4 sentences** only: connect the **Qualitative evidence** bullets to **directional bias** for the prompt’s horizons **without** repeating the full methodology table or re-deriving every row.
-
-**Reference — Qualitative vs quantitative weighting — by horizon** (for composing **Horizon & blend application** only; **do not** treat this table as a substitute for **Qualitative evidence**): The default blend depends on **how close the target session is to "now" and whether same-day intraday/options data already reflects the qualitative thesis**. The **Blend** column is always **qual : quant** (qualitative first, quantitative second).
-
-**MUST — literal horizon blend table:** Copy the following table exactly character-for-character into your answer wherever you show the horizon default blend (for example in section 8 **Horizon & blend application**); do not reorder columns, do not swap the two numbers in any cell, do not substitute synonyms like "slightly qualitative" for the digit pairs, and do not paraphrase the **Notes** cells.
-
-```
-| Horizon | Blend (qual : quant) | Notes |
-|---|---|---|
-| T-3 to T-1 (days before event) | 55 : 45 | Price / options have not absorbed the new narrative; qualitative drivers (mgmt commentary, positioning, setups) dominate directional bias. |
-| T-0 pre-open (event day, no intraday yet) | {{ t0_blend_literal }} | Mixed: options skew and pre-print positioning already price much of the setup; the default blend leans slightly quantitative for **trust weighting** while qualitative narrative still matters and the Pure-quant rule governs $/σ. |
-| T-0 with same-day intraday available (mid-day / post-print / post-AMC) | {{ t0_blend_literal }} | After the tape and chain update, realized range and flow carry slightly more weight for **quantitative trust** in the narrative; qualitative drivers still shape story and scenarios; quantitative levels anchor exact $/σ math via the Pure-quant rule. |
-| T+1 to T+5 (after the event, with intraday history) | 49 : 51 | Realized post-event path and refreshed options data carry slightly more weight for **quantitative trust** in the narrative; qualitative drivers still inform scenario emphasis; exact $/σ bands remain quant-only. |
-```
-
-**MANDATORY — horizon blend literals (section 8; downstream synthesis verifier checks this):** Use **one** canonical digit pair per row everywhere in the report (including **Horizon & blend application**); **do not** swap digits or lens labels between sections. **Never emit** digit-inverted colon pairs for either row, **both** the canonical pair and its inversion in the same answer, **Quant**/**Qual** lens names reversed against the table, a **`quant`-then-`qual`** colon label for the blend column, a **`qualitative`-colon-`quantitative`** word pair as a pseudo-blend header, or **%-wording** that assigns the larger share to qualitative for **T-0 / T+1..T+5** or the smaller share to qualitative for **T−3..T−1** — copy the fenced table instead.
-
-**Forbidden literals (answer text — same checks as the server validator):** digit-inverted colon pairs for the fenced rows; **Quant**/**Qual** lens swap against **qual**/**quant** ordering; **`quant` `:` `qual`** as a blend-column label; **`qualitative` `:` `quantitative`** as a blend restatement; inverted %-pair wording for either horizon class. **σ** widths stay quant-only.
-
-**MUST — qualitative overlay does not move numbers:** When qualitative signals conflict with quantitative signals, **narrate the disagreement** and use the **canonical horizon blend row** for **trust weighting / narrative emphasis only** (which scenarios to discuss first, which catalysts to stress). **Do not** apply any numeric adjustment (including ad hoc percentage-point shifts) to **probabilities**, **σ band half-widths**, **scenario-weight numerics**, or any other quantitative value. **`prob_up_pct` is governed strictly by** **`Φ((daily_drift_pct × N) / one_sigma_half_width_pct)`** with **bounded** `daily_drift_pct` as in the **Probability computation** block—the qualitative overlay **does not** rescale that formula or override emitted percents with unsourced fudge factors.
 
 Conduct a bottom-up review of {{ symbol }} using web_search — earnings transcript/guidance, 30/60/90d news, product/customer/partnerships, insider/buybacks, sector/competitors, supply-chain/end-markets, regulatory/macro — so **Qualitative evidence** is populated with traceable items. When you later produce probabilities and ranges, name which **sourced** qualitative items moved the call. Flag disagreement between this overlay and quantitative sections 1–7; resolve in **Horizon & blend application** / **Directional resolution** and in prediction sections using the rules above.
 

@@ -6,6 +6,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+- **Prompts:** Added `prompts/INDEX.md` and `prompts/policy/invariants.md`; equity template includes invariants via Jinja; synthesizer prepends the same file in `prompt_parts._load_prompt_file` (T0 placeholder rewrite). (`refactor(prompts): phase 1 index + policy invariants extract`)
 - **DB (hybrid run storage):** Alembic **`0003_runs_run_document`** adds nullable **`runs.run_document`** JSONB (full **`run.json`** snapshot; canonical serialization in **`equity_analyst/run_json_serde.py`**). Normalized **`runs`** columns are derived from the **same** in-memory dict as **`run_document`** / **`config_snapshot`** on upsert. Default dual-write to **`outputs/.../run.json`**; **`RunConfig.persist_run_json_to_disk`**, **`EQUITY_PERSIST_RUN_JSON`**, and CLI **`--persist-run-json` / `--no-persist-run-json`** skip disk when disabled (Drive upload still forces disk). **`db-backfill --hydrate-run-document`** (alias **`--include-run-document`**) fills null JSONB from on-disk **`run.json`**. **`load_run_document_from_db`** / **`async_load_run_json_dict_for_run_dir`** back outcome and prediction tooling when **`run.json`** is absent. (`feat(db): hybrid run storage (runs.run_document JSONB)`)
 
 ### 2026-05-13
