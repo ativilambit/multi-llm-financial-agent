@@ -326,6 +326,64 @@ async def test_run_prediction_extract_uses_db_synthesis_when_file_missing(
     assert "Synth from DB" in calls[0]["user_message"]
 
 
+@pytest.mark.asyncio
+async def test_run_prediction_extract_prefers_db_synthesis_over_disk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Regression: stale outputs/synthesis.md must not beat runs.synthesis_markdown."""
+    monkeypatch.chdir(tmp_path)
+    run_dir = Path("outputs") / "ZZ_20260511T000000Z"
+    run_dir.mkdir(parents=True)
+    cfg = _minimal_run_config()
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {"run_profile": "production", "config": cfg.model_dump()},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "synthesis.md").write_text("# STALE DISK VERSION\n", encoding="utf-8")
+
+    payload = {
+        "horizons": {h: {"probability_up": 0.2} for h in PREDICTION_HORIZONS},
+        "confidence": "low",
+        "notes": "",
+    }
+
+    calls: list[dict[str, str]] = []
+
+    async def _fake_invoke(*, user_message: str, **_kw: object) -> ProviderResponse:
+        calls.append({"user_message": user_message})
+        return ProviderResponse(
+            provider_name="gemini",
+            model="gemini-3-flash-preview",
+            text=json.dumps(payload),
+            usage=ProviderUsage(),
+            latency_s=0.01,
+            raw=None,
+        )
+
+    monkeypatch.setattr(
+        "equity_analyst.prediction_extract._invoke_prediction_extract_llm",
+        _fake_invoke,
+    )
+    monkeypatch.setattr(
+        "equity_analyst.prediction_extract.load_synthesis_markdown_from_db",
+        AsyncMock(return_value="# CANONICAL DB VERSION\n"),
+    )
+    replace = AsyncMock(return_value=True)
+    monkeypatch.setattr("equity_analyst.prediction_extract.db_replace_predictions", replace)
+
+    await run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg)
+    assert replace.await_count == 1
+    assert len(calls) == 1
+    assert "CANONICAL DB VERSION" in calls[0]["user_message"]
+    assert "STALE DISK VERSION" not in calls[0]["user_message"]
+
+
 def test_parse_strips_markdown_fences() -> None:
     inner = {
         "horizons": {h: {} for h in PREDICTION_HORIZONS},

@@ -1175,6 +1175,21 @@ def main(argv: list[str] | None = None) -> int:
                         synthesis_markdown=synthesis_markdown,
                     )
                 )
+                cfg_for_extract: RunConfig | None = None
+                try:
+                    if isinstance(meta_blob, dict):
+                        cfg_raw = meta_blob.get("config")
+                        if isinstance(cfg_raw, dict):
+                            effective_rp = run_profile_from_persisted_run_json(meta_blob)
+                            cfg_for_extract = RunConfig.model_validate(cfg_raw).model_copy(
+                                update={"run_profile": effective_rp}
+                            )
+                except Exception:
+                    cfg_for_extract = None
+                if cfg_for_extract is not None and cfg_for_extract.prediction_extract_enabled:
+                    asyncio.run(
+                        run_prediction_extract_for_run_dir(run_dir=out_dir, cfg=cfg_for_extract)
+                    )
         else:
             if not args.config:
                 raise SystemExit("--config is required for non-iterative runs")

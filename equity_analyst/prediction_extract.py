@@ -379,19 +379,21 @@ async def run_prediction_extract_for_run_dir(
         run_dir = run_dir.expanduser().resolve()
         run_id = run_dir.name
         syn_path = _pick_synthesis_path(run_dir)
-        synthesis_text = ""
-        if syn_path.is_file():
+        # Prefer Postgres `runs.synthesis_markdown` when present so batch/from_db and
+        # partial disk trees never parse stale local markdown.
+        db_syn = await load_synthesis_markdown_from_db(run_id, database_url=cfg.database_url)
+        if db_syn:
+            synthesis_text = db_syn
+        elif syn_path.is_file():
             synthesis_text = syn_path.read_text(encoding="utf-8")
         else:
-            db_syn = await load_synthesis_markdown_from_db(run_id, database_url=cfg.database_url)
-            if db_syn:
-                synthesis_text = db_syn
-            else:
-                logger.warning(
-                    "prediction_extract: missing synthesis file path=%s and no runs.synthesis_markdown",
-                    syn_path,
-                )
-                return []
+            synthesis_text = ""
+        if not synthesis_text.strip():
+            logger.warning(
+                "prediction_extract: missing synthesis file path=%s and no runs.synthesis_markdown",
+                syn_path,
+            )
+            return []
         symbol = cfg.symbol
         rows = await extract_predictions_from_synthesis(
             synthesis_text=synthesis_text,

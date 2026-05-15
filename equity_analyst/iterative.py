@@ -39,7 +39,6 @@ from equity_analyst.options_chain import (
     options_chain_expiry_audit_messages,
 )
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
-from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_export import prompt_call_context
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT
 from equity_analyst.prompting import RenderedPrompt
@@ -3083,17 +3082,6 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
         if persist_rj:
             run_json.write_text(format_run_json_for_disk(meta), encoding="utf-8")
         logger.info("Iterative wall-clock timing summary: %s", timing_summary)
-
-        cfg_for_extract: RunConfig | None = None
-        try:
-            cfg_raw = meta.get("config")
-            if isinstance(cfg_raw, dict):
-                cfg_for_extract = RunConfig.model_validate(cfg_raw)
-        except Exception:
-            logger.warning("finalize: invalid config snapshot; skipping prediction_extract")
-            cfg_for_extract = None
-        if cfg_for_extract is not None and cfg_for_extract.prediction_extract_enabled:
-            await run_prediction_extract_for_run_dir(run_dir=out, cfg=cfg_for_extract)
 
         if bool(state.get("drive_upload_enabled", False)):
             cred_raw = state.get("drive_credentials_path")
