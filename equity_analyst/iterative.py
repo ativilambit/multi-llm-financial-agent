@@ -78,7 +78,6 @@ from equity_analyst.synthesizer_blend import (
     T0BlendPreset,
     horizon_blend_ratio_followups,
     normalize_t0_blend_preset,
-    qualitative_numeric_tilt_followups,
     suggested_blend_consistency_followups,
 )
 from equity_analyst.types import ProviderResponse, ProviderUsage
@@ -138,7 +137,7 @@ If the excerpt includes **section 8** bottom-up qualitative material, add an **u
 When the excerpt states **horizon blend** defaults, the equity/synthesizer prompts fix literals as **qual : quant** (qualitative first). For **T-0 / T+1..T+5** rows the digits must match the fenced table (**49 : 51**). For **T-3..T-1** use the fenced table (**55 : 45**). Flag **unverifiable** if the excerpt uses digit-inverted colon pairs, emits **both** canonical and inverted pairs, swaps **Quant**/**Qual** lens names against **qual**/**quant** ordering, uses a **quant-then-qual** colon label for the blend column, uses **qualitative-colon-quantitative** as a pseudo-blend header, or uses **%-wording** that contradicts the fenced digit pairs. (Deterministic post-pass also enforces this—still flag if you see it in your excerpt.)
 
 """
-    + f"""When multi-provider material shows **advisory** (non-canonical) **`qual : quant`** integers for the **same** horizon bucket disagreeing by more than **{ADVISORY_BLEND_PROVIDER_SPREAD_THRESHOLD_POINTS}** points on **either** int, check that the synthesis includes a clearly labeled **`### Final suggested blend (advisory — consensus)`** table (four horizon rows). If that heading and table are **missing**, add one **unverifiable** item requesting them (short).
+    + f"""When multi-provider material shows **advisory** (non-canonical) **`qual : quant`** integers for the **same** horizon bucket disagreeing by more than **{ADVISORY_BLEND_PROVIDER_SPREAD_THRESHOLD_POINTS}** points on **either** int, check that the synthesis includes a clearly labeled **`### Final suggested blend (advisory — consensus)`** table (four horizon rows) whose per-row **Dissent notes** name **dissenting providers together with those providers' stated `qual : quant` pairs** when those pairs appear in provider text. If that heading and table are **missing**, add one **unverifiable** item requesting them (short).
 
 Synthesis MUST NOT introduce numeric qualitative tilts. Flag any '+5', '+10', or 'tilt' applied to quantitative values (probabilities, sigma bands, scenario weights).
 
@@ -1304,7 +1303,6 @@ def augment_verifier_result_with_sigma_structural_checks(
         synthesis_text,
         t0_blend_preset=t0_blend_preset,
     )
-    tilt_followups = qualitative_numeric_tilt_followups(synthesis_text)
     blend_soft = suggested_blend_consistency_followups(
         synthesis_text,
         provider_iteration_bundle=provider_iteration_bundle or "",
@@ -1325,12 +1323,11 @@ def augment_verifier_result_with_sigma_structural_checks(
     extras.extend(followups_from_unsourced_options_chain_numeric_claims(synthesis_text))
     merged = (
         blend_followups
-        + tilt_followups
         + extras
         + [
             u
             for u in prior
-            if u not in blend_followups and u not in tilt_followups and u not in extras
+            if u not in blend_followups and u not in extras
         ]
         + blend_soft
     )

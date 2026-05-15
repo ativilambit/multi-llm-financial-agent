@@ -31,6 +31,12 @@ Rules:
 - If the synthesis uses percentages (e.g. “62% chance up”), convert to `0.62`.
 - Keep all five horizon keys present even when every inner field is null.
 
+**Canonical `probability_up` (mandatory preference order):** For each horizon, fill **`probability_up`** only from **verifier-canonical** upward probability, not advisory blends.
+
+1. **Best:** If the synthesis includes a fenced **`json`** block whose root has **`sigma_summary`** with **`sessions[*].prob_up_pct`** (and dates/labels you can match to that horizon), use **`prob_up_pct / 100.0`** for **`probability_up`** when the session clearly maps to that horizon. Prefer this over prose.
+2. **Else:** If sections **9** or **11** use the **`| Metric | Value |`** advisory table, use the row whose **Metric** is **`Φ-official (bounded drift)`** (or text that clearly states the same value as canonical **`prob_up_pct`**) — take the **%** in the **Value** column and convert to **`[0.0, 1.0]`**.
+3. **Do not** use for **`probability_up`**: **`P_mix_up`**, **`P_qual (advisory Φ)`**, **`Φ-informational`**, or any value labeled **advisory**, **not verifier-canonical**, or **informational only**. If only those appear for a horizon, set **`probability_up`** to **null** and mention it in **`notes`**.
+
 Example shape (illustrative numbers only):
 
 ```json

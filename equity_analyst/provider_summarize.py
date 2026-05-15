@@ -360,6 +360,7 @@ async def summarize_provider_body_if_needed(
         r_best < oversized_summarize_min_retention
         and oversized_summarize_provider == "gemini"
         and oversized_summarize_fallback_provider is not None
+        and oversized_summarize_fallback_provider.name != "anthropic"
     ):
         fbp = oversized_summarize_fallback_provider
         fb_msg = _oversized_summarize_user_message(
@@ -413,15 +414,14 @@ async def summarize_provider_body_if_needed(
 
     suffix = f", {'; '.join(suffix_parts)}" if suffix_parts else ""
     logger.info(
-        "pre_synthesis_summarize: condensed provider=%s est_tokens=%s → %s "
-        "(target=~%s, retention=%.1f%%)%s summarizer=%s model=%s",
+        "pre_synthesis_summarize: condensed body_from=%s est_tokens=%s → %s "
+        "(target=~%s, retention=%.1f%%)%s summarizer_api=gemini model=%s",
         provider_name,
         est,
         _estimate_tokens(out_best),
         target_est,
         100.0 * r_best,
         suffix,
-        oversized_summarize_provider,
         model,
     )
 

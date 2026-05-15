@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,113 @@ from pydantic import ValidationError
 
 from equity_analyst.config import RunConfig, SynthesizerConfig, load_config
 from equity_analyst.providers.gemini_provider import DEFAULT_GEMINI_MODEL
+
+
+def test_infer_cluster_from_earnings_on_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "equity_analyst.config.default_today_labels_ny",
+        lambda: ("Wed May 14, 2026", "regular U.S. session"),
+    )
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "NVDA",
+            "earnings_on": date(2026, 5, 19),
+            "target_dates": [],
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.earnings_date == "Tue May 19 2026"
+    assert cfg.next_trading_day == "Wed May 20"
+    assert cfg.followup_open_date == "Wed May 27"
+
+
+def test_infer_next_and_followup_when_earnings_date_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "equity_analyst.config.default_today_labels_ny",
+        lambda: ("Wed May 13, 2026", "regular U.S. session"),
+    )
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "YETI",
+            "earnings_date": "Thu May 14 2026",
+            "target_dates": [],
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.next_trading_day == "Fri May 15"
+    assert cfg.followup_open_date == "Thu May 21"
+
+
+def test_earnings_on_mismatch_raises() -> None:
+    with pytest.raises(ValidationError, match="earnings_on must match"):
+        RunConfig.model_validate(
+            {
+                "symbol": "X",
+                "earnings_on": date(2026, 5, 20),
+                "earnings_date": "Tue May 19 2026",
+                "target_dates": [],
+                "providers": ["openai"],
+            }
+        )
+
+
+def test_today_date_session_default_when_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "equity_analyst.config.default_today_labels_ny",
+        lambda: ("Wed May 14, 2026", "regular U.S. session"),
+    )
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.today_date == "Wed May 14, 2026"
+    assert cfg.today_session == "regular U.S. session"
+
+
+def test_today_session_default_when_date_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "equity_analyst.config.default_today_labels_ny",
+        lambda: ("Wed May 14, 2026", "regular U.S. session"),
+    )
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_date": "Mon Jan 5, 2026",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.today_date == "Mon Jan 5, 2026"
+    assert cfg.today_session == "regular U.S. session"
+
+
+def test_today_date_default_when_session_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "equity_analyst.config.default_today_labels_ny",
+        lambda: ("Wed May 14, 2026", "regular U.S. session"),
+    )
+    cfg = RunConfig.model_validate(
+        {
+            "symbol": "X",
+            "today_session": "after hours",
+            "earnings_date": "e",
+            "target_dates": [],
+            "next_trading_day": "n",
+            "followup_open_date": "f",
+            "providers": ["openai"],
+        }
+    )
+    assert cfg.today_date == "Wed May 14, 2026"
+    assert cfg.today_session == "after hours"
 
 
 def test_iterative_cost_optimization_flags_default_on() -> None:
@@ -356,6 +464,36 @@ def test_oversized_summarize_defaults() -> None:
     assert cfg.oversized_summarize_max_input_tokens == 100_000
     assert cfg.oversized_summarize_min_retention == 0.40
     assert cfg.oversized_summarize_fallback_provider is None
+
+
+def test_oversized_summarize_anthropic_coerced_to_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OVERSIZED_SUMMARIZE_PROVIDER", "anthropic")
+    cfg = RunConfig.model_validate(_minimal_run_config_dict())
+    assert cfg.oversized_summarize_provider == "gemini"
+    monkeypatch.delenv("OVERSIZED_SUMMARIZE_PROVIDER", raising=False)
+
+
+def test_oversized_summarize_fallback_anthropic_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    d = _minimal_run_config_dict()
+    d["oversized_summarize_fallback_provider"] = "anthropic"
+    d["providers"] = [
+        {"name": "anthropic"},
+        {"name": "openai"},
+    ]
+    cfg = RunConfig.model_validate(d)
+    assert cfg.oversized_summarize_fallback_provider is None
+
+
+def test_oversized_summarize_env_fallback_anthropic_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OVERSIZED_SUMMARIZE_FALLBACK_PROVIDER", "anthropic")
+    d = _minimal_run_config_dict()
+    d["providers"] = [
+        {"name": "anthropic"},
+        {"name": "openai"},
+    ]
+    cfg = RunConfig.model_validate(d)
+    assert cfg.oversized_summarize_fallback_provider is None
+    monkeypatch.delenv("OVERSIZED_SUMMARIZE_FALLBACK_PROVIDER", raising=False)
 
 
 def test_oversized_summarize_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,13 +2,17 @@
 #
 # Required:
 # - symbol: Stock ticker symbol (e.g. "MNDY")
-# - today_date / today_session: Human-readable session labels (not verified prices)
+# Optional (prompt labels; omit to auto-fill at load from America/New_York calendar date):
+# - today_date / today_session
 # Optional price hints (unverified; models must fetch last close via web_search):
 # - today_low / today_high / current_price OR reference_session_low / reference_session_high / reference_last_price
-# - earnings_date: Human-readable earnings date string used in the prompt
+# - earnings_on: ISO calendar date for the earnings print (YYYY-MM-DD). When set, you may omit
+#   human-readable ``earnings_date`` and/or ``next_trading_day`` / ``followup_open_date``; missing strings
+#   are filled at load from an NYSE weekend + holiday calendar (see equity_analyst.nyse_trading_days).
+# - earnings_date: Human-readable earnings date string used in the prompt (omit when ``earnings_on`` is set)
 # - target_dates: List of dates referenced in the prompt
-# - next_trading_day: Next trading day after earnings
-# - followup_open_date: A later follow-up open date referenced in the prompt
+# - next_trading_day: Next regular session after the earnings calendar day (omit to derive from earnings dates)
+# - followup_open_date: Fifth trading session after the earnings calendar day by default (omit to derive)
 # - providers: Which provider backends to run in parallel (see examples below)
 # - synthesizer: Which backend runs final synthesis (string or object; see below)
 #
@@ -31,12 +35,16 @@ symbol: "TICKER"
 company_name: "Optional Company Name"
 
 # Reference-only hints (optional). Prefer fetching last regular-session close in the prompt.
-today_low: 0
-today_high: 0
-current_price: 0
-# Aliases (same meaning as above): reference_session_low, reference_session_high, reference_last_price
-today_date: "Fri May 8, 2026"
-today_session: "after the market trading window"
+# Human-readable "as of" labels for the prompt (optional — omitted keys default from America/New_York
+# date at config load and "regular U.S. session"; see equity_analyst.config.default_today_labels_ny).
+# today_date: "Fri May 8, 2026"
+# today_session: "after the market trading window"
+
+# Earnings cluster: either set ``earnings_date`` (and optionally next/followup), or use ``earnings_on`` alone.
+# earnings_on: 2026-05-19
+# earnings_date: "Tue May 19 2026"
+# next_trading_day: "Wed May 20"
+# followup_open_date: "Wed May 27"
 
 earnings_date: "Mon May 11 2026"
 # Optional. Human-readable earnings call timing (e.g. BMO / AMC). If omitted, the equity prompt

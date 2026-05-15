@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from equity_analyst.iterative import augment_verifier_result_with_sigma_structural_checks
 from equity_analyst.synthesizer_blend import (
     QUALITATIVE_NUMERIC_TILT_FORBIDDEN_LITERALS_DOC,
@@ -136,43 +134,11 @@ def test_augment_verifier_includes_blend_messages() -> None:
     assert "blend" in unv and "inconsistent" in unv
 
 
-_SIG = chr(0x03C3)
-
-
-@pytest.mark.parametrize(
-    "snippet",
-    [
-        "Applied +5 point narrative fudge to P(up).",
-        "Apply +5 pp to the scenario mix.",
-        "+5 percentage point bump",
-        "+5 to +10 versus baseline",
-        "Plus 5 if you trust qual more",
-        "+10 point adjustment",
-        "+10 pp bump",
-        "+10 percentage point shift",
-        "mixed-quant tilt language",
-        "qualitative tilt to weights",
-        "point qualitative tilt mechanics",
-        f"tilt within {_SIG} bands narrative",
-        "tilt within sigma bands narrative",
-        "tilt to scenario probabilities",
-        "tilt to scenario weights",
-    ],
-)
-def test_qualitative_numeric_tilt_followups_detects_forbidden_snippets(snippet: str) -> None:
-    msgs = qualitative_numeric_tilt_followups(snippet)
-    assert msgs
-    assert "forbidden" in msgs[0].lower() or "remove" in msgs[0].lower()
-
-
-def test_qualitative_numeric_tilt_doc_tuple_covers_pattern_count() -> None:
-    """Keep documentation tuple roughly aligned with implemented pattern labels."""
-    assert len(QUALITATIVE_NUMERIC_TILT_FORBIDDEN_LITERALS_DOC) >= 10
-
-
-def test_qualitative_numeric_tilt_followups_en_dash_range() -> None:
-    text = "We add +5–10 points to qualitative trust."
-    assert qualitative_numeric_tilt_followups(text)
+def test_qualitative_numeric_tilt_enforcement_disabled() -> None:
+    """Qualitative-numeric tilt patterns are no longer flagged (stable API; doc tuple empty)."""
+    assert QUALITATIVE_NUMERIC_TILT_FORBIDDEN_LITERALS_DOC == ()
+    assert qualitative_numeric_tilt_pattern_hits("+5 pp fudge tilt narrative") == []
+    assert qualitative_numeric_tilt_followups("+5 pp fudge tilt narrative") == []
 
 
 def test_qualitative_numeric_tilt_followups_passes_clean_blend_prose() -> None:
@@ -182,12 +148,3 @@ def test_qualitative_numeric_tilt_followups_passes_clean_blend_prose() -> None:
     )
     assert qualitative_numeric_tilt_followups(text) == []
     assert qualitative_numeric_tilt_pattern_hits(text) == []
-
-
-def test_augment_verifier_includes_qualitative_numeric_tilt_messages() -> None:
-    syn = "Consensus:\nWe tilt qualitative by +5 to +10 percentage points vs the row.\n"
-    base = {"verified": [], "contradicted": [], "unverifiable": []}
-    out = augment_verifier_result_with_sigma_structural_checks(syn, base)
-    unv = " ".join(out.get("unverifiable") or []).lower()
-    assert "qualitative overlay" in unv
-    assert "forbidden" in unv or "numeric" in unv

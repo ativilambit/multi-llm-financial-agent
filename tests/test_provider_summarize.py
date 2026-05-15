@@ -110,10 +110,10 @@ async def test_oversized_body_calls_summarizer_once(
     assert len(calls) == 1
     assert out["openai"].text == "[compressed]\n\n" + "w" * (5000 * 4)
     assert out["openai"].model == "m"
-    assert "pre_synthesis_summarize: condensed provider=openai" in caplog.text
+    assert "pre_synthesis_summarize: condensed body_from=openai" in caplog.text
     assert "target=~" in caplog.text
     assert "retention=" in caplog.text
-    assert "summarizer=gemini model=gemini-3-flash-preview" in caplog.text
+    assert "summarizer_api=gemini model=gemini-3-flash-preview" in caplog.text
 
 
 @pytest.mark.asyncio

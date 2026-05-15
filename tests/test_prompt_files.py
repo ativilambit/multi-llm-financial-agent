@@ -5,10 +5,7 @@ from pathlib import Path
 from equity_analyst.prompt_parts import EQUITY_ANALYST_SYSTEM_PROMPT, _load_prompt_file
 from equity_analyst.provider_summarize import summarize_system_prompt
 from equity_analyst.synthesizer import SYNTHESIS_SYSTEM_PROMPT
-from equity_analyst.synthesizer_blend import (
-    assert_prompt_stack_excludes_horizon_blend_inversions,
-    qualitative_numeric_tilt_pattern_hits,
-)
+from equity_analyst.synthesizer_blend import assert_prompt_stack_excludes_horizon_blend_inversions
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS = REPO_ROOT / "prompts"
@@ -110,23 +107,50 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
     assert "**default to the qualitative side**" in synth
 
 
-def test_prompt_stack_has_no_horizon_blend_inversions() -> None:
-    assert_prompt_stack_excludes_horizon_blend_inversions()
+def test_sections_9_and_11_narrative_probability_disclosure_in_prompts() -> None:
+    """§9/§11 require Φ-official, Φ-informational, and blend advisory alongside bounded prob_up_pct."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    inv = _policy_invariants_text()
+    needle = "**Narrative probability disclosure (sections 9 & 11"
+    assert needle in j2
+    assert "Φ-official (bounded drift)" in j2
+    assert "Φ-informational (pre-clamp drift)" in j2
+    assert "Φ-informational matches Φ-official" in j2
+    assert "| Metric | Value |" in j2
+    assert "Blend advisory" in j2
+    assert "Narrative probability disclosure (report §9 prose)" in synth
+    assert "Narrative probability disclosure (report §11 prose)" in synth
+    assert "| Metric | Value |" in synth
+    assert "Sections 9 and 11" in inv and "Φ-informational (pre-clamp drift)" in inv
 
 
-def test_prompt_md_j2_exclude_qualitative_numeric_tilt_patterns() -> None:
-    """Regression: prompts must not reintroduce forbidden +5/+10 qualitative-tilt phrasing."""
-    paths: list[Path] = []
-    for path in sorted(PROMPTS.rglob("*")):
-        if not path.is_file():
-            continue
-        if path.suffix not in {".md", ".j2"}:
-            continue
-        paths.append(path)
-    for path in paths:
-        raw = path.read_text(encoding="utf-8")
-        hits = qualitative_numeric_tilt_pattern_hits(raw)
-        assert not hits, f"{path.relative_to(REPO_ROOT)} matched {hits!r}"
+def test_advisory_qual_drift_p_mix_narrative_in_prompts() -> None:
+    """Advisory qual-only drift → Φ and canonical-weight P_mix are prompt-only narrative supplements."""
+    j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
+    synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
+    inv = _policy_invariants_text()
+    assert "drift_qual_pct" in j2
+    assert "| Metric | Value |" in j2
+    assert "P_mix_up" in j2
+    assert "w_quant × P_quant + w_qual × P_qual" in j2
+    assert "advisory — not verifier-canonical" in j2
+    assert "drift_qual_pct" in synth and "P_mix_up" in synth
+    assert "| Metric | Value |" in synth
+    assert "w_quant × P_quant + w_qual × P_qual" in synth
+    assert "advisory — not verifier-canonical" in synth
+    assert "drift_qual_pct" in inv and "P_mix_up" in inv
+    assert "| Metric | Value |" in inv
+    assert "replace verifier math" in inv.lower()
+
+
+def test_prediction_extract_system_prefers_canonical_prob_up() -> None:
+    """Extraction must ignore advisory P_mix / P_qual for DB probability_up."""
+    raw = (PROMPTS / "prediction_extract_system.md").read_text(encoding="utf-8")
+    assert "sigma_summary" in raw and "prob_up_pct" in raw
+    assert "Φ-official (bounded drift)" in raw
+    assert "P_mix_up" in raw and "P_qual" in raw
+    assert "3. **Do not** use for **`probability_up`**" in raw
 
 
 def test_section8_qualitative_evidence_subsections_and_limits() -> None:
@@ -175,9 +199,11 @@ def test_suggested_blend_advisory_grid_mandated_in_equity_j2_and_synthesizer() -
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     heading = "#### Suggested blend (advisory)"
     table_header = "| Horizon bucket | Suggested qual : quant (two ints summing to 100) |"
+    ci_header = "Approx. ± on qual (pts; advisory CI)"
     for text in (j2, synth):
         assert heading in text
         assert table_header in text
+        assert ci_header in text
         assert "differs from canonical" in text
         assert "0..100" in text
     assert "MUST — Suggested blend (advisory) grid after the ranked stack" in j2
@@ -361,12 +387,12 @@ def test_section_9_requires_explicit_sigma_band_table_per_session() -> None:
 
 
 def test_section_11_includes_sigma_band_context_per_session() -> None:
-    """Section 11 repeats full σ tables and pairs P(up) with 1σ on the same line."""
+    """Section 11 repeats full σ tables; P(up)+1σ scanline lives in the advisory table row."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     assert "**σ bands adjacent to probabilities (mandatory):**" in j2
     assert "repeat the full 1σ / 2σ / 3σ band table from section 1 verbatim" in j2
-    assert "**Wed May 13 (T0)** — 1σ: $158.09 – $200.13 (±11.74%) | P(up): 50.5%" in j2
-    assert "not a substitute" in j2
+    assert "| P(up) scanline | 1σ: $158.09 – $200.13 (±11.74%) \\| P(up): 50.5% |" in j2
+    assert "P(up) scanline" in j2
 
 
 def test_synthesizer_system_requires_explicit_bands_in_sections_9_11() -> None:

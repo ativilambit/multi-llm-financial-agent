@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
@@ -24,26 +25,15 @@ from equity_analyst.config import (
 logger = logging.getLogger(__name__)
 
 
-async def async_load_run_json_dict_for_run_dir(
-    run_dir: Path, *, database_url: str | None = None
-) -> dict[str, Any] | None:
-    """Load ``run.json`` from disk, else ``runs.run_document`` when DB is reachable."""
-    resolved = run_dir.expanduser().resolve()
-    rj = resolved / "run.json"
-    if rj.is_file():
-        with contextlib.suppress(OSError, json.JSONDecodeError):
-            blob = json.loads(rj.read_text(encoding="utf-8"))
-            if isinstance(blob, dict):
-                return blob
-    from equity_analyst.db_ops import load_run_document_from_db
-
-    return await load_run_document_from_db(resolved.name, database_url=database_url)
+def _ny_calendar_date_today() -> date:
+    """Wall-calendar *today* in ``America/New_York`` (matches US equity session dating)."""
+    return datetime.now(ZoneInfo("America/New_York")).date()
 
 
 def load_run_json_dict_for_run_dir(
     run_dir: Path, *, database_url: str | None = None
 ) -> dict[str, Any] | None:
-    """Sync helper: disk first, then DB (``asyncio.run``) when no active event loop."""
+    """Load ``run.json`` from disk, or ``runs.run_document`` when the file is absent."""
     resolved = run_dir.expanduser().resolve()
     rj = resolved / "run.json"
     if rj.is_file():
@@ -51,15 +41,26 @@ def load_run_json_dict_for_run_dir(
             blob = json.loads(rj.read_text(encoding="utf-8"))
             if isinstance(blob, dict):
                 return blob
+    run_id = resolved.name
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(async_load_run_json_dict_for_run_dir(run_dir, database_url=database_url))
-    logger.warning(
-        "load_run_json_dict_for_run_dir: event loop active; DB fallback skipped run_dir=%s",
-        run_dir,
-    )
-    return None
+        pass
+    else:
+        logger.warning(
+            "load_run_json_dict_for_run_dir: skipping DB fallback inside running event loop run_id=%s",
+            run_id,
+        )
+        return None
+    from equity_analyst.db_ops import load_run_document_from_db
+
+    try:
+        return asyncio.run(load_run_document_from_db(run_id, database_url=database_url))
+    except RuntimeError as exc:
+        logger.warning(
+            "load_run_json_dict_for_run_dir: asyncio.run failed run_id=%s err=%r", run_id, exc
+        )
+        return None
 
 
 class RunOutcome(BaseModel):
@@ -132,11 +133,6 @@ def _parse_baseline_close_hint_from_data(data: dict[str, Any]) -> float | None:
 
 
 def _parse_baseline_close_hint(run_dir: Path) -> float | None:
-    """
-    Best-effort, non-brittle baseline hint for calibration.
-
-    Currently reads RunConfig.current_price from run metadata (``run.json`` or ``runs.run_document``).
-    """
     data = load_run_json_dict_for_run_dir(run_dir)
     if data is None:
         return None
@@ -492,6 +488,18 @@ def auto_fetch_outcome(
     if parsed is None:
         return result
     start_date = parsed.date()
+    ny_today = _ny_calendar_date_today()
+    if start_date > ny_today:
+        logger.info(
+            "auto_fetch: skipping Yahoo fetch symbol=%s earnings_date=%s "
+            "(earnings calendar date %s is after NY calendar %s; no historical bars yet — "
+            "this is normal pre-event, not delisting)",
+            symbol,
+            earnings_date,
+            start_date.isoformat(),
+            ny_today.isoformat(),
+        )
+        return result
     # 15 calendar days is enough to cover the earnings bar + ~10 trading days.
     end_date = start_date + timedelta(days=15)
 
@@ -520,9 +528,12 @@ def auto_fetch_outcome(
 
     if df is None or getattr(df, "empty", True):
         logger.warning(
-            "auto_fetch: empty bars returned for symbol=%s start=%s (ADR/recent-IPO?)",
+            "auto_fetch: empty bars returned for symbol=%s start=%s "
+            "(symbol typo, illiquid listing, Yahoo data gap, or bad date — not expected for "
+            "large caps once earnings day is on or before NY calendar %s)",
             symbol,
             start_date,
+            _ny_calendar_date_today().isoformat(),
         )
         return result
 
@@ -545,7 +556,9 @@ def auto_fetch_outcome(
     result["earnings_day_open"] = _coerce_float_safe(getattr(earnings_bar, "Open", None))
     result["earnings_day_high"] = _coerce_float_safe(getattr(earnings_bar, "High", None))
     result["earnings_day_low"] = _coerce_float_safe(getattr(earnings_bar, "Low", None))
-    result["earnings_day_close"] = _coerce_float_safe(getattr(earnings_bar, "Close", None))
+    result["earnings_day_close"] = _coerce_float_safe(
+        getattr(earnings_bar, "Close", None)
+    )
 
     if len(bars) >= 2:
         nb = bars[1]
@@ -677,9 +690,7 @@ def fetch_earnings_day_intraday_high_low_yfinance(
 
 _LAST_CLOSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"last\s+verified\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
-    re.compile(
-        r"last\s+regular[- ]session\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE
-    ),
+    re.compile(r"last\s+regular[- ]session\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
     re.compile(r"last\s+close[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
     re.compile(r"closing\s+price[^0-9$]*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE),
 )
@@ -1083,3 +1094,4 @@ def plan_shape_b_run_directories(
         else:
             out.extend((sym, d) for d in dirs)
     return out
+

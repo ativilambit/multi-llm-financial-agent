@@ -5,13 +5,20 @@ import logging
 import os
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal, Self, TextIO, cast
+from zoneinfo import ZoneInfo
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from equity_analyst.nyse_trading_days import (
+    FOLLOWUP_OPEN_NTH_TRADING_DAY_AFTER_EARNINGS,
+    format_earnings_human,
+    format_session_label_no_year,
+    nth_nyse_trading_day_after,
+)
 from equity_analyst.synthesizer_blend import T0BlendPreset, normalize_t0_blend_preset
 
 KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset({"anthropic", "openai", "gemini", "grok"})
@@ -40,7 +47,6 @@ def _weekday_index_from_label(label: str) -> int | None:
         "sun": 6,
     }
     return mapping.get(key)
-
 
 _FACTS_PACKET_MAX_OUT_MIN = 256
 _FACTS_PACKET_MAX_OUT_MAX = 128_000
@@ -114,6 +120,36 @@ def _parse_max_weekly_lookahead_days_env(raw: str | None) -> int | None:
     return None
 
 
+def default_today_labels_ny() -> tuple[str, str]:
+    """Return ``(today_date, today_session)`` using the NYSE session calendar date at call time.
+
+    Used when YAML omits ``today_date`` and/or ``today_session``. Labels are hints for the prompt only.
+    """
+    ny_now = datetime.now(ZoneInfo("America/New_York")).date()
+    # Match common config style: "Thu May 8, 2026" (comma after day-of-month, no zero padding).
+    today_s = f"{ny_now.strftime('%a %b')} {ny_now.day}, {ny_now.year}"
+    return today_s, "regular U.S. session"
+
+
+def _coerce_date_field(v: Any) -> date | None:
+    """Parse YAML/env values into a calendar ``date`` (ISO ``YYYY-MM-DD`` strings)."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            return date.fromisoformat(s)
+        except ValueError:
+            return None
+    return None
+
+
 def _default_max_weekly_lookahead_days() -> int:
     v = _parse_max_weekly_lookahead_days_env(os.environ.get("MAX_WEEKLY_LOOKAHEAD_DAYS"))
     if v is not None:
@@ -154,9 +190,7 @@ def resolve_drive_oauth_client_secrets_path_from_optional(raw: str | None) -> Pa
 
 def resolve_drive_oauth_client_secrets_path(cfg: RunConfig) -> Path:
     """Resolved client secrets path for a loaded :class:`RunConfig`."""
-    return resolve_drive_oauth_client_secrets_path_from_optional(
-        cfg.drive_oauth_client_secrets_path
-    )
+    return resolve_drive_oauth_client_secrets_path_from_optional(cfg.drive_oauth_client_secrets_path)
 
 
 class ProviderConfig(BaseModel):
@@ -220,10 +254,29 @@ class RunConfig(BaseModel):
         description="Optional unverified last/reference price hint; models must verify via web_search. "
         "YAML alias: reference_last_price.",
     )
-    today_date: str
-    today_session: str
+    today_date: str = Field(
+        ...,
+        description="Human-readable 'as of' calendar label (prompt only). Omit from YAML to auto-fill from "
+        "America/New_York date at config load via default_today_labels_ny().",
+    )
+    today_session: str = Field(
+        ...,
+        description="Human-readable session description (prompt only). Omit from YAML to default to "
+        "'regular U.S. session'.",
+    )
 
-    earnings_date: str
+    earnings_on: date | None = Field(
+        default=None,
+        description="Optional ISO earnings **calendar** date (YAML ``YYYY-MM-DD``). When set, you may omit "
+        "human ``earnings_date`` and/or ``next_trading_day`` / ``followup_open_date``; missing strings are "
+        "filled from an NYSE weekend + holiday calendar. When both ``earnings_on`` and ``earnings_date`` "
+        "are set, they must describe the same calendar day.",
+    )
+    earnings_date: str = Field(
+        ...,
+        description="Human-readable earnings date for prompts (e.g. ``Tue May 19 2026``). May be omitted when "
+        "``earnings_on`` is set (filled automatically).",
+    )
     earnings_timing: str | None = Field(
         default=None,
         description="Optional human-readable earnings call timing (BMO/AMC/etc.). When omitted, the equity "
@@ -267,8 +320,16 @@ class RunConfig(BaseModel):
     )
 
     target_dates: list[str] = Field(default_factory=list)
-    next_trading_day: str
-    followup_open_date: str
+    next_trading_day: str = Field(
+        ...,
+        description="Next regular session after the earnings calendar day (prompt label). Omit or leave "
+        "blank to derive from ``earnings_on`` / ``earnings_date`` via NYSE calendar.",
+    )
+    followup_open_date: str = Field(
+        ...,
+        description="Later follow-up session label (prompt). Defaults to the 5th NYSE session after the "
+        "earnings calendar day when omitted (matches hand-maintained batch configs).",
+    )
 
     historical_quarters: int = 11
     short_interest_lookbacks: list[str] = Field(default_factory=list)
@@ -410,7 +471,9 @@ class RunConfig(BaseModel):
     )
     oversized_summarize_provider: str = Field(
         default="gemini",
-        description="Registry key for the pre-synthesis oversized-body summarizer (default Gemini Flash API).",
+        description="Label retained for config compatibility; pre-synthesis compression always uses the Gemini SDK "
+        "(``google.genai``). **anthropic** is coerced to ``gemini``; the active model id is "
+        "``oversized_summarize_model``.",
     )
     oversized_summarize_model: str = Field(
         default="gemini-3-flash-preview",
@@ -437,8 +500,9 @@ class RunConfig(BaseModel):
     )
     oversized_summarize_fallback_provider: str | None = Field(
         default=None,
-        description="Optional provider registry name (e.g. openai) used once if Gemini + retry still miss "
-        "oversized_summarize_min_retention. Must match a configured providers[].name.",
+        description="Optional non-Gemini LLM used once if Gemini + floor-strict retry still miss "
+        "oversized_summarize_min_retention. Must match a configured providers[].name. **anthropic** is disabled "
+        "(pre-synthesis summarize stays on Gemini only).",
     )
 
     prompt_cache_enabled: bool = Field(
@@ -541,7 +605,8 @@ class RunConfig(BaseModel):
     db_enabled: bool = Field(
         default=True,
         description="When True, write best-effort structured metadata to Postgres (additive). "
-        "Hybrid storage: normalized ``runs`` columns plus ``runs.run_document`` JSONB mirroring ``run.json``.",
+        "Hybrid storage: normalized ``runs`` columns for hot queries plus ``runs.run_document`` JSONB "
+        "mirroring ``run.json`` when the upsert path runs.",
     )
     database_url: str | None = Field(
         default=None,
@@ -549,9 +614,9 @@ class RunConfig(BaseModel):
     )
     persist_run_json_to_disk: bool = Field(
         default=True,
-        description="When True (default), write ``outputs/<run_id>/run.json``. When False, skip the file while "
-        "still upserting ``runs.run_document`` when DB writes run. Set ``EQUITY_PERSIST_RUN_JSON=0`` to opt out. "
-        "``drive_upload_enabled`` forces this True so Drive can read ``run.json``.",
+        description="When True (default), write ``outputs/<run_id>/run.json``. When False, canonical metadata "
+        "still goes to ``runs.run_document`` via upsert; set ``EQUITY_PERSIST_RUN_JSON=0`` to opt out. "
+        "``drive_upload_enabled`` forces this True so Drive append logic can read ``run.json``.",
     )
 
     @field_validator("drive_auth_mode", mode="before")
@@ -688,6 +753,68 @@ class RunConfig(BaseModel):
                 raise ValueError(f"Invalid provider entry type: {type(item).__name__}")
         return out
 
+    @model_validator(mode="before")
+    @classmethod
+    def _default_today_date_session(cls, data: Any) -> Any:
+        """Fill ``today_date`` / ``today_session`` when missing, null, or empty string."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        raw_date = out.get("today_date")
+        raw_sess = out.get("today_session")
+        needs_date = raw_date is None or (isinstance(raw_date, str) and not raw_date.strip())
+        needs_sess = raw_sess is None or (isinstance(raw_sess, str) and not raw_sess.strip())
+        if not needs_date and not needs_sess:
+            return out
+        auto_date, auto_sess = default_today_labels_ny()
+        if needs_date:
+            out["today_date"] = auto_date
+        if needs_sess:
+            out["today_session"] = auto_sess
+        return out
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_earnings_trading_cluster(cls, data: Any) -> Any:
+        """Fill ``earnings_date`` / ``next_trading_day`` / ``followup_open_date`` when absent or blank."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        eo = _coerce_date_field(out.get("earnings_on"))
+        if eo is not None:
+            out["earnings_on"] = eo
+
+        ed_raw = out.get("earnings_date")
+        if isinstance(ed_raw, str) and not ed_raw.strip():
+            out.pop("earnings_date", None)
+
+        if out.get("earnings_date") is None and eo is not None:
+            out["earnings_date"] = format_earnings_human(eo)
+
+        from equity_analyst.outcome_tracker import _parse_earnings_date_fuzzy
+
+        anchor: date | None = eo
+        ed_final = out.get("earnings_date")
+        if anchor is None and isinstance(ed_final, str) and ed_final.strip():
+            dt = _parse_earnings_date_fuzzy(ed_final.strip())
+            if dt is not None:
+                anchor = dt.date()
+
+        if anchor is None:
+            return out
+
+        ntd = out.get("next_trading_day")
+        if ntd is None or (isinstance(ntd, str) and not ntd.strip()):
+            d1 = nth_nyse_trading_day_after(anchor, 1)
+            out["next_trading_day"] = format_session_label_no_year(d1)
+
+        fup = out.get("followup_open_date")
+        if fup is None or (isinstance(fup, str) and not fup.strip()):
+            d_follow = nth_nyse_trading_day_after(anchor, FOLLOWUP_OPEN_NTH_TRADING_DAY_AFTER_EARNINGS)
+            out["followup_open_date"] = format_session_label_no_year(d_follow)
+
+        return out
+
     @model_validator(mode="after")
     def _oversized_summarize_fallback_matches_configured_provider(self) -> Self:
         fb = self.oversized_summarize_fallback_provider
@@ -713,6 +840,20 @@ class RunConfig(BaseModel):
         if (lo is None) ^ (hi is None):
             raise ValueError(
                 "same_day_intraday_min and same_day_intraday_max must both be set or both omitted"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _earnings_on_matches_earnings_date_text(self) -> Self:
+        if self.earnings_on is None:
+            return self
+        from equity_analyst.outcome_tracker import _parse_earnings_date_fuzzy
+
+        dt = _parse_earnings_date_fuzzy(self.earnings_date)
+        if dt is None or dt.date() != self.earnings_on:
+            raise ValueError(
+                "earnings_on must match the calendar day implied by earnings_date "
+                f"(earnings_on={self.earnings_on.isoformat()}, earnings_date={self.earnings_date!r})"
             )
         return self
 
@@ -789,13 +930,6 @@ class RunConfig(BaseModel):
         return self.model_copy(update=updates) if updates else self
 
     @model_validator(mode="after")
-    def _drive_upload_requires_run_json_on_disk(self) -> Self:
-        """Drive append reads ``run.json`` on disk; keep a file mirror when uploads are enabled."""
-        if self.drive_upload_enabled and not self.persist_run_json_to_disk:
-            return self.model_copy(update={"persist_run_json_to_disk": True})
-        return self
-
-    @model_validator(mode="after")
     def _run_environment_env_override(self) -> Self:
         raw = os.environ.get("RUN_ENVIRONMENT")
         if raw is None or not str(raw).strip():
@@ -831,6 +965,13 @@ class RunConfig(BaseModel):
             s = str(prj).strip().lower()
             updates["persist_run_json_to_disk"] = s in ("1", "true", "yes", "on")
         return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _drive_upload_requires_run_json_on_disk(self) -> Self:
+        """Drive append reads ``run.json`` on disk; keep a file mirror when uploads are enabled."""
+        if self.drive_upload_enabled and not self.persist_run_json_to_disk:
+            return self.model_copy(update={"persist_run_json_to_disk": True})
+        return self
 
     @model_validator(mode="after")
     def _equity_env_env_fallback(self) -> Self:
@@ -925,12 +1066,7 @@ class RunConfig(BaseModel):
             and str(cf).strip()
             and "conditional_fanout_enabled" not in self.model_fields_set
         ):
-            updates["conditional_fanout_enabled"] = str(cf).strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
+            updates["conditional_fanout_enabled"] = str(cf).strip().lower() in ("1", "true", "yes", "on")
         foc = os.environ.get("FAN_OUT_ON_CONTINUE")
         if (
             foc is not None
@@ -944,12 +1080,7 @@ class RunConfig(BaseModel):
             and str(rm).strip()
             and "refinement_mode_prompt_enabled" not in self.model_fields_set
         ):
-            updates["refinement_mode_prompt_enabled"] = str(rm).strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
+            updates["refinement_mode_prompt_enabled"] = str(rm).strip().lower() in ("1", "true", "yes", "on")
         ocf = os.environ.get("OPTIONS_CHAIN_AUTO_FETCH")
         if (
             ocf is not None
@@ -1112,6 +1243,26 @@ class RunConfig(BaseModel):
                     "OVERSIZED_SUMMARIZE_FALLBACK_PROVIDER=%r is not a known provider name; ignoring.",
                     name,
                 )
+        return self.model_copy(update=updates) if updates else self
+
+    @model_validator(mode="after")
+    def _presynthesis_summarize_gemini_only(self) -> Self:
+        """Pre-synthesis body compression uses the Gemini SDK only; never Anthropic."""
+
+        updates: dict[str, Any] = {}
+        if self.oversized_summarize_provider.strip().lower() == "anthropic":
+            logger.warning(
+                "oversized_summarize_provider cannot be anthropic (pre-synthesis summarize uses Gemini only); "
+                "coercing to gemini.",
+            )
+            updates["oversized_summarize_provider"] = "gemini"
+        fb = self.oversized_summarize_fallback_provider
+        if fb is not None and str(fb).strip().lower() == "anthropic":
+            logger.warning(
+                "oversized_summarize_fallback_provider anthropic is not used for pre-synthesis summarize; "
+                "ignoring fallback.",
+            )
+            updates["oversized_summarize_fallback_provider"] = None
         return self.model_copy(update=updates) if updates else self
 
     def provider_names(self) -> list[str]:

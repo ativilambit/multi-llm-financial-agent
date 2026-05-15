@@ -201,6 +201,33 @@ def test_auto_fetch_yfinance_exception_logs_and_returns_none(
     assert any("yfinance.history call failed" in rec.getMessage() for rec in caplog.records)
 
 
+def test_auto_fetch_skips_future_earnings_calendar_date(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No Yahoo request when earnings session is still in the future (no bars yet)."""
+    from equity_analyst import outcome_tracker as ot
+
+    monkeypatch.setattr(ot, "_ny_calendar_date_today", lambda: date(2026, 5, 15))
+
+    calls: list[tuple[Any, ...]] = []
+
+    class _SpyTicker:
+        def history(self, *args: Any, **kwargs: Any) -> Any:
+            calls.append((args, kwargs))
+            return pd.DataFrame()
+
+    mod = types.ModuleType("yfinance")
+    mod.Ticker = lambda _sym: _SpyTicker()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yfinance", mod)
+
+    caplog.set_level(logging.INFO, logger="equity_analyst.outcome_tracker")
+    fetched = ot.auto_fetch_outcome("NVDA", "Mon May 19 2026")
+    assert calls == []
+    assert all(v is None for v in fetched.values())
+    assert any("skipping Yahoo fetch" in rec.getMessage() for rec in caplog.records)
+    assert any("no historical bars yet" in rec.getMessage() for rec in caplog.records)
+
+
 def test_resolve_baseline_close_prefers_config_then_synthesis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
