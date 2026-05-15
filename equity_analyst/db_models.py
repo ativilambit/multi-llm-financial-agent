@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -48,8 +50,21 @@ class RunRow(Base):
     verifier_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     drive_folder_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    #: Full ``run.json`` payload (denormalized); scalar columns above remain hot filters.
+    #: Full ``run.json`` payload (denormalized); hot filters use scalar columns above.
     run_document: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    session_trade_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    session_open: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    session_high: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    session_low: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    session_close: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    session_partial: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, server_default=text("true")
+    )
+    session_snapshot_at_utc: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    session_source: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

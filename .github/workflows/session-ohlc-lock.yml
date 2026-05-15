@@ -1,0 +1,85 @@
+# Post–regular-session OHLC lock: writes yfinance daily bars into ``runs.session_*``.
+#
+# Schedule: weekdays 22:30 UTC (coarse trigger). America/New_York regular equity close is
+# 16:00 ET; the CLI ``--gha-auto`` no-ops before 16:15 America/New_York and on weekends, so
+# the UTC cron does not exactly track US close across DST—adjust if you need a fixed UTC anchor.
+name: Session OHLC lock
+
+on:
+  schedule:
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "NYSE session date YYYY-MM-DD (required with run_ids)"
+        required: false
+        type: string
+      symbols:
+        description: "Comma-separated symbols (optional; else EQUITY_OHLC_LOCK_SYMBOLS for scheduled runs)"
+        required: false
+        type: string
+      run_ids:
+        description: "Comma-separated run_id values (optional; requires date when set)"
+        required: false
+        type: string
+      dry_run:
+        description: "If true, pass --dry-run (still requires DATABASE_URL to resolve targets)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  lock-session-ohlc:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Require DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL secret is required for lock-session-ohlc"
+            exit 1
+          fi
+
+      - name: Lock session OHLC
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EQUITY_OHLC_LOCK_SYMBOLS: ${{ secrets.EQUITY_OHLC_LOCK_SYMBOLS }}
+        run: |
+          set -euo pipefail
+          DRY=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY="--dry-run"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ inputs.run_ids }}" ]; then
+              python -m equity_analyst lock-session-ohlc ${DRY} --run-id "${{ inputs.run_ids }}" --date "${{ inputs.date }}"
+            elif [ -n "${{ inputs.symbols }}" ]; then
+              if [ -n "${{ inputs.date }}" ]; then
+                python -m equity_analyst lock-session-ohlc ${DRY} --symbols "${{ inputs.symbols }}" --date "${{ inputs.date }}"
+              else
+                python -m equity_analyst lock-session-ohlc ${DRY} --symbols "${{ inputs.symbols }}"
+              fi
+            else
+              python -m equity_analyst lock-session-ohlc ${DRY} --gha-auto --symbols-env
+            fi
+          else
+            python -m equity_analyst lock-session-ohlc --gha-auto --symbols-env
+          fi

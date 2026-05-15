@@ -1,0 +1,120 @@
+# Batch outcome recording for runs under ``outputs/`` (Shape B) or ``outputs/batch_*`` (Shape A).
+#
+# Typical flow: produce ``outputs/`` locally or in CI (see ``equity-analyst-run.yml``), upload the
+# ``equity-analyst-outputs`` artifact, then run this workflow with ``artifact_run_id`` set to that
+# workflow run so ``outputs/`` is hydrated before ``outcome-record-batch``.
+name: Outcome record batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "shape_a = --batch-dir under repo; shape_b = --symbols + optional --since"
+        required: true
+        type: choice
+        options:
+          - shape_a
+          - shape_b
+      batch_dir:
+        description: "Shape A: path relative to repo root (e.g. outputs/batch_20260514T120000Z)"
+        required: false
+        type: string
+        default: ""
+      symbols:
+        description: "Shape B: comma-separated tickers (required when mode=shape_b)"
+        required: false
+        type: string
+        default: ""
+      since:
+        description: "Shape B: YYYY-MM-DD lower bound for newest-only scan (default CLI: 7 days ago UTC)"
+        required: false
+        type: string
+        default: ""
+      auto_fetch:
+        description: "Pass --auto-fetch (yfinance merge before persisting)"
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: "If true, pass --dry-run (no files, registry, or DB writes; DATABASE_URL optional)"
+        required: false
+        type: boolean
+        default: false
+      artifact_run_id:
+        description: "Optional: GitHub Actions run id that produced artifact ``equity-analyst-outputs`` (downloads into outputs/)"
+        required: false
+        type: string
+        default: ""
+      continue_on_error:
+        description: "Pass --continue-on-error (default true)"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  outcome-record-batch:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download outputs artifact (optional)
+        if: ${{ inputs.artifact_run_id != '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ inputs.artifact_run_id }}
+          name: equity-analyst-outputs
+          path: outputs
+
+      - name: Require DATABASE_URL for writes
+        if: ${{ inputs.dry_run != true }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL secret is required unless dry_run is true"
+            exit 1
+          fi
+
+      - name: Run outcome-record-batch
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          AUTO=""
+          if [ "${{ inputs.auto_fetch }}" = "true" ]; then AUTO="--auto-fetch"; fi
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          COE=""
+          if [ "${{ inputs.continue_on_error }}" = "true" ]; then COE="--continue-on-error"; else COE="--no-continue-on-error"; fi
+          if [ "${{ inputs.mode }}" = "shape_a" ]; then
+            if [ -z "${{ inputs.batch_dir }}" ]; then
+              echo "::error::batch_dir is required for mode=shape_a"
+              exit 1
+            fi
+            python -m equity_analyst outcome-record-batch --batch-dir "${{ inputs.batch_dir }}" ${AUTO} ${DRY} ${COE}
+          else
+            if [ -z "${{ inputs.symbols }}" ]; then
+              echo "::error::symbols is required for mode=shape_b"
+              exit 1
+            fi
+            SINCE=""
+            if [ -n "${{ inputs.since }}" ]; then SINCE="--since ${{ inputs.since }}"; fi
+            python -m equity_analyst outcome-record-batch --symbols "${{ inputs.symbols }}" ${SINCE} ${AUTO} ${DRY} ${COE}
+          fi

@@ -1,0 +1,116 @@
+# Runs ``python -m equity_analyst predictions-extract-batch`` (LLM horizons → Postgres).
+#
+# ``dry_run`` lists targets only (no provider calls). Non–dry-run needs provider keys from
+# ``RunConfig`` in each ``run.json`` (default Gemini: ``GEMINI_API_KEY``).
+name: Predictions extract batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "shape_a = --batch-dir; shape_b = --symbols + optional --since"
+        required: true
+        type: choice
+        options:
+          - shape_a
+          - shape_b
+      batch_dir:
+        description: "Shape A: path relative to repo root (e.g. outputs/batch_20260514T120000Z)"
+        required: false
+        type: string
+        default: ""
+      symbols:
+        description: "Shape B: comma-separated tickers (required when mode=shape_b)"
+        required: false
+        type: string
+        default: ""
+      since:
+        description: "Shape B: YYYY-MM-DD lower bound (default CLI: 7 days ago UTC)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "If true, pass --dry-run (no LLM or DB writes; DATABASE_URL / API keys optional)"
+        required: false
+        type: boolean
+        default: false
+      artifact_run_id:
+        description: "Optional: workflow run id for artifact ``equity-analyst-outputs``"
+        required: false
+        type: string
+        default: ""
+      continue_on_error:
+        description: "Pass --continue-on-error (default true)"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  predictions-extract-batch:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download outputs artifact (optional)
+        if: ${{ inputs.artifact_run_id != '' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ inputs.artifact_run_id }}
+          name: equity-analyst-outputs
+          path: outputs
+
+      - name: Require DATABASE_URL for writes
+        if: ${{ inputs.dry_run != true }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL secret is required unless dry_run is true"
+            exit 1
+          fi
+
+      - name: Run predictions-extract-batch
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          COE=""
+          if [ "${{ inputs.continue_on_error }}" = "true" ]; then COE="--continue-on-error"; else COE="--no-continue-on-error"; fi
+          if [ "${{ inputs.mode }}" = "shape_a" ]; then
+            if [ -z "${{ inputs.batch_dir }}" ]; then
+              echo "::error::batch_dir is required for mode=shape_a"
+              exit 1
+            fi
+            python -m equity_analyst predictions-extract-batch --batch-dir "${{ inputs.batch_dir }}" ${DRY} ${COE}
+          else
+            if [ -z "${{ inputs.symbols }}" ]; then
+              echo "::error::symbols is required for mode=shape_b"
+              exit 1
+            fi
+            SINCE=""
+            if [ -n "${{ inputs.since }}" ]; then SINCE="--since ${{ inputs.since }}"; fi
+            python -m equity_analyst predictions-extract-batch --symbols "${{ inputs.symbols }}" ${SINCE} ${DRY} ${COE}
+          fi

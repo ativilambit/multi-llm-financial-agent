@@ -528,6 +528,66 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Log level for the equity_analyst logger (default INFO).",
     )
 
+    lock_ohlc = sub.add_parser(
+        "lock-session-ohlc",
+        help="Lock regular-session daily OHLC (yfinance) into runs.session_* columns after the NY close.",
+    )
+    lock_ohlc.add_argument(
+        "--date",
+        default=None,
+        help="NYSE session calendar date YYYY-MM-DD. Required with --run-id; optional with --symbol(s) "
+        "(defaults to the prior NY weekday before today's date in America/New_York).",
+    )
+    lock_ohlc.add_argument(
+        "--symbol",
+        default=None,
+        help="Ticker symbol (single). May be combined with --symbols.",
+    )
+    lock_ohlc.add_argument(
+        "--symbols",
+        default=None,
+        help="Comma-separated ticker symbols (e.g. ONDS,FRMI).",
+    )
+    lock_ohlc.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="Comma-separated run_id values to update (requires --date).",
+    )
+    lock_ohlc.add_argument(
+        "--gha-auto",
+        action="store_true",
+        help="GitHub Actions mode: no-op before 16:15 America/New_York on weekdays; "
+        "otherwise lock today's NY session for symbols from --symbols/--symbol or "
+        "EQUITY_OHLC_LOCK_SYMBOLS with --symbols-env.",
+    )
+    lock_ohlc.add_argument(
+        "--symbols-env",
+        action="store_true",
+        help="Append symbols from EQUITY_OHLC_LOCK_SYMBOLS (comma-separated).",
+    )
+    lock_ohlc.add_argument(
+        "--session-partial",
+        action="store_true",
+        help="Mark session_partial=true (use when the daily bar may still be incomplete).",
+    )
+    lock_ohlc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the UPDATE payload and target run_ids; still connects to Postgres to resolve targets.",
+    )
+    lock_ohlc.add_argument(
+        "--database-url",
+        default=None,
+        help="Postgres URL override (else DATABASE_URL).",
+    )
+    lock_ohlc.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Log level for the equity_analyst logger (default INFO).",
+    )
+
     return parser
 
 
@@ -1212,6 +1272,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "db-backfill":
         return _run_db_backfill_cli(args)
+
+    if args.command == "lock-session-ohlc":
+        from equity_analyst.session_ohlc_lock import run_lock_session_ohlc_cli
+
+        configure_cli_logging(getattr(logging, str(args.log_level)))
+        return asyncio.run(run_lock_session_ohlc_cli(args))
 
     raise AssertionError("unreachable")
 

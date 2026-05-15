@@ -706,3 +706,57 @@ Backfill summary
 ```
 
 `batch_<ts>/` directories (no `run.json`) are skipped silently. Legacy `run.json` files missing newer fields (`run_environment`, `iterations_completed`, `started_at_utc`, ...) are backfilled with sensible defaults. **Unlike the additive best-effort DB writes in the main run path, this command requires a reachable `DATABASE_URL` and exits with a non-zero status if the DB is unavailable.**
+
+## GitHub Actions: post-close maintenance
+
+Workflows install with **`pip install -r requirements.txt`** and set **`PYTHONPATH`** to the checked-out repository root (same value as the `github.workspace` workflow expression; there is no `pip install -e .`—`pyproject.toml` is tool configuration only).
+
+### Required and optional secrets
+
+| Secret | Used by |
+| --- | --- |
+| **`DATABASE_URL`** | `session-ohlc-lock`, `outcome-record-batch`, `predictions-extract-batch` whenever **not** `dry_run` (OHLC lock also needs it for `dry_run` to resolve targets). |
+| **`EQUITY_OHLC_LOCK_SYMBOLS`** | Optional comma-separated symbols for scheduled **`lock-session-ohlc --gha-auto --symbols-env`** (and dispatch default branch). |
+| **`GEMINI_API_KEY`** (and other provider secrets as needed) | `extract-predictions` / `predictions-extract-batch` for real LLM calls; each run’s `run.json` `config` chooses the provider—defaults are Gemini-oriented. **`dry_run`** skips calls. |
+| **`GITHUB_TOKEN`** | Default token; **`actions: read`** is enabled on workflows that download artifacts. |
+
+### Suggested order of operations
+
+1. **Produce run trees** under `outputs/` (local **`python -m equity_analyst run ...`**, self-hosted runner, or any path that ends with per-run folders containing `synthesis.md` / `run.json` as usual).
+2. **Upload `outputs/`** with [`.github/workflows/equity-analyst-run.yml`](.github/workflows/equity-analyst-run.yml) (`equity-analyst-outputs`, **10-day** retention by default).
+3. **Outcomes:** [`.github/workflows/outcome-record-batch.yml`](.github/workflows/outcome-record-batch.yml) — set **`artifact_run_id`** to the workflow run id from step 2 (uses [dawidd6/action-download-artifact](https://github.com/dawidd6/action-download-artifact)) or point **Shape A** at `outputs/batch_*` already in the repo.
+4. **Predictions:** [`.github/workflows/extract-predictions.yml`](.github/workflows/extract-predictions.yml) — same artifact pattern; runs **`python -m equity_analyst predictions-extract-batch`**. Single-run repair: **`python -m equity_analyst predictions-extract --run-dir outputs/<run_id>`**.
+5. **Session OHLC lock:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) after the regular-session bar is trustworthy—this only needs **Postgres + symbols/run_ids**, not the `outputs/` artifact.
+
+### Schedules and trade-offs
+
+- **OHLC lock** uses a **weekday 22:30 UTC** cron as a coarse post-US-close trigger. The CLI **`--gha-auto`** still **no-ops** before **16:15 America/New_York** and on weekends, so the job is cheap when fired early.
+- **Outcomes / predictions** workflows are **`workflow_dispatch` only** by default: scheduled batches need a reliable **`outputs/`** tree on the runner (rare on `ubuntu-latest` checkout alone). Operators can add a `schedule` once they have a **self-hosted runner with a persistent `outputs/`**, a repeatable artifact download, or Shape A paths committed.
+- **Daily** automation maximizes timeliness at the cost of API quota, runner minutes, and **yfinance** flakiness on **`--auto-fetch`**. **Weekly** batches reduce noise but delay calibration rows.
+
+### DST caveat
+
+**16:15 America/New_York** is a **wall-clock** gate; the **UTC** time of US equity close **moves with daylight saving time**. A fixed UTC cron (e.g. 22:30) does not stay aligned with “N minutes after the closing bell” year-round—adjust cron or rely on the CLI gate alone.
+
+---
+
+### Session OHLC lock (runs table)
+
+After the regular NY session, operators can **freeze** the Yahoo Finance **daily** OHLC for the calendar session that models treated as “today” into normalized `runs` columns (`session_trade_date`, `session_open` / `session_high` / `session_low` / `session_close`, `session_partial`, `session_snapshot_at_utc`, `session_source`). Values come from **`yfinance`** (same unofficial endpoint caveats as outcome auto-fetch).
+
+**Alembic / Neon:** apply migration **`0004_runs_session_ohlc`** so these nullable columns exist before running the CLI in CI or locally (`alembic upgrade head` using `migrations/`).
+
+**Selection (MVP):** the CLI does **not** infer “today” from each run’s prompt text. Targets are either explicit **`--run-id`** rows (with **`--date`** for the session bar to fetch) or all unlocked runs for **`--symbol` / `--symbols`** whose `created_at_utc` falls on **`--date`** in **America/New_York** wall time, with `session_close` still null. Omitting **`--date`** with symbols defaults to the **prior NY weekday** (weekends skipped; **NYSE holidays are not modeled**). For a different notion of “today” vs synthesis, pass **`--run-id`** or adjust **`--date`** manually.
+
+```bash
+# Explicit runs (session bar for 2026-05-14)
+python -m equity_analyst lock-session-ohlc --run-id FRMI_20260514T222731Z --date 2026-05-14
+
+# All unlocked runs for a symbol created on that NY calendar day
+python -m equity_analyst lock-session-ohlc --symbol FRMI --date 2026-05-14
+
+# Print SQL-style payload without writing (still needs DATABASE_URL to resolve targets)
+python -m equity_analyst lock-session-ohlc --symbol FRMI --date 2026-05-14 --dry-run
+```
+
+**GitHub Actions:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) invokes **`python -m equity_analyst lock-session-ohlc --gha-auto --symbols-env`** on the weekday schedule. Configure **`DATABASE_URL`** and optional **`EQUITY_OHLC_LOCK_SYMBOLS`**. **`workflow_dispatch`** supports `date`, `symbols`, `run_ids`, and `dry_run` inputs.
