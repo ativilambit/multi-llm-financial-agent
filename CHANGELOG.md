@@ -6,6 +6,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+- **Session OHLC lock:** **`--gha-auto`** discovers symbols from Postgres when none are supplied (optional **`EQUITY_OHLC_LOCK_SYMBOLS`**); added **`--lookback-days`** and **`--runs-env`**; empty discovery exits 0 with an info log. (`feat(ohlc): gha-auto discover symbols from runs table`)
+
 - **DB / predictions:** Alembic **`0006_prediction_outcome_scoreboard`** adds views **`v_runs_outcomes_predictions`** and **`prediction_outcome_scoreboard`** (join runs, outcomes, predictions; optional **`point_absolute_error`** vs realized horizon price); CLI **`score-predictions`** exports CSV or a fixed-width table. (`feat(db): prediction vs outcome scoreboard view + CLI`)
 
 - **Prompts / iterative synthesis:** Reconcile **divergent advisory `qual : quant` blends** across provider rounds: per-provider and synthesizer merge rules (±3 consensus, qual-vs-quant majority, canonical fallback), mandatory **`### Final suggested blend (advisory — consensus)`** table with **Dissent notes**; verifier prompt + optional deterministic **`suggested_blend_consistency_followups`**. (`feat(prompts): reconcile advisory blends across iterations`)

@@ -150,6 +150,45 @@ def symbols_from_env() -> list[str]:
     return parse_symbol_csv(os.environ.get("EQUITY_OHLC_LOCK_SYMBOLS"))
 
 
+async def discover_symbols_pending_session_ohlc_for_ny_day(
+    *,
+    session_date: date,
+    lookback_days: int,
+    runs_env: str | None,
+    database_url: str | None,
+) -> list[str]:
+    """Symbols with at least one qualifying ``runs`` row for ``session_date`` (NYSE wall calendar).
+
+    Mirrors :func:`resolve_run_ids_for_symbol_session_day` filters (unlocked + NY ``created_at`` day),
+    plus ``created_at_utc`` bounded by ``lookback_days`` to avoid full-table scans.
+
+    Equivalent SQL (PostgreSQL)::
+
+        SELECT DISTINCT UPPER(TRIM(symbol)) AS symbol
+        FROM runs
+        WHERE session_close IS NULL
+          AND created_at_utc >= :cutoff_utc
+          AND DATE(timezone('America/New_York', created_at_utc)) = :session_date
+          AND (:runs_env IS NULL OR env = :runs_env);
+    """
+    if lookback_days < 0:
+        raise ValueError("lookback_days must be non-negative")
+    cutoff = datetime.now(tz=UTC) - timedelta(days=lookback_days)
+    ny_day = func.date(func.timezone("America/New_York", RunRow.created_at_utc))
+    stmt = select(RunRow.symbol).where(
+        RunRow.session_close.is_(None),
+        RunRow.created_at_utc >= cutoff,
+        ny_day == session_date,
+    )
+    if runs_env is not None and str(runs_env).strip():
+        stmt = stmt.where(RunRow.env == str(runs_env).strip())
+    stmt = stmt.distinct()
+    async with get_async_session(database_url=database_url) as session:
+        res = await session.execute(stmt)
+        raw = [str(r[0]) for r in res.fetchall() if r[0] is not None]
+    return list(dict.fromkeys(s.strip().upper() for s in raw if s.strip()))
+
+
 async def resolve_run_ids_for_symbol_session_day(
     *,
     symbol: str,
@@ -258,11 +297,30 @@ async def run_lock_session_ohlc_cli(args: argparse.Namespace) -> int:
             return 0
         session_d = datetime.now(tz=UTC).astimezone(_NY).date()
         if not symbols:
-            logger.warning(
-                "lock-session-ohlc: gha-auto needs symbols via --symbols/--symbol or "
-                "EQUITY_OHLC_LOCK_SYMBOLS; nothing to do",
+            lookback = int(getattr(args, "lookback_days", 14) or 14)
+            if lookback < 0:
+                raise SystemExit("lock-session-ohlc: --lookback-days must be >= 0")
+            runs_env = getattr(args, "runs_env", None)
+            runs_env_s = str(runs_env).strip() if runs_env is not None else None
+            if runs_env_s == "":
+                runs_env_s = None
+            symbols = await discover_symbols_pending_session_ohlc_for_ny_day(
+                session_date=session_d,
+                lookback_days=lookback,
+                runs_env=runs_env_s,
+                database_url=database_url,
             )
-            return 0
+            logger.info(
+                "lock-session-ohlc: gha-auto discovered %d symbol(s) pending session OHLC "
+                "(ny_session_date=%s lookback_days=%d runs_env=%s)",
+                len(symbols),
+                session_d.isoformat(),
+                lookback,
+                runs_env_s or "all",
+            )
+            if not symbols:
+                logger.info("lock-session-ohlc: no eligible runs; exiting")
+                return 0
     elif run_ids:
         if not session_date_raw:
             raise SystemExit("lock-session-ohlc: --date is required with --run-id")
@@ -275,7 +333,7 @@ async def run_lock_session_ohlc_cli(args: argparse.Namespace) -> int:
     else:
         raise SystemExit(
             "lock-session-ohlc: provide --run-id ... --date ... and/or "
-            "--symbol(s) [--date], or use --gha-auto with symbols.",
+            "--symbol(s) [--date], or use --gha-auto (symbols optional; unset uses DB discovery).",
         )
 
     session_partial = bool(args.session_partial)

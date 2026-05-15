@@ -743,7 +743,7 @@ Workflows install with **`pip install -r requirements.txt`** and set **`PYTHONPA
 | Secret | Used by |
 | --- | --- |
 | **`DATABASE_URL`** | `session-ohlc-lock`, `outcome-record-batch`, `extract-predictions` whenever **not** `dry_run` (OHLC lock also needs it for `dry_run` to resolve targets), **`score-predictions`**. |
-| **`EQUITY_OHLC_LOCK_SYMBOLS`** | Optional comma-separated symbols for scheduled **`lock-session-ohlc --gha-auto --symbols-env`** (and dispatch default branch). |
+| **`EQUITY_OHLC_LOCK_SYMBOLS`** | Optional comma-separated symbols merged by **`lock-session-ohlc --symbols-env`**. If unset (and no **`--symbols`** / **`--symbol`**), **`--gha-auto`** discovers every ticker in Postgres that still has pending session OHLC for the current NY session day (bounded by **`--lookback-days`**, default **14**). |
 | **`GEMINI_API_KEY`** (and other provider secrets as needed) | `extract-predictions` / `predictions-extract-batch` for real LLM calls; each run’s `run.json` `config` chooses the provider—defaults are Gemini-oriented. **`dry_run`** skips calls. |
 | **`GITHUB_TOKEN`** | Default token; **`actions: read`** is enabled on workflows that download artifacts. |
 
@@ -766,7 +766,7 @@ When runs are persisted to **Neon** (or any Postgres reachable from Actions) wit
 2. **Upload `outputs/`** (optional if you rely on **DB-only** maintenance): [`.github/workflows/equity-analyst-run.yml`](.github/workflows/equity-analyst-run.yml) (`equity-analyst-outputs`, **10-day** retention by default).
 3. **Outcomes:** [`.github/workflows/outcome-record-batch.yml`](.github/workflows/outcome-record-batch.yml) — use **`mode: from_db`** for Postgres-only, or set **`artifact_run_id`** for the workflow run id from step 2 (uses [dawidd6/action-download-artifact](https://github.com/dawidd6/action-download-artifact)) or point **Shape A** at `outputs/batch_*` already in the repo.
 4. **Predictions:** [`.github/workflows/extract-predictions.yml`](.github/workflows/extract-predictions.yml) — **`mode: from_db`** or the same artifact pattern as outcomes; runs **`predictions-extract-batch`** on disk. Single-run repair: **`python -m equity_analyst predictions-extract --run-dir outputs/<run_id>`** or **`--run-id …`** when the folder is absent.
-5. **Session OHLC lock:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) after the regular-session bar is trustworthy—this only needs **Postgres + symbols/run_ids**, not the `outputs/` artifact.
+5. **Session OHLC lock:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) after the regular-session bar is trustworthy—this only needs **Postgres** (symbols are optional: the workflow can rely on DB discovery), not the `outputs/` artifact.
 
 ### Schedules and trade-offs
 
@@ -786,7 +786,7 @@ After the regular NY session, operators can **freeze** the Yahoo Finance **daily
 
 **Alembic / Neon:** apply migrations through **`0005_runs_synthesis_markdown`** (adds ``runs.synthesis_markdown`` for DB-only prediction extract) after **`0004_runs_session_ohlc`** so session columns exist before running the CLI in CI or locally (`alembic upgrade head` using `migrations/`).
 
-**Selection (MVP):** the CLI does **not** infer “today” from each run’s prompt text. Targets are either explicit **`--run-id`** rows (with **`--date`** for the session bar to fetch) or all unlocked runs for **`--symbol` / `--symbols`** whose `created_at_utc` falls on **`--date`** in **America/New_York** wall time, with `session_close` still null. Omitting **`--date`** with symbols defaults to the **prior NY weekday** (weekends skipped; **NYSE holidays are not modeled**). For a different notion of “today” vs synthesis, pass **`--run-id`** or adjust **`--date`** manually.
+**Selection (MVP):** the CLI does **not** infer “today” from each run’s prompt text. Targets are either explicit **`--run-id`** rows (with **`--date`** for the session bar to fetch) or all unlocked runs for **`--symbol` / `--symbols`** whose `created_at_utc` falls on **`--date`** in **America/New_York** wall time, with `session_close` still null. Omitting **`--date`** with symbols defaults to the **prior NY weekday** (weekends skipped; **NYSE holidays are not modeled**). With **`--gha-auto`** and **no** explicit symbol list (and nothing from **`EQUITY_OHLC_LOCK_SYMBOLS`** when using **`--symbols-env`**), the CLI **queries Postgres** for distinct symbols that still qualify for locking for **today’s NY calendar session** (`session_close` null, `created_at_utc` within **`--lookback-days`**, same NY **`created_at`** day filter as symbol mode); optional **`--runs-env`** limits rows by **`runs.env`**. For a different notion of “today” vs synthesis, pass **`--run-id`** or adjust **`--date`** manually.
 
 ```bash
 # Explicit runs (session bar for 2026-05-14)
@@ -799,4 +799,4 @@ python -m equity_analyst lock-session-ohlc --symbol FRMI --date 2026-05-14
 python -m equity_analyst lock-session-ohlc --symbol FRMI --date 2026-05-14 --dry-run
 ```
 
-**GitHub Actions:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) invokes **`python -m equity_analyst lock-session-ohlc --gha-auto --symbols-env`** on the weekday schedule. Configure **`DATABASE_URL`** and optional **`EQUITY_OHLC_LOCK_SYMBOLS`**. **`workflow_dispatch`** supports `date`, `symbols`, `run_ids`, and `dry_run` inputs.
+**GitHub Actions:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) invokes **`python -m equity_analyst lock-session-ohlc --gha-auto --symbols-env --lookback-days …`** on the weekday schedule. Configure **`DATABASE_URL`**; **`EQUITY_OHLC_LOCK_SYMBOLS`** is optional (omit the secret to lock every discovered symbol). Leave **`symbols`** empty on **`workflow_dispatch`** to use DB discovery. Inputs: `date`, `symbols`, `run_ids`, `lookback_days`, `dry_run`.

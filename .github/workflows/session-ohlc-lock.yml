@@ -1,5 +1,7 @@
 # Post–regular-session OHLC lock (Postgres-only): writes yfinance daily bars into ``runs.session_*``.
-# No GitHub artifacts — requires ``DATABASE_URL`` (and optional ``EQUITY_OHLC_LOCK_SYMBOLS``).
+# Requires ``DATABASE_URL``. ``EQUITY_OHLC_LOCK_SYMBOLS`` is optional: with ``--symbols-env``,
+# those symbols are merged when set; otherwise ``--gha-auto`` discovers every symbol that still has
+# pending session OHLC rows in Postgres (see CLI ``--lookback-days`` / ``--runs-env``).
 #
 # Schedule: weekdays 22:30 UTC (coarse trigger). America/New_York regular equity close is
 # 16:00 ET; the CLI ``--gha-auto`` no-ops before 16:15 America/New_York and on weekends, so
@@ -16,13 +18,18 @@ on:
         required: false
         type: string
       symbols:
-        description: "Comma-separated symbols (optional; else EQUITY_OHLC_LOCK_SYMBOLS for scheduled runs)"
+        description: "Comma-separated symbols (optional; omit or leave empty for DB discovery in gha-auto)"
         required: false
         type: string
       run_ids:
         description: "Comma-separated run_id values (optional; requires date when set)"
         required: false
         type: string
+      lookback_days:
+        description: "For gha-auto without explicit symbols — passed as --lookback-days (default 14)"
+        required: false
+        type: number
+        default: 14
       dry_run:
         description: "If true, pass --dry-run (still requires DATABASE_URL to resolve targets)"
         required: false
@@ -66,8 +73,12 @@ jobs:
         run: |
           set -euo pipefail
           DRY=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
-            DRY="--dry-run"
+          LOOKBACK="14"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            LOOKBACK="${{ inputs.lookback_days }}"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              DRY="--dry-run"
+            fi
           fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ -n "${{ inputs.run_ids }}" ]; then
@@ -79,8 +90,9 @@ jobs:
                 python -m equity_analyst lock-session-ohlc ${DRY} --symbols "${{ inputs.symbols }}"
               fi
             else
-              python -m equity_analyst lock-session-ohlc ${DRY} --gha-auto --symbols-env
+              python -m equity_analyst lock-session-ohlc ${DRY} --gha-auto --symbols-env --lookback-days "${LOOKBACK}"
             fi
           else
-            python -m equity_analyst lock-session-ohlc --gha-auto --symbols-env
+            python -m equity_analyst lock-session-ohlc --gha-auto --symbols-env --lookback-days "${LOOKBACK}"
           fi
+

@@ -569,13 +569,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--gha-auto",
         action="store_true",
         help="GitHub Actions mode: no-op before 16:15 America/New_York on weekdays; "
-        "otherwise lock today's NY session for symbols from --symbols/--symbol or "
-        "EQUITY_OHLC_LOCK_SYMBOLS with --symbols-env.",
+        "otherwise lock today's NY session. Symbols from --symbols/--symbol and/or "
+        "EQUITY_OHLC_LOCK_SYMBOLS (with --symbols-env); if none, discover symbols from Postgres "
+        "(runs with session_close null for today's NY created_at day, within --lookback-days).",
     )
     lock_ohlc.add_argument(
         "--symbols-env",
         action="store_true",
         help="Append symbols from EQUITY_OHLC_LOCK_SYMBOLS (comma-separated).",
+    )
+    lock_ohlc.add_argument(
+        "--lookback-days",
+        type=int,
+        default=14,
+        help="With --gha-auto and no explicit symbols: bound run discovery by created_at_utc "
+        "(default 14; must be >= 0).",
+    )
+    lock_ohlc.add_argument(
+        "--runs-env",
+        default=None,
+        choices=["production", "test"],
+        help="With --gha-auto DB symbol discovery: restrict to runs.env (default: all envs).",
     )
     lock_ohlc.add_argument(
         "--session-partial",
