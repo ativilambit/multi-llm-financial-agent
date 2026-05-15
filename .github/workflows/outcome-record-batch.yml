@@ -1,18 +1,21 @@
-# Batch outcome recording for runs under ``outputs/`` (Shape B) or ``outputs/batch_*`` (Shape A).
+# Batch outcome recording: **Shape A/B** scan ``outputs/`` on disk, or **from_db** (Postgres-only).
 #
-# Typical flow: produce ``outputs/`` locally or in CI (see ``equity-analyst-run.yml``), upload the
-# ``equity-analyst-outputs`` artifact, then run this workflow with ``artifact_run_id`` set to that
-# workflow run so ``outputs/`` is hydrated before ``outcome-record-batch``.
+# ``from_db`` selects ``runs`` missing ``outcomes`` (with ``run_document``), materializes a temp
+# ``outputs/<run_id>/run.json``, and invokes ``record_outcome_for_run_dir`` (optional ``--auto-fetch``).
+#
+# Optional ``artifact_run_id`` still downloads ``equity-analyst-outputs`` before Shape A/B so CI
+# can hydrate ``outputs/`` when not using ``from_db``.
 name: Outcome record batch
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "shape_a = --batch-dir under repo; shape_b = --symbols + optional --since"
+        description: "from_db = Postgres queue; shape_a = --batch-dir; shape_b = --symbols + optional --since"
         required: true
         type: choice
         options:
+          - from_db
           - shape_a
           - shape_b
       batch_dir:
@@ -21,7 +24,7 @@ on:
         type: string
         default: ""
       symbols:
-        description: "Shape B: comma-separated tickers (required when mode=shape_b)"
+        description: "Shape B: comma-separated tickers (required when mode=shape_b). from_db: optional filter."
         required: false
         type: string
         default: ""
@@ -30,18 +33,28 @@ on:
         required: false
         type: string
         default: ""
+      lookback_days:
+        description: "from_db: include runs whose coalesce(finished_at, started_at, created_at) is within this many days (UTC)"
+        required: false
+        type: number
+        default: 14
+      limit:
+        description: "from_db: max runs to process in one dispatch"
+        required: false
+        type: number
+        default: 50
       auto_fetch:
         description: "Pass --auto-fetch (yfinance merge before persisting)"
         required: false
         type: boolean
         default: true
       dry_run:
-        description: "If true, pass --dry-run (no files, registry, or DB writes; DATABASE_URL optional)"
+        description: "If true, list targets only (no files, registry, or DB writes; from_db still needs DATABASE_URL to query the queue)"
         required: false
         type: boolean
         default: false
       artifact_run_id:
-        description: "Optional: GitHub Actions run id that produced artifact ``equity-analyst-outputs`` (downloads into outputs/)"
+        description: "Optional: GitHub Actions run id for artifact ``equity-analyst-outputs`` (Shape A/B only)"
         required: false
         type: string
         default: ""
@@ -72,8 +85,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Download outputs artifact (optional)
-        if: ${{ inputs.artifact_run_id != '' }}
+      - name: Download outputs artifact (optional, Shape A/B)
+        if: ${{ inputs.mode != 'from_db' && inputs.artifact_run_id != '' }}
         uses: dawidd6/action-download-artifact@v6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -81,8 +94,19 @@ jobs:
           name: equity-analyst-outputs
           path: outputs
 
+      - name: Require DATABASE_URL for from_db mode
+        if: ${{ inputs.mode == 'from_db' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL secret is required when mode=from_db (including dry_run list queries)"
+            exit 1
+          fi
+
       - name: Require DATABASE_URL for writes
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.mode != 'from_db' && inputs.dry_run != true }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -92,7 +116,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run outcome-record-batch
+      - name: Run outcome maintenance
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -103,6 +127,15 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
           COE=""
           if [ "${{ inputs.continue_on_error }}" = "true" ]; then COE="--continue-on-error"; else COE="--no-continue-on-error"; fi
+          if [ "${{ inputs.mode }}" = "from_db" ]; then
+            SYM=""
+            if [ -n "${{ inputs.symbols }}" ]; then SYM="--symbols ${{ inputs.symbols }}"; fi
+            python scripts/gh_outcomes_from_db.py \
+              --lookback-days ${{ inputs.lookback_days }} \
+              --limit ${{ inputs.limit }} \
+              ${SYM} ${AUTO} ${DRY} ${COE}
+            exit $?
+          fi
           if [ "${{ inputs.mode }}" = "shape_a" ]; then
             if [ -z "${{ inputs.batch_dir }}" ]; then
               echo "::error::batch_dir is required for mode=shape_a"

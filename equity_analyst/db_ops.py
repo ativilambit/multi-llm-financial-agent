@@ -39,6 +39,28 @@ async def load_run_document_from_db(
     return doc
 
 
+async def load_synthesis_markdown_from_db(
+    run_id: str, *, database_url: str | None = None
+) -> str | None:
+    """Return ``runs.synthesis_markdown`` for ``run_id``, or ``None``."""
+    if not await is_db_available(database_url=database_url):
+        return None
+    try:
+        async with get_async_session(database_url=database_url) as session:
+            raw = await session.scalar(
+                select(RunRow.synthesis_markdown).where(RunRow.run_id == run_id)
+            )
+    except Exception as exc:
+        logger.warning("load_synthesis_markdown_from_db failed run_id=%s error=%r", run_id, exc)
+        return None
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    return s or None
+
+
 def postgres_metadata_writes_enabled(*, run_profile: RunProfile, env: RunEnvironment) -> bool:
     """True when run/outcome/prediction rows may be written (subject to ``db_enabled`` and DB reachability)."""
     return run_profile == "production" or env == "test"
@@ -92,6 +114,7 @@ async def best_effort_upsert_run_and_responses(
     synthesis_path: Path,
     database_url: str | None = None,
     run_document: dict[str, Any] | None = None,
+    synthesis_markdown: str | None = None,
 ) -> None:
     if not cfg.db_enabled:
         return
@@ -118,6 +141,12 @@ async def best_effort_upsert_run_and_responses(
     doc_row = canonical_run_document_dict(source_meta)
     cfg_snap = doc_row.get("config")
     cfg_d: dict[str, Any] = cfg_snap if isinstance(cfg_snap, dict) else {}
+
+    synthesis_md: str | None = synthesis_markdown
+    if synthesis_md is None:
+        blob_sm = doc_row.get("synthesis_markdown")
+        if isinstance(blob_sm, str) and blob_sm.strip():
+            synthesis_md = blob_sm.strip()
 
     symbol = cfg.symbol
     sym_raw = cfg_d.get("symbol")
@@ -174,6 +203,8 @@ async def best_effort_upsert_run_and_responses(
         "drive_folder_url": drive_folder_url,
         "updated_at_utc": now,
     }
+    if synthesis_md is not None:
+        run_row["synthesis_markdown"] = synthesis_md
 
     try:
         async with get_async_session(database_url=database_url) as session:

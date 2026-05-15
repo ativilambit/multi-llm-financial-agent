@@ -1,5 +1,5 @@
-# Minimal helper: upload the repo’s ``outputs/`` tree as artifact ``equity-analyst-outputs`` (10-day retention).
-# Use after local or self-hosted runs have populated ``outputs/``, or from a job that checks in run trees.
+# Optional helper: upload the repo’s ``outputs/`` tree as artifact ``equity-analyst-outputs`` (10-day retention).
+# Use when you want a retained disk mirror; **Neon-only operators** can skip this if maintenance uses ``from_db`` workflows.
 name: Equity analyst outputs artifact
 
 on:

@@ -271,6 +271,61 @@ async def test_run_prediction_extract_invokes_replace_twice_idempotent(
     assert first_kw["env"] == "production"
 
 
+@pytest.mark.asyncio
+async def test_run_prediction_extract_uses_db_synthesis_when_file_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    run_dir = Path("outputs") / "ZZ_20260511T000000Z"
+    run_dir.mkdir(parents=True)
+    cfg = _minimal_run_config()
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {"run_profile": "production", "config": cfg.model_dump()},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "horizons": {h: {"probability_up": 0.2} for h in PREDICTION_HORIZONS},
+        "confidence": "low",
+        "notes": "",
+    }
+
+    calls: list[dict[str, str]] = []
+
+    async def _fake_invoke(*, user_message: str, **_kw: object) -> ProviderResponse:
+        calls.append({"user_message": user_message})
+        return ProviderResponse(
+            provider_name="gemini",
+            model="gemini-3-flash-preview",
+            text=json.dumps(payload),
+            usage=ProviderUsage(),
+            latency_s=0.01,
+            raw=None,
+        )
+
+    monkeypatch.setattr(
+        "equity_analyst.prediction_extract._invoke_prediction_extract_llm",
+        _fake_invoke,
+    )
+    monkeypatch.setattr(
+        "equity_analyst.prediction_extract.load_synthesis_markdown_from_db",
+        AsyncMock(return_value="# Synth from DB\n"),
+    )
+    replace = AsyncMock(return_value=True)
+    monkeypatch.setattr("equity_analyst.prediction_extract.db_replace_predictions", replace)
+
+    await run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg)
+    assert replace.await_count == 1
+    assert len(calls) == 1
+    assert "Synth from DB" in calls[0]["user_message"]
+
+
 def test_parse_strips_markdown_fences() -> None:
     inner = {
         "horizons": {h: {} for h in PREDICTION_HORIZONS},

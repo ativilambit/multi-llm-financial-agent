@@ -1,4 +1,5 @@
-# Post–regular-session OHLC lock: writes yfinance daily bars into ``runs.session_*``.
+# Post–regular-session OHLC lock (Postgres-only): writes yfinance daily bars into ``runs.session_*``.
+# No GitHub artifacts — requires ``DATABASE_URL`` (and optional ``EQUITY_OHLC_LOCK_SYMBOLS``).
 #
 # Schedule: weekdays 22:30 UTC (coarse trigger). America/New_York regular equity close is
 # 16:00 ET; the CLI ``--gha-auto`` no-ops before 16:15 America/New_York and on weekends, so

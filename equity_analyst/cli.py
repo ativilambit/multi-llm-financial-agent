@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import sys
@@ -405,7 +406,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "predictions-extract",
         help="LLM-extract structured prediction horizons from a run's synthesis into Postgres",
     )
-    pred_ex.add_argument("--run-dir", required=True, help="Path to outputs/<run_id>/")
+    pex = pred_ex.add_mutually_exclusive_group(required=True)
+    pex.add_argument("--run-dir", help="Path to outputs/<run_id>/")
+    pex.add_argument(
+        "--run-id",
+        help="Run folder name; materializes from Postgres when missing under --outputs-dir",
+    )
+    pred_ex.add_argument(
+        "--outputs-dir",
+        default="outputs",
+        help="Parent for --run-id (default outputs/). Ignored with --run-dir.",
+    )
     pred_ex.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -1106,6 +1117,11 @@ def main(argv: list[str] | None = None) -> int:
 
                 started_at = run_json_data.get("started_at_utc")
                 finished_at = run_json_data.get("finished_at_utc")
+                syn_path = out_dir / "synthesis.md"
+                synthesis_markdown: str | None = None
+                if syn_path.is_file():
+                    with contextlib.suppress(OSError):
+                        synthesis_markdown = syn_path.read_text(encoding="utf-8")
                 asyncio.run(
                     best_effort_upsert_run_and_responses(
                         cfg=cfg,
@@ -1117,6 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
                         synthesis_path=out_dir / "synthesis.md",
                         database_url=cfg.database_url,
                         run_document=run_json_data if run_json_data else None,
+                        synthesis_markdown=synthesis_markdown,
                     )
                 )
         else:
@@ -1131,141 +1148,180 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "outcome-record":
         configure_cli_logging(logging.INFO)
-        if getattr(args, "run_id", None):
-            run_dir = Path(str(args.outputs_dir)).expanduser().resolve() / str(args.run_id)
-        else:
-            run_dir = Path(str(args.run_dir)).expanduser().resolve()
-        if not run_dir.is_dir():
-            raise SystemExit(f"run directory does not exist: {run_dir}")
+        from equity_analyst.db_run_materialize import (
+            cleanup_materialized_run_dir,
+            ensure_run_dir_for_cli,
+        )
 
-        def _prompt_float(label: str, cur: float | None) -> float | None:
-            if cur is not None:
-                return cur
-            raw = input(f"{label} (blank to skip): ").strip()
-            if not raw:
-                return None
-            return float(raw)
-
-        def _prompt_str(label: str, cur: str | None) -> str | None:
-            if cur is not None:
-                return cur
-            raw = input(f"{label} (blank to skip): ").strip()
-            return raw or None
-
-        def _prompt_choice(label: str, cur: str | None, choices: list[str]) -> str | None:
-            if cur is not None:
-                return cur
-            raw = input(f"{label} {choices} (blank to skip): ").strip().lower()
-            if not raw:
-                return None
-            if raw not in choices:
-                raise SystemExit(f"Invalid value for {label}: {raw!r} (choices: {choices})")
-            return raw
-
+        mat_cleanup = None
         try:
-            earnings_day_open = args.earnings_day_open
-            earnings_day_high = args.earnings_day_high
-            earnings_day_low = args.earnings_day_low
-            earnings_day_close = args.earnings_day_close
-            next_trading_day_open = args.next_trading_day_open
-            next_trading_day_close = args.next_trading_day_close
-            one_week_later_close = args.one_week_later_close
-            direction_vs_prior_close = args.direction_vs_prior_close
-            notes = args.notes
-
-            auto_fetch_cli = bool(getattr(args, "auto_fetch", False))
-            if args.interactive:
-                if auto_fetch_cli:
-                    merged, _fetched = merge_auto_fetch_into_cli_fields(
-                        run_dir,
-                        earnings_day_open=earnings_day_open,
-                        earnings_day_high=earnings_day_high,
-                        earnings_day_low=earnings_day_low,
-                        earnings_day_close=earnings_day_close,
-                        next_trading_day_open=next_trading_day_open,
-                        next_trading_day_close=next_trading_day_close,
-                        one_week_later_close=one_week_later_close,
-                        direction_vs_prior_close=direction_vs_prior_close,
+            if getattr(args, "run_id", None):
+                outputs_parent = Path(str(args.outputs_dir)).expanduser().resolve()
+                run_dir, mat_cleanup = asyncio.run(
+                    ensure_run_dir_for_cli(
+                        run_id=str(args.run_id),
+                        outputs_dir=outputs_parent,
+                        database_url=None,
+                        include_synthesis_from_db=False,
                     )
-                    earnings_day_open = merged["earnings_day_open"]
-                    earnings_day_high = merged["earnings_day_high"]
-                    earnings_day_low = merged["earnings_day_low"]
-                    earnings_day_close = merged["earnings_day_close"]
-                    next_trading_day_open = merged["next_trading_day_open"]
-                    next_trading_day_close = merged["next_trading_day_close"]
-                    one_week_later_close = merged["one_week_later_close"]
-                    direction_vs_prior_close = merged["direction_vs_prior_close"]
-                earnings_day_open = _prompt_float("earnings_day_open", earnings_day_open)
-                earnings_day_high = _prompt_float("earnings_day_high", earnings_day_high)
-                earnings_day_low = _prompt_float("earnings_day_low", earnings_day_low)
-                earnings_day_close = _prompt_float("earnings_day_close", earnings_day_close)
-                next_trading_day_open = _prompt_float(
-                    "next_trading_day_open", next_trading_day_open
                 )
-                next_trading_day_close = _prompt_float(
-                    "next_trading_day_close", next_trading_day_close
-                )
-                one_week_later_close = _prompt_float("one_week_later_close", one_week_later_close)
-                direction_vs_prior_close = _prompt_choice(
-                    "direction_vs_prior_close", direction_vs_prior_close, ["up", "down", "flat"]
-                )
-                notes = _prompt_str("notes", notes)
+            else:
+                run_dir = Path(str(args.run_dir)).expanduser().resolve()
+            if not run_dir.is_dir():
+                raise SystemExit(f"run directory does not exist: {run_dir}")
 
-            result = record_outcome_for_run_dir(
-                run_dir=run_dir,
-                auto_fetch=False if args.interactive else auto_fetch_cli,
-                dry_run=False,
-                earnings_day_open=earnings_day_open,
-                earnings_day_high=earnings_day_high,
-                earnings_day_low=earnings_day_low,
-                earnings_day_close=earnings_day_close,
-                next_trading_day_open=next_trading_day_open,
-                next_trading_day_close=next_trading_day_close,
-                one_week_later_close=one_week_later_close,
-                direction_vs_prior_close=direction_vs_prior_close,
-                notes=notes,
-                source=cast(Literal["manual", "yahoo_csv", "alpaca", "polygon"], args.source),
-                db_upsert=True,
-            )
-            outcome = result.outcome
-        except KeyboardInterrupt as exc:
-            raise SystemExit(130) from exc
+            def _prompt_float(label: str, cur: float | None) -> float | None:
+                if cur is not None:
+                    return cur
+                raw = input(f"{label} (blank to skip): ").strip()
+                if not raw:
+                    return None
+                return float(raw)
 
-        sys.stdout.write(json.dumps(outcome.model_dump(), indent=2, sort_keys=True) + "\n")
-        return 0
+            def _prompt_str(label: str, cur: str | None) -> str | None:
+                if cur is not None:
+                    return cur
+                raw = input(f"{label} (blank to skip): ").strip()
+                return raw or None
+
+            def _prompt_choice(label: str, cur: str | None, choices: list[str]) -> str | None:
+                if cur is not None:
+                    return cur
+                raw = input(f"{label} {choices} (blank to skip): ").strip().lower()
+                if not raw:
+                    return None
+                if raw not in choices:
+                    raise SystemExit(f"Invalid value for {label}: {raw!r} (choices: {choices})")
+                return raw
+
+            try:
+                earnings_day_open = args.earnings_day_open
+                earnings_day_high = args.earnings_day_high
+                earnings_day_low = args.earnings_day_low
+                earnings_day_close = args.earnings_day_close
+                next_trading_day_open = args.next_trading_day_open
+                next_trading_day_close = args.next_trading_day_close
+                one_week_later_close = args.one_week_later_close
+                direction_vs_prior_close = args.direction_vs_prior_close
+                notes = args.notes
+
+                auto_fetch_cli = bool(getattr(args, "auto_fetch", False))
+                if args.interactive:
+                    if auto_fetch_cli:
+                        merged, _fetched = merge_auto_fetch_into_cli_fields(
+                            run_dir,
+                            earnings_day_open=earnings_day_open,
+                            earnings_day_high=earnings_day_high,
+                            earnings_day_low=earnings_day_low,
+                            earnings_day_close=earnings_day_close,
+                            next_trading_day_open=next_trading_day_open,
+                            next_trading_day_close=next_trading_day_close,
+                            one_week_later_close=one_week_later_close,
+                            direction_vs_prior_close=direction_vs_prior_close,
+                        )
+                        earnings_day_open = merged["earnings_day_open"]
+                        earnings_day_high = merged["earnings_day_high"]
+                        earnings_day_low = merged["earnings_day_low"]
+                        earnings_day_close = merged["earnings_day_close"]
+                        next_trading_day_open = merged["next_trading_day_open"]
+                        next_trading_day_close = merged["next_trading_day_close"]
+                        one_week_later_close = merged["one_week_later_close"]
+                        direction_vs_prior_close = merged["direction_vs_prior_close"]
+                    earnings_day_open = _prompt_float("earnings_day_open", earnings_day_open)
+                    earnings_day_high = _prompt_float("earnings_day_high", earnings_day_high)
+                    earnings_day_low = _prompt_float("earnings_day_low", earnings_day_low)
+                    earnings_day_close = _prompt_float("earnings_day_close", earnings_day_close)
+                    next_trading_day_open = _prompt_float(
+                        "next_trading_day_open", next_trading_day_open
+                    )
+                    next_trading_day_close = _prompt_float(
+                        "next_trading_day_close", next_trading_day_close
+                    )
+                    one_week_later_close = _prompt_float(
+                        "one_week_later_close", one_week_later_close
+                    )
+                    direction_vs_prior_close = _prompt_choice(
+                        "direction_vs_prior_close", direction_vs_prior_close, ["up", "down", "flat"]
+                    )
+                    notes = _prompt_str("notes", notes)
+
+                result = record_outcome_for_run_dir(
+                    run_dir=run_dir,
+                    auto_fetch=False if args.interactive else auto_fetch_cli,
+                    dry_run=False,
+                    earnings_day_open=earnings_day_open,
+                    earnings_day_high=earnings_day_high,
+                    earnings_day_low=earnings_day_low,
+                    earnings_day_close=earnings_day_close,
+                    next_trading_day_open=next_trading_day_open,
+                    next_trading_day_close=next_trading_day_close,
+                    one_week_later_close=one_week_later_close,
+                    direction_vs_prior_close=direction_vs_prior_close,
+                    notes=notes,
+                    source=cast(Literal["manual", "yahoo_csv", "alpaca", "polygon"], args.source),
+                    db_upsert=True,
+                )
+                outcome = result.outcome
+            except KeyboardInterrupt as exc:
+                raise SystemExit(130) from exc
+
+            sys.stdout.write(json.dumps(outcome.model_dump(), indent=2, sort_keys=True) + "\n")
+            return 0
+        finally:
+            cleanup_materialized_run_dir(mat_cleanup)
 
     if args.command == "outcome-record-batch":
         return _run_outcome_record_batch_cli(args)
 
     if args.command == "predictions-extract":
         configure_cli_logging(getattr(logging, str(args.log_level)))
-        run_dir = Path(str(args.run_dir)).expanduser().resolve()
-        run_json = run_dir / "run.json"
-        data: dict[str, Any] | None = None
-        if run_json.is_file():
-            try:
-                raw = json.loads(run_json.read_text(encoding="utf-8"))
-                data = raw if isinstance(raw, dict) else None
-            except (OSError, json.JSONDecodeError):
-                data = None
-        if data is None:
-            from equity_analyst.db_ops import load_run_document_from_db
-
-            data = asyncio.run(load_run_document_from_db(run_dir.name))
-        if not isinstance(data, dict):
-            raise SystemExit(
-                f"missing run.json and no runs.run_document for run_id={run_dir.name} "
-                f"(path {run_json})"
-            )
-        cfg_raw = data.get("config")
-        if not isinstance(cfg_raw, dict):
-            raise SystemExit("run.json missing config snapshot")
-        cfg = RunConfig.model_validate(cfg_raw)
-        rows = asyncio.run(run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg))
-        sys.stdout.write(
-            json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n"
+        from equity_analyst.db_run_materialize import (
+            cleanup_materialized_run_dir,
+            ensure_run_dir_for_cli,
         )
-        return 0
+
+        mat_cleanup = None
+        try:
+            if getattr(args, "run_id", None):
+                outputs_parent = Path(str(args.outputs_dir)).expanduser().resolve()
+                run_dir, mat_cleanup = asyncio.run(
+                    ensure_run_dir_for_cli(
+                        run_id=str(args.run_id),
+                        outputs_dir=outputs_parent,
+                        database_url=None,
+                        include_synthesis_from_db=True,
+                    )
+                )
+            else:
+                run_dir = Path(str(args.run_dir)).expanduser().resolve()
+            run_json = run_dir / "run.json"
+            data: dict[str, Any] | None = None
+            if run_json.is_file():
+                try:
+                    raw = json.loads(run_json.read_text(encoding="utf-8"))
+                    data = raw if isinstance(raw, dict) else None
+                except (OSError, json.JSONDecodeError):
+                    data = None
+            if data is None:
+                from equity_analyst.db_ops import load_run_document_from_db
+
+                data = asyncio.run(load_run_document_from_db(run_dir.name))
+            if not isinstance(data, dict):
+                raise SystemExit(
+                    f"missing run.json and no runs.run_document for run_id={run_dir.name} "
+                    f"(path {run_json})"
+                )
+            cfg_raw = data.get("config")
+            if not isinstance(cfg_raw, dict):
+                raise SystemExit("run.json missing config snapshot")
+            cfg = RunConfig.model_validate(cfg_raw)
+            rows = asyncio.run(run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg))
+            sys.stdout.write(
+                json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n"
+            )
+            return 0
+        finally:
+            cleanup_materialized_run_dir(mat_cleanup)
 
     if args.command == "predictions-extract-batch":
         return _run_predictions_extract_batch_cli(args)

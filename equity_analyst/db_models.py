@@ -53,6 +53,9 @@ class RunRow(Base):
     #: Full ``run.json`` payload (denormalized); hot filters use scalar columns above.
     run_document: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
+    #: Final synthesis markdown (optional); enables predictions extract without disk artifacts.
+    synthesis_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     session_trade_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     session_open: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
     session_high: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)

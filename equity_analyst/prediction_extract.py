@@ -13,12 +13,12 @@ from equity_analyst.config import (
     env_from_persisted_run_json,
     run_profile_from_persisted_run_json,
 )
-from equity_analyst.db import is_db_available
 from equity_analyst.db_ops import (
     best_effort_replace_predictions as db_replace_predictions,
 )
 from equity_analyst.db_ops import (
     load_run_document_from_db,
+    load_synthesis_markdown_from_db,
 )
 from equity_analyst.outcome_tracker import _pick_synthesis_path
 from equity_analyst.prompt_export import logical_prompt_split, prompt_call_context
@@ -379,10 +379,19 @@ async def run_prediction_extract_for_run_dir(
         run_dir = run_dir.expanduser().resolve()
         run_id = run_dir.name
         syn_path = _pick_synthesis_path(run_dir)
-        if not syn_path.is_file():
-            logger.warning("prediction_extract: missing synthesis path=%s", syn_path)
-            return []
-        synthesis_text = syn_path.read_text(encoding="utf-8")
+        synthesis_text = ""
+        if syn_path.is_file():
+            synthesis_text = syn_path.read_text(encoding="utf-8")
+        else:
+            db_syn = await load_synthesis_markdown_from_db(run_id, database_url=cfg.database_url)
+            if db_syn:
+                synthesis_text = db_syn
+            else:
+                logger.warning(
+                    "prediction_extract: missing synthesis file path=%s and no runs.synthesis_markdown",
+                    syn_path,
+                )
+                return []
         symbol = cfg.symbol
         rows = await extract_predictions_from_synthesis(
             synthesis_text=synthesis_text,
@@ -412,7 +421,7 @@ async def run_prediction_extract_for_run_dir(
                 blob = raw if isinstance(raw, dict) else None
             except Exception:
                 blob = None
-        if blob is None and cfg.db_enabled and await is_db_available(database_url=cfg.database_url):
+        if blob is None:
             blob = await load_run_document_from_db(run_id, database_url=cfg.database_url)
         if isinstance(blob, dict):
             try:

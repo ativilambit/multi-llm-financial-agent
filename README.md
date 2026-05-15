@@ -53,7 +53,7 @@ The Postgres DB layer is **additive**: it stores structured metadata for queryin
 - `outputs/<run-id>/predictions_extract.json` (optional fallback when Postgres is down, `db_enabled` is false, writes are blocked by **profile + env** gating, or the insert fails; see prediction extraction below)
 - `outputs/outcomes_registry.jsonl`
 
-**Hybrid run storage:** each `runs` row keeps **normalized columns** (`run_id`, `symbol`, `started_at_utc`, `earnings_date`, `env`, …) for hot filters plus a nullable **`runs.run_document`** JSONB that mirrors the full **`run.json`** payload (canonical serialization via `equity_analyst/run_json_serde.py`). Upserts derive both from the same in-memory dict so scalars stay aligned with the JSON snapshot. By default the orchestrator still writes **`outputs/<run-id>/run.json`**; set **`persist_run_json_to_disk: false`** in YAML or **`EQUITY_PERSIST_RUN_JSON=0`** to skip the disk file while keeping DB writes (**Drive uploads** still force a disk mirror). Operators can repair null JSONB from existing trees with **`python -m equity_analyst db-backfill --hydrate-run-document`** (alias **`--include-run-document`**). **`load_run_document_from_db`** backs **`outcome_tracker`** / **`prediction_extract`** when `run.json` is missing locally.
+**Hybrid run storage:** each `runs` row keeps **normalized columns** (`run_id`, `symbol`, `started_at_utc`, `earnings_date`, `env`, …) for hot filters plus a nullable **`runs.run_document`** JSONB that mirrors the full **`run.json`** payload (canonical serialization via `equity_analyst/run_json_serde.py`). **`runs.synthesis_markdown`** stores the final rendered synthesis document (same bytes as `synthesis.md` on disk) so CI can run **prediction extraction** without downloading `outputs/`. Upserts derive scalars from the same in-memory dict so JSONB stays aligned. By default the orchestrator still writes **`outputs/<run-id>/run.json`**; set **`persist_run_json_to_disk: false`** in YAML or **`EQUITY_PERSIST_RUN_JSON=0`** to skip the disk file while keeping DB writes (**Drive uploads** still force a disk mirror). Operators can repair null JSONB from existing trees with **`python -m equity_analyst db-backfill --hydrate-run-document`** (alias **`--include-run-document`**). **`load_run_document_from_db`** backs **`outcome_tracker`** / **`prediction_extract`** when `run.json` is missing locally.
 
 **Postgres persistence:** rows are written when **`db_enabled`** is true (default), **`DATABASE_URL`** resolves, and either **`run_profile: production`** (typical scheduled batches) or **`RunConfig.env: test`** (CLI **`--env test`**, YAML **`env: test`**, or **`EQUITY_ENV=test`**). **`run_profile: dev`** with **`env: production`** skips Postgres (local smoke without polluting prod analytics). The **`runs.env`** column stores **`production`** or **`test`** so you can filter test-tier rows. Use **`python -m equity_analyst run ... --profile production`** (and **`--env production`**, the default) for prod-style runs; **`scripts/run_all_symbols.sh`** passes **`--profile production`** by default. For a **test tier**, use **`--env test`** (or **`scripts/run_all_symbols.sh ... --env test`**): defaults keep **`run_profile=dev`** unless **`--profile production`**, while Postgres stays on by default—use **`--no-db`**, YAML **`db_enabled: false`**, or **`DB_ENABLED=0`** to skip DB. **`run.json`** carries top-level **`run_profile`** and **`env`** (also inside **`config`**); outcome and prediction tooling prefers the top-level keys, then **`config`**, then legacy defaults (**production** profile, **production** env) for older trees.
 
@@ -652,15 +652,18 @@ Common flags: `--dry-run` (no `outcome.json` / registry / DB writes), `--rate-li
 
 ## Prediction extraction (calibration prep)
 
-After a run, you can populate the Postgres **`predictions`** table with five fixed **horizons** (`earnings_day_open`, `earnings_day_close`, `next_trading_day_open`, `next_trading_day_close`, `one_week_later_close`) by calling a **fast LLM** (default **Gemini Flash**, `gemini-3-flash-preview`, no web search) against the same synthesis file the rest of the pipeline treats as final: `outputs/<run-id>/synthesis.md` when present (iterative runs write the packaged report there; otherwise the newest `iterations/iteration_*_synthesis.md` is used, matching outcome tooling).
+After a run, you can populate the Postgres **`predictions`** table with five fixed **horizons** (`earnings_day_open`, `earnings_day_close`, `next_trading_day_open`, `next_trading_day_close`, `one_week_later_close`) by calling a **fast LLM** (default **Gemini Flash**, `gemini-3-flash-preview`, no web search) against the same synthesis document the rest of the pipeline treats as final: `outputs/<run-id>/synthesis.md` when present (iterative runs write the packaged report there; otherwise the newest `iterations/iteration_*_synthesis.md` is used, matching outcome tooling). If the file is missing but **`runs.synthesis_markdown`** is populated (migration **`0005`**), the extractor reads synthesis text from Postgres instead.
 
 **Explicit CLI (always runs extraction for the given run dir(s)):**
 
 ```bash
 python -m equity_analyst predictions-extract --run-dir outputs/CRCL_20260511T023747Z
+python -m equity_analyst predictions-extract --run-id CRCL_20260511T023747Z
 python -m equity_analyst predictions-extract-batch --batch-dir outputs/batch_20260511T025203Z
 python -m equity_analyst predictions-extract-batch --symbols SE,ZBRA,ONON --since 2026-05-12
 ```
+
+When **`run.json` is missing** locally, **`--run-dir`** / batch still resolve **`runs.run_document`**. **`--run-id`** materializes a temp `outputs/<run_id>/` from Postgres (including **`runs.synthesis_markdown`** as `synthesis.md`) when the folder is absent—used for CI **from_db** flows.
 
 Batch mode mirrors **`outcome-record-batch`**: Shape A parses `output_dir=` lines from `batch_summary.txt`; Shape B resolves per-symbol run directories under `outputs/` on or after `--since` (default seven days ago UTC), with `--newest-only` (default) or all matches. Use **`--dry-run`** to list targets without calling the extractor.
 
@@ -715,23 +718,36 @@ Workflows install with **`pip install -r requirements.txt`** and set **`PYTHONPA
 
 | Secret | Used by |
 | --- | --- |
-| **`DATABASE_URL`** | `session-ohlc-lock`, `outcome-record-batch`, `predictions-extract-batch` whenever **not** `dry_run` (OHLC lock also needs it for `dry_run` to resolve targets). |
+| **`DATABASE_URL`** | `session-ohlc-lock`, `outcome-record-batch`, `extract-predictions` whenever **not** `dry_run` (OHLC lock also needs it for `dry_run` to resolve targets). |
 | **`EQUITY_OHLC_LOCK_SYMBOLS`** | Optional comma-separated symbols for scheduled **`lock-session-ohlc --gha-auto --symbols-env`** (and dispatch default branch). |
 | **`GEMINI_API_KEY`** (and other provider secrets as needed) | `extract-predictions` / `predictions-extract-batch` for real LLM calls; each run’s `run.json` `config` chooses the provider—defaults are Gemini-oriented. **`dry_run`** skips calls. |
 | **`GITHUB_TOKEN`** | Default token; **`actions: read`** is enabled on workflows that download artifacts. |
 
+### DB-only maintenance (Neon / Postgres handoff)
+
+When runs are persisted to **Neon** (or any Postgres reachable from Actions) with **`run_document`** populated, you can **skip** downloading **`equity-analyst-outputs`** for maintenance:
+
+1. Apply migrations through **`0005_runs_synthesis_markdown`** (`alembic upgrade head`).
+2. **Outcomes:** dispatch [`.github/workflows/outcome-record-batch.yml`](.github/workflows/outcome-record-batch.yml) with **`mode: from_db`**. Optional **`symbols`** filters `runs.symbol`; **`lookback_days`** / **`limit`** bound the queue. The job runs **`scripts/gh_outcomes_from_db.py`**, which materializes temp `outputs/<run_id>/run.json` and calls **`record_outcome_for_run_dir`** (optional **`auto_fetch`**).
+3. **Predictions:** dispatch [`.github/workflows/extract-predictions.yml`](.github/workflows/extract-predictions.yml) with **`mode: from_db`**. This requires **`runs.synthesis_markdown`** (written on each successful orchestrator upsert after migration 0005). Runs missing that column are **not** selected until a new synthesis completes or you backfill from disk manually.
+4. **Session OHLC** remains Postgres-only ([`session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml)); no artifact.
+
+**Secrets:** **`DATABASE_URL`** (required for **`mode: from_db`**, including **`dry_run`**, because selection runs against Postgres). Shape A/B may omit **`DATABASE_URL`** when **`dry_run`** is true. Predictions **`from_db`** non–dry-run still need provider keys (**`GEMINI_API_KEY`**, etc.) matching each run’s `run.json` / `run_document` **`config`**.
+
+**Limitations:** **`from_db`** does not pull Google Drive or hydrate paths from `synthesis_path` on disk—outcomes only need **`run_document`** + yfinance; predictions need **`synthesis_markdown`** in the row. **`equity-analyst-run.yml`** remains optional: use it when you still want a retained **`outputs/`** artifact.
+
 ### Suggested order of operations
 
 1. **Produce run trees** under `outputs/` (local **`python -m equity_analyst run ...`**, self-hosted runner, or any path that ends with per-run folders containing `synthesis.md` / `run.json` as usual).
-2. **Upload `outputs/`** with [`.github/workflows/equity-analyst-run.yml`](.github/workflows/equity-analyst-run.yml) (`equity-analyst-outputs`, **10-day** retention by default).
-3. **Outcomes:** [`.github/workflows/outcome-record-batch.yml`](.github/workflows/outcome-record-batch.yml) — set **`artifact_run_id`** to the workflow run id from step 2 (uses [dawidd6/action-download-artifact](https://github.com/dawidd6/action-download-artifact)) or point **Shape A** at `outputs/batch_*` already in the repo.
-4. **Predictions:** [`.github/workflows/extract-predictions.yml`](.github/workflows/extract-predictions.yml) — same artifact pattern; runs **`python -m equity_analyst predictions-extract-batch`**. Single-run repair: **`python -m equity_analyst predictions-extract --run-dir outputs/<run_id>`**.
+2. **Upload `outputs/`** (optional if you rely on **DB-only** maintenance): [`.github/workflows/equity-analyst-run.yml`](.github/workflows/equity-analyst-run.yml) (`equity-analyst-outputs`, **10-day** retention by default).
+3. **Outcomes:** [`.github/workflows/outcome-record-batch.yml`](.github/workflows/outcome-record-batch.yml) — use **`mode: from_db`** for Postgres-only, or set **`artifact_run_id`** for the workflow run id from step 2 (uses [dawidd6/action-download-artifact](https://github.com/dawidd6/action-download-artifact)) or point **Shape A** at `outputs/batch_*` already in the repo.
+4. **Predictions:** [`.github/workflows/extract-predictions.yml`](.github/workflows/extract-predictions.yml) — **`mode: from_db`** or the same artifact pattern as outcomes; runs **`predictions-extract-batch`** on disk. Single-run repair: **`python -m equity_analyst predictions-extract --run-dir outputs/<run_id>`** or **`--run-id …`** when the folder is absent.
 5. **Session OHLC lock:** [`.github/workflows/session-ohlc-lock.yml`](.github/workflows/session-ohlc-lock.yml) after the regular-session bar is trustworthy—this only needs **Postgres + symbols/run_ids**, not the `outputs/` artifact.
 
 ### Schedules and trade-offs
 
 - **OHLC lock** uses a **weekday 22:30 UTC** cron as a coarse post-US-close trigger. The CLI **`--gha-auto`** still **no-ops** before **16:15 America/New_York** and on weekends, so the job is cheap when fired early.
-- **Outcomes / predictions** workflows are **`workflow_dispatch` only** by default: scheduled batches need a reliable **`outputs/`** tree on the runner (rare on `ubuntu-latest` checkout alone). Operators can add a `schedule` once they have a **self-hosted runner with a persistent `outputs/`**, a repeatable artifact download, or Shape A paths committed.
+- **Outcomes / predictions** workflows are **`workflow_dispatch` only** by default: scheduled batches need a reliable **`outputs/`** tree on the runner (rare on `ubuntu-latest` checkout alone). Operators can add a `schedule` once they have a **self-hosted runner with a persistent `outputs/`**, a repeatable artifact download, Shape A paths committed, or **`mode: from_db`** with Neon.
 - **Daily** automation maximizes timeliness at the cost of API quota, runner minutes, and **yfinance** flakiness on **`--auto-fetch`**. **Weekly** batches reduce noise but delay calibration rows.
 
 ### DST caveat
@@ -744,7 +760,7 @@ Workflows install with **`pip install -r requirements.txt`** and set **`PYTHONPA
 
 After the regular NY session, operators can **freeze** the Yahoo Finance **daily** OHLC for the calendar session that models treated as “today” into normalized `runs` columns (`session_trade_date`, `session_open` / `session_high` / `session_low` / `session_close`, `session_partial`, `session_snapshot_at_utc`, `session_source`). Values come from **`yfinance`** (same unofficial endpoint caveats as outcome auto-fetch).
 
-**Alembic / Neon:** apply migration **`0004_runs_session_ohlc`** so these nullable columns exist before running the CLI in CI or locally (`alembic upgrade head` using `migrations/`).
+**Alembic / Neon:** apply migrations through **`0005_runs_synthesis_markdown`** (adds ``runs.synthesis_markdown`` for DB-only prediction extract) after **`0004_runs_session_ohlc`** so session columns exist before running the CLI in CI or locally (`alembic upgrade head` using `migrations/`).
 
 **Selection (MVP):** the CLI does **not** infer “today” from each run’s prompt text. Targets are either explicit **`--run-id`** rows (with **`--date`** for the session bar to fetch) or all unlocked runs for **`--symbol` / `--symbols`** whose `created_at_utc` falls on **`--date`** in **America/New_York** wall time, with `session_close` still null. Omitting **`--date`** with symbols defaults to the **prior NY weekday** (weekends skipped; **NYSE holidays are not modeled**). For a different notion of “today” vs synthesis, pass **`--run-id`** or adjust **`--date`** manually.
 

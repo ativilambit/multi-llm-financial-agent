@@ -1,17 +1,20 @@
-# Runs ``python -m equity_analyst predictions-extract-batch`` (LLM horizons → Postgres).
+# Runs ``predictions-extract-batch`` on disk (Shape A/B) or **from_db** (Postgres-only).
 #
-# ``dry_run`` lists targets only (no provider calls). Non–dry-run needs provider keys from
-# ``RunConfig`` in each ``run.json`` (default Gemini: ``GEMINI_API_KEY``).
+# ``from_db`` selects ``runs`` with ``synthesis_markdown`` and no ``predictions`` rows, materializes
+# temp ``outputs/<run_id>/run.json`` + ``synthesis.md``, then calls the async extractor.
+#
+# Optional ``artifact_run_id`` downloads ``equity-analyst-outputs`` before Shape A/B.
 name: Predictions extract batch
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "shape_a = --batch-dir; shape_b = --symbols + optional --since"
+        description: "from_db = Postgres queue; shape_a = --batch-dir; shape_b = --symbols + optional --since"
         required: true
         type: choice
         options:
+          - from_db
           - shape_a
           - shape_b
       batch_dir:
@@ -20,7 +23,7 @@ on:
         type: string
         default: ""
       symbols:
-        description: "Shape B: comma-separated tickers (required when mode=shape_b)"
+        description: "Shape B: comma-separated tickers (required when mode=shape_b). from_db: optional filter."
         required: false
         type: string
         default: ""
@@ -29,13 +32,23 @@ on:
         required: false
         type: string
         default: ""
+      lookback_days:
+        description: "from_db: same window semantics as outcome workflow"
+        required: false
+        type: number
+        default: 14
+      limit:
+        description: "from_db: max runs per dispatch"
+        required: false
+        type: number
+        default: 50
       dry_run:
-        description: "If true, pass --dry-run (no LLM or DB writes; DATABASE_URL / API keys optional)"
+        description: "If true, list targets only (no LLM or DB writes; from_db still needs DATABASE_URL to query the queue)"
         required: false
         type: boolean
         default: false
       artifact_run_id:
-        description: "Optional: workflow run id for artifact ``equity-analyst-outputs``"
+        description: "Optional: workflow run id for artifact ``equity-analyst-outputs`` (Shape A/B only)"
         required: false
         type: string
         default: ""
@@ -66,8 +79,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Download outputs artifact (optional)
-        if: ${{ inputs.artifact_run_id != '' }}
+      - name: Download outputs artifact (optional, Shape A/B)
+        if: ${{ inputs.mode != 'from_db' && inputs.artifact_run_id != '' }}
         uses: dawidd6/action-download-artifact@v6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -75,8 +88,19 @@ jobs:
           name: equity-analyst-outputs
           path: outputs
 
+      - name: Require DATABASE_URL for from_db mode
+        if: ${{ inputs.mode == 'from_db' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL secret is required when mode=from_db (including dry_run list queries)"
+            exit 1
+          fi
+
       - name: Require DATABASE_URL for writes
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.mode != 'from_db' && inputs.dry_run != true }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -86,7 +110,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run predictions-extract-batch
+      - name: Run predictions maintenance
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -99,6 +123,15 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
           COE=""
           if [ "${{ inputs.continue_on_error }}" = "true" ]; then COE="--continue-on-error"; else COE="--no-continue-on-error"; fi
+          if [ "${{ inputs.mode }}" = "from_db" ]; then
+            SYM=""
+            if [ -n "${{ inputs.symbols }}" ]; then SYM="--symbols ${{ inputs.symbols }}"; fi
+            python scripts/gh_predictions_from_db.py \
+              --lookback-days ${{ inputs.lookback_days }} \
+              --limit ${{ inputs.limit }} \
+              ${SYM} ${DRY} ${COE}
+            exit $?
+          fi
           if [ "${{ inputs.mode }}" = "shape_a" ]; then
             if [ -z "${{ inputs.batch_dir }}" ]; then
               echo "::error::batch_dir is required for mode=shape_a"
