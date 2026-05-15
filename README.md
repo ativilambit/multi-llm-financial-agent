@@ -675,6 +675,30 @@ Batch mode mirrors **`outcome-record-batch`**: Shape A parses `output_dir=` line
 
 **Tuning (RunConfig):** `prediction_extract_provider` (default `gemini`), `prediction_extract_model` (default `gemini-3-flash-preview`), `prediction_extract_max_output_tokens` (default `2048`), `prediction_extract_timeout_s` (default `120`).
 
+### Scoring predictions vs outcomes
+
+Alembic **`0006_prediction_outcome_scoreboard`** creates two read-only views:
+
+- **`v_runs_outcomes_predictions`** — `runs` LEFT JOIN `outcomes` LEFT JOIN `predictions` (no derived metrics). One row per `(run, prediction)` pair; prediction columns are NULL until extraction has populated the table. Multiple prediction rows per run are expected (one per horizon from **`prediction_extract`**).
+- **`prediction_outcome_scoreboard`** — same rows plus **`horizon_actual`** (realized price for **`prediction_horizon`**) and **`point_absolute_error`** when both **`predicted_point`** and **`horizon_actual`** are present.
+
+**SQL example** (after `alembic upgrade head`):
+
+```sql
+SELECT run_id, symbol, prediction_horizon, predicted_point, horizon_actual, point_absolute_error
+FROM prediction_outcome_scoreboard
+WHERE run_created_at_utc >= '2026-05-01'::timestamptz
+ORDER BY run_created_at_utc DESC
+LIMIT 50;
+```
+
+**CLI** (requires a reachable **`DATABASE_URL`**; default output is CSV on stdout):
+
+```bash
+python -m equity_analyst score-predictions --since 2026-05-01 --symbol YETI --format table --limit 200
+python -m equity_analyst score-predictions --since 2026-05-01 --format csv > scores.csv
+```
+
 ## Backfilling existing runs into Postgres
 
 The `db-backfill` CLI walks `outputs/<run_id>/` directories and inserts the corresponding rows into the `runs` and `provider_responses` tables. It is **idempotent**: `runs` is upserted on its primary key, and `provider_responses` rows for the run are deleted and re-inserted on each invocation, so rerunning the command converges to the same final state.
@@ -718,7 +742,7 @@ Workflows install with **`pip install -r requirements.txt`** and set **`PYTHONPA
 
 | Secret | Used by |
 | --- | --- |
-| **`DATABASE_URL`** | `session-ohlc-lock`, `outcome-record-batch`, `extract-predictions` whenever **not** `dry_run` (OHLC lock also needs it for `dry_run` to resolve targets). |
+| **`DATABASE_URL`** | `session-ohlc-lock`, `outcome-record-batch`, `extract-predictions` whenever **not** `dry_run` (OHLC lock also needs it for `dry_run` to resolve targets), **`score-predictions`**. |
 | **`EQUITY_OHLC_LOCK_SYMBOLS`** | Optional comma-separated symbols for scheduled **`lock-session-ohlc --gha-auto --symbols-env`** (and dispatch default branch). |
 | **`GEMINI_API_KEY`** (and other provider secrets as needed) | `extract-predictions` / `predictions-extract-batch` for real LLM calls; each run’s `run.json` `config` chooses the provider—defaults are Gemini-oriented. **`dry_run`** skips calls. |
 | **`GITHUB_TOKEN`** | Default token; **`actions: read`** is enabled on workflows that download artifacts. |

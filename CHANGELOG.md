@@ -6,6 +6,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+- **DB / predictions:** Alembic **`0006_prediction_outcome_scoreboard`** adds views **`v_runs_outcomes_predictions`** and **`prediction_outcome_scoreboard`** (join runs, outcomes, predictions; optional **`point_absolute_error`** vs realized horizon price); CLI **`score-predictions`** exports CSV or a fixed-width table. (`feat(db): prediction vs outcome scoreboard view + CLI`)
+
 - **Prompts / iterative synthesis:** Reconcile **divergent advisory `qual : quant` blends** across provider rounds: per-provider and synthesizer merge rules (±3 consensus, qual-vs-quant majority, canonical fallback), mandatory **`### Final suggested blend (advisory — consensus)`** table with **Dissent notes**; verifier prompt + optional deterministic **`suggested_blend_consistency_followups`**. (`feat(prompts): reconcile advisory blends across iterations`)
 
 - **Prompts:** Section 8B (`### Qualitative deep-dive & suggested blend (advisory)`) now mandates a **`#### Suggested blend (advisory)`** markdown grid (four canonical horizon buckets, `qual : quant` ints or **N/A**; **`differs from canonical`** when advisory ≠ Policy) in `equity_analyst.j2` and a merged grid in `synthesizer_system.md`; `INDEX.md` notes the responsibility. (`docs(prompts): require advisory per-horizon blend integers in deep-dive`)

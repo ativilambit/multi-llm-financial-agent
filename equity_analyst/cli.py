@@ -599,6 +599,45 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Log level for the equity_analyst logger (default INFO).",
     )
 
+    score_pred = sub.add_parser(
+        "score-predictions",
+        help="Export prediction vs outcome rows from Postgres view prediction_outcome_scoreboard",
+    )
+    score_pred.add_argument(
+        "--since",
+        required=True,
+        help="Only runs with runs.created_at_utc >= this calendar date at 00:00 UTC (YYYY-MM-DD).",
+    )
+    score_pred.add_argument(
+        "--symbol",
+        default=None,
+        help="Optional ticker filter (case-insensitive; matches runs.symbol).",
+    )
+    score_pred.add_argument(
+        "--format",
+        dest="output_format",
+        choices=["table", "csv"],
+        default="csv",
+        help="Output layout (default: csv).",
+    )
+    score_pred.add_argument(
+        "--database-url",
+        default=None,
+        help="Postgres URL override (else DATABASE_URL).",
+    )
+    score_pred.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum rows to return (default: 500).",
+    )
+    score_pred.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Log level for the equity_analyst logger (default INFO).",
+    )
+
     return parser
 
 
@@ -1334,6 +1373,22 @@ def main(argv: list[str] | None = None) -> int:
 
         configure_cli_logging(getattr(logging, str(args.log_level)))
         return asyncio.run(run_lock_session_ohlc_cli(args))
+
+    if args.command == "score-predictions":
+        from equity_analyst.prediction_scoreboard import ScoreboardFormat, run_score_predictions_cli
+
+        configure_cli_logging(getattr(logging, str(args.log_level)))
+        since = _parse_since_date(str(args.since))
+        return asyncio.run(
+            run_score_predictions_cli(
+                since=since,
+                symbol=getattr(args, "symbol", None),
+                limit=int(args.limit),
+                fmt=cast(ScoreboardFormat, str(getattr(args, "output_format", "csv"))),
+                database_url=getattr(args, "database_url", None),
+                out=sys.stdout,
+            )
+        )
 
     raise AssertionError("unreachable")
 
