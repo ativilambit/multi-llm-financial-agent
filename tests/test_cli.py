@@ -233,6 +233,34 @@ def test_cli_run_environment_override(tmp_path: Path) -> None:
     assert cfg2.run_environment == "production"
 
 
+def test_cli_drive_env_alias_matches_environment(tmp_path: Path) -> None:
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "run_environment": "production",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml), "--drive-env", "test"])
+    cfg = _apply_cli_config_overrides(_load_cfg(args), args)
+    assert cfg.run_environment == "test"
+
+
 def test_cli_equity_env_test_sets_dev_keeps_db_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DB_ENABLED", raising=False)
     monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)

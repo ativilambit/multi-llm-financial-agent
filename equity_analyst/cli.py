@@ -22,6 +22,7 @@ from equity_analyst.config import (
     run_profile_from_persisted_run_json,
 )
 from equity_analyst.db_ops import best_effort_upsert_run_and_responses
+from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.drive_uploader import log_drive_upload_plan_from_config
 from equity_analyst.iterative import (
     build_initial_refinement_state,
@@ -40,7 +41,6 @@ from equity_analyst.prediction_extract import run_prediction_extract_for_run_dir
 from equity_analyst.prompt_export import use_prompt_exporter
 from equity_analyst.prompting import render_prompt
 from equity_analyst.providers.registry import ProviderRegistry
-from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.synthesizer_blend import normalize_t0_blend_preset
 
 logger = logging.getLogger(__name__)
@@ -254,22 +254,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--environment",
+        "--drive-env",
         dest="run_environment",
         choices=["production", "test"],
         default=None,
-        help="Drive upload routing: ``production`` → child folder ``prod``; ``test`` → ``test``. "
-        "Overrides ``run_environment`` / ``RUN_ENVIRONMENT`` when set. "
-        "(For deployment tier / Postgres defaults, use ``--env`` / ``EQUITY_ENV`` / YAML ``env``.)",
+        help="**Google Drive only** (which subfolder under ``drive_root_folder_id``): ``production`` → ``prod``; "
+        "``test`` → ``test``. Same as ``--drive-env``. Overrides ``run_environment`` / ``RUN_ENVIRONMENT``. "
+        "**Does not** change DB/deployment tier — for that use ``--env`` / ``EQUITY_ENV`` / YAML ``env``.",
     )
     run.add_argument(
         "--env",
         dest="equity_env",
         choices=["production", "test"],
         default=None,
-        help="Deployment tier: ``test`` uses ``run_profile=dev`` unless overridden by ``--profile``; "
-        "Postgres follows ``db_enabled`` (default on). Rows use ``runs.env`` for filtering. "
-        "Use ``--no-db`` or YAML ``db_enabled: false`` / ``DB_ENABLED=0`` to skip DB. "
-        "Overrides ``EQUITY_ENV`` and YAML ``env`` when set. Separate from ``--environment`` (Drive).",
+        help="**Deployment / DB tier** (``runs.env``, default ``run_profile`` when ``test``): Postgres row tagging, "
+        "dev vs prod defaults. Overrides ``EQUITY_ENV`` and YAML ``env``. "
+        "**Does not** change Google Drive folder — for Drive use ``--drive-env`` / ``--environment``.",
     )
     run.add_argument(
         "--drive-auth-mode",
@@ -797,14 +797,11 @@ async def _run_iterative_cli(
         )
         nodes = dry_run_compile_only(registry=reg)
         return (
-            (
-                "# Iterative dry-run\n\n"
-                f"Graph nodes: {', '.join(nodes)}\n\n"
-                "## Rendered prompt (excerpt)\n\n" + rendered.text[:8000]
-            ),
-            Path("."),
-            {},
-        )
+            "# Iterative dry-run\n\n"
+            f"Graph nodes: {', '.join(nodes)}\n\n"
+            "## Rendered prompt (excerpt)\n\n"
+            + rendered.text[:8000]
+        ), Path("."), {}
     out_dir: Path
     thread_id: str
     resume = bool(args.resume)
@@ -944,16 +941,8 @@ def _run_outcome_record_batch_cli(args: argparse.Namespace) -> int:
         o = res.outcome
         sym = o.symbol
         run_id = run_dir.name
-        artifact_note = (
-            "dry-run: no files written"
-            if args.dry_run
-            else "outcome.json written with nulls; rerun later"
-        )
-        partial_note = (
-            "dry-run: no files written"
-            if args.dry_run
-            else "outcome.json written; rerun later if needed"
-        )
+        artifact_note = "dry-run: no files written" if args.dry_run else "outcome.json written with nulls; rerun later"
+        partial_note = "dry-run: no files written" if args.dry_run else "outcome.json written; rerun later if needed"
         if res.auto_fetch_used and res.yfinance_empty:
             partial += 1
             _print_outcome_batch_warn_line(
@@ -1121,9 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
                     except Exception:
                         meta_blob = None
                 if isinstance(meta_blob, dict):
-                    meta_blob["finished_at_utc"] = (
-                        datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-                    )
+                    meta_blob["finished_at_utc"] = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
                     meta_blob["run_profile"] = cfg.run_profile
                     meta_blob["env"] = cfg.env
                     body = format_run_json_for_disk(meta_blob)
@@ -1137,7 +1124,9 @@ def main(argv: list[str] | None = None) -> int:
                 provider_map = {pc.name: pc for pc in cfg.providers}
                 pr_rows: list[tuple[int | None, str, Any, str, bool]] = []
                 resp_rounds = (
-                    final_state.get("provider_responses") if isinstance(final_state, dict) else None
+                    final_state.get("provider_responses")
+                    if isinstance(final_state, dict)
+                    else None
                 )
                 if isinstance(resp_rounds, list):
                     for i, round_blob in enumerate(resp_rounds, start=1):
@@ -1148,23 +1137,19 @@ def main(argv: list[str] | None = None) -> int:
                             continue
                         try:
                             response_path = str(
-                                (
-                                    out_dir / "iterations" / f"iteration_{i}_providers.md"
-                                ).relative_to(out_dir.parent)
+                                (out_dir / "iterations" / f"iteration_{i}_providers.md").relative_to(
+                                    out_dir.parent
+                                )
                             )
                         except Exception:
-                            response_path = str(
-                                out_dir / "iterations" / f"iteration_{i}_providers.md"
-                            )
+                            response_path = str(out_dir / "iterations" / f"iteration_{i}_providers.md")
                         for prov_name, d in raw.items():
                             if not isinstance(d, dict):
                                 continue
                             resp = _dict_to_provider_response(d)
                             pc = provider_map.get(prov_name)
                             ws_enabled = (
-                                bool(pc.web_search)
-                                if pc and pc.web_search is not None
-                                else bool(args.enable_web_search)
+                                bool(pc.web_search) if pc and pc.web_search is not None else bool(args.enable_web_search)
                             )
                             pr_rows.append((i, prov_name, resp, response_path, ws_enabled))
 
@@ -1201,9 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception:
                     cfg_for_extract = None
                 if cfg_for_extract is not None and cfg_for_extract.prediction_extract_enabled:
-                    asyncio.run(
-                        run_prediction_extract_for_run_dir(run_dir=out_dir, cfg=cfg_for_extract)
-                    )
+                    asyncio.run(run_prediction_extract_for_run_dir(run_dir=out_dir, cfg=cfg_for_extract))
         else:
             if not args.config:
                 raise SystemExit("--config is required for non-iterative runs")
@@ -1216,10 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "outcome-record":
         configure_cli_logging(logging.INFO)
-        from equity_analyst.db_run_materialize import (
-            cleanup_materialized_run_dir,
-            ensure_run_dir_for_cli,
-        )
+        from equity_analyst.db_run_materialize import cleanup_materialized_run_dir, ensure_run_dir_for_cli
 
         mat_cleanup = None
         try:
@@ -1299,15 +1279,9 @@ def main(argv: list[str] | None = None) -> int:
                     earnings_day_high = _prompt_float("earnings_day_high", earnings_day_high)
                     earnings_day_low = _prompt_float("earnings_day_low", earnings_day_low)
                     earnings_day_close = _prompt_float("earnings_day_close", earnings_day_close)
-                    next_trading_day_open = _prompt_float(
-                        "next_trading_day_open", next_trading_day_open
-                    )
-                    next_trading_day_close = _prompt_float(
-                        "next_trading_day_close", next_trading_day_close
-                    )
-                    one_week_later_close = _prompt_float(
-                        "one_week_later_close", one_week_later_close
-                    )
+                    next_trading_day_open = _prompt_float("next_trading_day_open", next_trading_day_open)
+                    next_trading_day_close = _prompt_float("next_trading_day_close", next_trading_day_close)
+                    one_week_later_close = _prompt_float("one_week_later_close", one_week_later_close)
                     direction_vs_prior_close = _prompt_choice(
                         "direction_vs_prior_close", direction_vs_prior_close, ["up", "down", "flat"]
                     )
@@ -1343,10 +1317,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "predictions-extract":
         configure_cli_logging(getattr(logging, str(args.log_level)))
-        from equity_analyst.db_run_materialize import (
-            cleanup_materialized_run_dir,
-            ensure_run_dir_for_cli,
-        )
+        from equity_analyst.db_run_materialize import cleanup_materialized_run_dir, ensure_run_dir_for_cli
 
         mat_cleanup = None
         try:
@@ -1384,9 +1355,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit("run.json missing config snapshot")
             cfg = RunConfig.model_validate(cfg_raw)
             rows = asyncio.run(run_prediction_extract_for_run_dir(run_dir=run_dir, cfg=cfg))
-            sys.stdout.write(
-                json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n"
-            )
+            sys.stdout.write(json.dumps({"rows": [asdict(r) for r in rows]}, indent=2, sort_keys=True) + "\n")
             return 0
         finally:
             cleanup_materialized_run_dir(mat_cleanup)
@@ -1453,9 +1422,7 @@ def _run_db_backfill_cli(args: argparse.Namespace) -> int:
         )
         for d in dirs:
             sys.stdout.write(f"DRY-RUN run_id={d.name}\n")
-        _print_backfill_summary(
-            scanned=len(dirs), inserted=0, skipped=len(dirs), errors=0, dry_run=True
-        )
+        _print_backfill_summary(scanned=len(dirs), inserted=0, skipped=len(dirs), errors=0, dry_run=True)
         return 0
 
     return asyncio.run(
@@ -1474,10 +1441,7 @@ async def _run_db_backfill_async(
     hydrate_run_document: bool = False,
 ) -> int:
     from equity_analyst.db import get_async_session, is_db_available
-    from equity_analyst.db_backfill import (
-        backfill_run_directory,
-        hydrate_missing_run_documents_from_disk,
-    )
+    from equity_analyst.db_backfill import backfill_run_directory, hydrate_missing_run_documents_from_disk
 
     if not await is_db_available():
         raise SystemExit(
