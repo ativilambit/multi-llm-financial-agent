@@ -35,7 +35,7 @@ Rules:
 
 1. **Best:** If the synthesis includes a fenced **`json`** block whose root has **`sigma_summary`** with **`sessions[*].prob_up_pct`** (and dates/labels you can match to that horizon), use **`prob_up_pct / 100.0`** for **`probability_up`** when the session clearly maps to that horizon. Prefer this over prose.
 2. **Else:** If sections **9** or **11** use the **`| Metric | Value |`** advisory table, use the row whose **Metric** is **`Φ-official (bounded drift)`** (or text that clearly states the same value as canonical **`prob_up_pct`**) — take the **%** in the **Value** column and convert to **`[0.0, 1.0]`**.
-3. **Do not** use for **`probability_up`**: **`P_mix_up`**, **`P_qual (advisory Φ)`**, **`Φ-informational`**, or any value labeled **advisory**, **not verifier-canonical**, or **informational only**. If only those appear for a horizon, set **`probability_up`** to **null** and mention it in **`notes`**.
+3. **Do not** use for **`probability_up`**: **`P_mix_up`**, **`P_qual (advisory Φ)`**, **`Unbounded P(up)`**, or any value labeled **advisory**, **not verifier-canonical**, or **informational only**. If only those appear for a horizon, set **`probability_up`** to **null** and mention it in **`notes`**.
 
 Example shape (illustrative numbers only):
 

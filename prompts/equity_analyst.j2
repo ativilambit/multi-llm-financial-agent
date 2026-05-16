@@ -169,7 +169,7 @@ The server clamps |drift| to ≤ 0.15%/day for most sources (≤ 0.30%/day for P
 | 1 | `Session` | Calendar label, **`N=`**, and leg if applicable (e.g. open vs close). |
 | 2 | `P(up) scanline` | **§11 only:** the same content you would put on the “1σ … \| P(up): …” teaser line (1σ $ band, ±%, and **P(up)**). In **§9**, use **Value** `n/a (§11 scanline only)` or omit this row entirely. |
 | 3 | `Φ-official (bounded drift)` | Percent matching **`prob_up_pct`**; note post-cap quant drift. |
-| 4 | `Φ-informational (pre-clamp drift)` | Either **`Φ-informational matches Φ-official`** or the **informational** Φ% plus raw **%/day** pre-clamp — label **informational only — not verifier-canonical**. |
+| 4 | `Unbounded P(up) (advisory Φ from pre-clamp quant drift)` | **%** from **`Φ((pre-clamp daily_drift_pct × N) / one_sigma_half_width_pct)`** — same **`N`** and **`one_sigma_half_width_pct`** as **`prob_up_pct`**, but **quant** `daily_drift_pct` **before** server caps (state raw **%/day** in this cell). If raw equals bounded drift, use **`matches Φ-official (no clamp)`** instead of a duplicate percent. Label **advisory — not verifier-canonical** (this is **not** the emitted **`prob_up_pct`** field). |
 | 5 | `drift_qual_pct (qual-only, bounded)` | **%/day** used for **P_qual**; qual-only sourcing; **no** double-count vs quant **`daily_drift_pct`** rationale. |
 | 6 | `P_qual (advisory Φ)` | **%** from **`Φ((bounded drift_qual_pct × N) / one_sigma_half_width_pct)`**; label **advisory Φ — not verifier-canonical**. |
 | 7 | `P_mix_up (advisory)` | **%** from **`w_quant × P_quant + w_qual × P_qual`** with explicit **`w_quant`**, **`w_qual`** from the **canonical** fenced **`qual : quant`** integers for this session; **`P_quant = prob_up_pct/100`**; **`advisory — not verifier-canonical`**. |
@@ -185,7 +185,7 @@ The server clamps |drift| to ≤ 0.15%/day for most sources (≤ 0.30%/day for P
 | Session | Wed May 13, 2026 (T0) (N=0), close |
 | P(up) scanline | 1σ: $158.09 – $200.13 (±11.74%) \| P(up): 50.5% |
 | Φ-official (bounded drift) | 50.5% (= `prob_up_pct`) |
-| Φ-informational (pre-clamp drift) | Φ-informational matches Φ-official |
+| Unbounded P(up) (advisory Φ from pre-clamp quant drift) | matches Φ-official (no clamp) — raw drift +0.08%/day — advisory — not verifier-canonical |
 | drift_qual_pct (qual-only, bounded) | +0.08%/day (catalyst skew; no overlap with quant drift source) |
 | P_qual (advisory Φ) | 50.4% — advisory Φ — not verifier-canonical |
 | P_mix_up (advisory) | 50.45% (w_quant=0.45, w_qual=0.55) — advisory — not verifier-canonical |

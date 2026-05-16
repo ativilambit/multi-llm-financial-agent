@@ -108,21 +108,20 @@ def test_qualitative_weighting_in_equity_analyst_template_and_synthesizer() -> N
 
 
 def test_sections_9_and_11_narrative_probability_disclosure_in_prompts() -> None:
-    """§9/§11 require Φ-official, Φ-informational, and blend advisory alongside bounded prob_up_pct."""
+    """§9/§11 require Φ-official, unbounded P(up), and blend advisory alongside bounded prob_up_pct."""
     j2 = (PROMPTS / "equity_analyst.j2").read_text(encoding="utf-8")
     synth = (PROMPTS / "synthesizer_system.md").read_text(encoding="utf-8")
     inv = _policy_invariants_text()
     needle = "**Narrative probability disclosure (sections 9 & 11"
     assert needle in j2
     assert "Φ-official (bounded drift)" in j2
-    assert "Φ-informational (pre-clamp drift)" in j2
-    assert "Φ-informational matches Φ-official" in j2
+    assert "Unbounded P(up) (advisory Φ from pre-clamp quant drift)" in j2
     assert "| Metric | Value |" in j2
     assert "Blend advisory" in j2
     assert "Narrative probability disclosure (report §9 prose)" in synth
     assert "Narrative probability disclosure (report §11 prose)" in synth
     assert "| Metric | Value |" in synth
-    assert "Sections 9 and 11" in inv and "Φ-informational (pre-clamp drift)" in inv
+    assert "Sections 9 and 11" in inv and "Unbounded P(up)" in inv
 
 
 def test_advisory_qual_drift_p_mix_narrative_in_prompts() -> None:
@@ -132,6 +131,7 @@ def test_advisory_qual_drift_p_mix_narrative_in_prompts() -> None:
     inv = _policy_invariants_text()
     assert "drift_qual_pct" in j2
     assert "| Metric | Value |" in j2
+    assert "Unbounded P(up) (advisory Φ from pre-clamp quant drift)" in j2
     assert "P_mix_up" in j2
     assert "w_quant × P_quant + w_qual × P_qual" in j2
     assert "advisory — not verifier-canonical" in j2
@@ -145,11 +145,12 @@ def test_advisory_qual_drift_p_mix_narrative_in_prompts() -> None:
 
 
 def test_prediction_extract_system_prefers_canonical_prob_up() -> None:
-    """Extraction must ignore advisory P_mix / P_qual for DB probability_up."""
+    """Extraction must ignore advisory P_mix / P_qual / unbounded Φ for DB probability_up."""
     raw = (PROMPTS / "prediction_extract_system.md").read_text(encoding="utf-8")
     assert "sigma_summary" in raw and "prob_up_pct" in raw
     assert "Φ-official (bounded drift)" in raw
     assert "P_mix_up" in raw and "P_qual" in raw
+    assert "Unbounded P(up)" in raw
     assert "3. **Do not** use for **`probability_up`**" in raw
 
 
