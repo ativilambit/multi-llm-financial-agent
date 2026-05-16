@@ -116,12 +116,15 @@ def test_sections_9_and_11_narrative_probability_disclosure_in_prompts() -> None
     assert needle in j2
     assert "Φ-official (bounded drift)" in j2
     assert "Unbounded P(up) (advisory Φ from pre-clamp quant drift)" in j2
+    assert "LLM-derived P(up) (advisory, non-Φ)" in j2
     assert "| Metric | Value |" in j2
     assert "Blend advisory" in j2
     assert "Narrative probability disclosure (report §9 prose)" in synth
     assert "Narrative probability disclosure (report §11 prose)" in synth
     assert "| Metric | Value |" in synth
+    assert "LLM-derived P(up)" in synth
     assert "Sections 9 and 11" in inv and "Unbounded P(up)" in inv
+    assert "LLM-derived P(up)" in inv
 
 
 def test_advisory_qual_drift_p_mix_narrative_in_prompts() -> None:
@@ -132,10 +135,12 @@ def test_advisory_qual_drift_p_mix_narrative_in_prompts() -> None:
     assert "drift_qual_pct" in j2
     assert "| Metric | Value |" in j2
     assert "Unbounded P(up) (advisory Φ from pre-clamp quant drift)" in j2
+    assert "LLM-derived P(up) (advisory, non-Φ)" in j2
     assert "P_mix_up" in j2
     assert "w_quant × P_quant + w_qual × P_qual" in j2
     assert "advisory — not verifier-canonical" in j2
     assert "drift_qual_pct" in synth and "P_mix_up" in synth
+    assert "LLM-derived P(up)" in synth
     assert "| Metric | Value |" in synth
     assert "w_quant × P_quant + w_qual × P_qual" in synth
     assert "advisory — not verifier-canonical" in synth
@@ -151,6 +156,7 @@ def test_prediction_extract_system_prefers_canonical_prob_up() -> None:
     assert "Φ-official (bounded drift)" in raw
     assert "P_mix_up" in raw and "P_qual" in raw
     assert "Unbounded P(up)" in raw
+    assert "LLM-derived P(up)" in raw
     assert "3. **Do not** use for **`probability_up`**" in raw
 
 
