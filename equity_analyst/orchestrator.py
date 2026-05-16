@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import json
 import logging
 import time
 from dataclasses import asdict, dataclass
@@ -18,6 +19,7 @@ from equity_analyst.drive_uploader import (
 )
 from equity_analyst.gemini_cache import GeminiCacheIndex
 from equity_analyst.logging_setup import attach_run_file_logging
+from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.pdf_writer import maybe_write_pdf_sibling
 from equity_analyst.prompt_export import prompt_call_context, use_prompt_exporter
 from equity_analyst.prompting import render_prompt, split_static_dynamic
@@ -36,7 +38,6 @@ from equity_analyst.providers.gemini_provider import GeminiProvider
 from equity_analyst.providers.openai_provider import OpenAIProvider
 from equity_analyst.providers.registry import ProviderRegistry
 from equity_analyst.retry import async_retry_call
-from equity_analyst.run_json_serde import canonical_run_document_dict, format_run_json_for_disk
 from equity_analyst.synthesizer import (
     SynthesisResult,
     Synthesizer,
@@ -136,7 +137,9 @@ class Orchestrator:
                 "providers": {
                     pc.name: {
                         "enabled": True,
-                        "web_search": effective_web_search(run_default=enable_web_search, pc=pc),
+                        "web_search": effective_web_search(
+                            run_default=enable_web_search, pc=pc
+                        ),
                     }
                     for pc in self._config.providers
                 },
@@ -327,12 +330,11 @@ class Orchestrator:
                             oversized_summarize_min_retention=self._config.oversized_summarize_min_retention,
                             oversized_summarize_fallback_provider=summarize_fallback_llm,
                             computed_sigma_bands_markdown=(
-                                str(
-                                    rendered.context.get("computed_sigma_bands_markdown") or ""
-                                ).strip()
+                                str(rendered.context.get("computed_sigma_bands_markdown") or "").strip()
                                 or None
                             ),
                             t0_blend_preset=self._config.t0_blend_preset,
+                            run_id=out_dir.name,
                         ),
                         timeout=syn_timeout,
                     )
@@ -345,9 +347,7 @@ class Orchestrator:
                         type(exc).__name__,
                         exc,
                     )
-                    run_errors.append(
-                        run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc)
-                    )
+                    run_errors.append(run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc))
                     synthesis_resp = failure_response_from_completed(
                         syn_cfg.name,
                         exc,
@@ -363,9 +363,7 @@ class Orchestrator:
                         type(exc).__name__,
                         exc,
                     )
-                    run_errors.append(
-                        run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc)
-                    )
+                    run_errors.append(run_error_record(stage="synthesis", provider=syn_cfg.name, exc=exc))
                     synthesis_resp = failure_response_from_completed(
                         syn_cfg.name,
                         exc,
@@ -388,8 +386,11 @@ class Orchestrator:
                     }
                 )
 
+            csb_artifact = str(rendered.context.get("computed_sigma_bands_markdown") or "").strip() or None
             synthesis_md = format_synthesis_artifact_markdown(
-                synthesis=synthesis, responses=responses
+                synthesis=synthesis,
+                responses=responses,
+                computed_sigma_bands_markdown=csb_artifact,
             )
             synthesis_file.write_text(synthesis_md, encoding="utf-8")
             maybe_write_pdf_sibling(
@@ -451,9 +452,7 @@ class Orchestrator:
             run_json_data = canonical_run_document_dict(run_meta)
 
             if self._config.drive_upload_enabled:
-                await maybe_upload_run_to_drive(
-                    self._config, out_dir, append_synthesis_footer=False
-                )
+                await maybe_upload_run_to_drive(self._config, out_dir, append_synthesis_footer=False)
 
             finished_at_utc = datetime.now(tz=UTC).replace(microsecond=0)
             with contextlib.suppress(Exception):

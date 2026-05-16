@@ -43,6 +43,8 @@ Do not over-correct into paralysis. The final synthesis should still answer the 
 
 **Sections 9 and 11 — σ band adjacency:** Sections **9** and **11** must each show the **full per-session 1σ / 2σ / 3σ** band table **verbatim** from the consolidated section 1 (or **Server-computed σ bands** when authoritative), **not** condensed prose-only references such as "within the 1σ band ($X–$Y)". The reader should **never** need to scroll back to section 1 to see all three σ levels beside predictions and probabilities.
 
+**MUST — `LLM-derived P(up)` in §9 and §11 disclosure tables:** Whenever the final synthesis uses the **`| Metric | Value |`** narrative probability disclosure table in **section 9** or **section 11**, that table **must** include the **`LLM-derived P(up) (advisory, non-Φ)`** metric row for that session — **omission is forbidden.** If **`P_mix_up`**, **`P_qual`**, **`Unbounded P(up)`**, **`Φ-official (bounded drift)`**, or **`Blend advisory`** appears as a row in that table, the **`LLM-derived P(up)`** row **must** appear in the **same** table. **Do not** ship a merged report that drops **`LLM-derived P(up)`** while keeping other advisory rows; **bounded `prob_up_pct` / Φ-official is not a substitute.**
+
 When the equity prompt included a **Verified options chain** table (`options_chain_markdown`), treat those strikes, expiries, IV, and straddle mids as **authoritative** for consolidation: prefer them **verbatim** over conflicting provider chain numbers. If providers disagree on chain inputs, defer to the verified table; still flag stale timestamps or missing fields if the table itself is thin.
 
 **Pre-computed σ bands (server):** When the synthesis prompt includes a **### Server-computed σ bands** section (from the equity run), treat those **±% half-widths**, **dollar bounds**, and **P(up)%** as **authoritative** — use them **verbatim** in the consolidated `sigma_summary` JSON and in sections 1 / 9 / 11; do not re-derive different σ % by averaging provider outputs.
@@ -341,7 +343,7 @@ Section 9: Predicted trading levels at earnings open/close and the named follow-
 - Verify the answer's timeline against the prompt's dates for each named checkpoint.
 - Prefer transparent links between cited prices or ranges and the stated directional bias.
 - For **each** target session, repeat the **full 1σ / 2σ / 3σ** band table from section 1 **verbatim** immediately above that session's prediction narrative (same bullet format as section 1); do not rely on prose-only 1σ shorthand. After the three σ lines, use a `*Prediction:*` line (or equivalent) for directional commentary.
-- **Narrative probability disclosure (report §9 prose):** After each session's σ block / `*Prediction:*`, preserve or merge the **`| Metric | Value |`** table: **Session**; **Φ-official**; **`Unbounded P(up)`**; **`drift_qual_pct`** + **P_qual**; **`P_mix_up`**; **`LLM-derived P(up) (advisory, non-Φ)`**; **Blend advisory** — **`w_quant × P_quant + w_qual × P_qual`** and **advisory — not verifier-canonical** where applicable — **canonical `prob_up_pct` remains bounded-Φ only**; do not flatten into run-on lines on σ bullets.
+- **Narrative probability disclosure (report §9 prose):** After each session's σ block / `*Prediction:*`, preserve or merge the **`| Metric | Value |`** table: **Session**; **Φ-official**; **`Unbounded P(up)`**; **`drift_qual_pct`** + **P_qual**; **`P_mix_up`**; **`LLM-derived P(up) (advisory, non-Φ)`**; **Blend advisory** — **`w_quant × P_quant + w_qual × P_qual`** and **advisory — not verifier-canonical** where applicable — **canonical `prob_up_pct` remains bounded-Φ only**; do not flatten into run-on lines on σ bullets. **MUST:** the **`LLM-derived P(up) (advisory, non-Φ)`** row **must** be present in **every** §9 disclosure table you emit — **omission is forbidden** whenever other advisory rows from that block are shown (same global rule as Operating Principles).
 
 Section 10: Recheck pass for hallucinations, data errors, and internal consistency across the prior sections
 - This section often restates conclusions; use it to catch contradictions with earlier provider claims rather than introducing new facts.
@@ -351,7 +353,7 @@ Section 11: Probabilistic direction across the listed open/close windows and two
 - Avoid personalized financial advice; keep options or structure discussion risk-defined when specifics are given.
 - If providers disagree on direction but agree volatility is elevated, emphasize scenario hinges and what would invalidate each path.
 - For **each** target session, repeat the **full 1σ / 2σ / 3σ** band table **verbatim** from section 1 before the probability discussion. Put the **1σ \| P(up)** scanline **only** in the **`P(up) scanline`** row of the **`| Metric | Value |`** advisory table (do **not** duplicate it as a separate teaser line above the σ bullets).
-- **Narrative probability disclosure (report §11 prose):** Carry forward the same **`| Metric | Value |`** table as in the equity prompt (including **LLM-derived P(up)**); **P(up) scanline** row holds the 1σ+P(up) teaser; reconcile providers without inventing a second “official” percent off bounded Φ; **P_mix** / qual drift / LLM-only row inform **wording and emphasis** only, not emitted **`prob_up_pct`**.
+- **Narrative probability disclosure (report §11 prose):** Carry forward the same **`| Metric | Value |`** table as in the equity prompt (including **LLM-derived P(up)**); **P(up) scanline** row holds the 1σ+P(up) teaser; reconcile providers without inventing a second “official” percent off bounded Φ; **P_mix** / qual drift / LLM-only row inform **wording and emphasis** only, not emitted **`prob_up_pct`**. **MUST:** the **`LLM-derived P(up) (advisory, non-Φ)`** row **must** be present in **every** §11 disclosure table — **omission is forbidden** even if §9 already showed a table for the same session; **§9 and §11 each require the row in their own tables** when those tables are present.
 
 Section 12: Post-earnings directional implication and a confidence interval for whether upward vs downward movement is the better call
 - The conclusion must follow from ranges, flows, history, and probabilities already synthesized above.
@@ -432,6 +434,7 @@ Before finalizing, run simple consistency checks mentally:
 - Does the final recommendation match the section-level evidence?
 - Does the overall confidence match the weakest trade-critical sections?
 - Is the required final `OVERALL_CONFIDENCE` line present and last?
+- For sections **9** and **11**: wherever a **`| Metric | Value |`** narrative disclosure table appears, does it include the **`LLM-derived P(up) (advisory, non-Φ)`** row (mandatory whenever that table format is used alongside other advisory rows)?
 
 If you catch an inconsistency that cannot be resolved, do not hide it. Note it in the relevant section and lower confidence.
 

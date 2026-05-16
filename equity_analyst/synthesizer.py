@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from equity_analyst.prompt_export import logical_prompt_split
@@ -21,6 +21,57 @@ logger = logging.getLogger(__name__)
 
 
 _GS = chr(0x03C3)
+
+_DISCLOSURE_TABLE_HEAD = "| Metric | Value |"
+_LLM_DERIVED_P_UP_SUBSTR = "LLM-derived P(up)"
+
+
+def synthesis_text_suggests_disclosure_table_without_llm_p_up(text: str) -> bool:
+    """True when markdown looks like §9/§11 disclosure tables but omits the LLM-derived row."""
+    if _LLM_DERIVED_P_UP_SUBSTR in text:
+        return False
+    if _DISCLOSURE_TABLE_HEAD not in text:
+        return False
+    return (
+        "P_mix_up" in text
+        or "Φ-official (bounded drift)" in text
+        or "P_qual (advisory" in text
+        or "Unbounded P(up)" in text
+        or "| Blend advisory |" in text
+    )
+
+
+_SYNTHESIS_DISCLOSURE_COMPLIANCE_NOTICE = """---
+
+### Synthesis compliance notice (automated)
+
+This merged report includes **`| Metric | Value |`** narrative probability disclosure material (e.g. **`P_mix_up`** and/or **bounded Φ / `prob_up_pct` rows**) but **does not** contain the mandatory **`LLM-derived P(up) (advisory, non-Φ)`** table row required in **§9** and **§11** whenever that disclosure table is used. **Patch the synthesis** to add that row per the equity prompt and synthesizer system instructions — **bounded `prob_up_pct` / Φ-official is not a substitute** for the holistic LLM-only advisory percent."""
+
+
+def _insert_markdown_before_final_overall_confidence(body: str, insertion: str) -> str:
+    """Keep ``OVERALL_CONFIDENCE:`` as the last line when present."""
+    stripped = body.rstrip("\n")
+    if not stripped:
+        return insertion + "\n"
+    lines = stripped.split("\n")
+    last = lines[-1].strip()
+    if last.upper().startswith("OVERALL_CONFIDENCE:"):
+        prefix = "\n".join(lines[:-1]).rstrip()
+        return prefix + "\n\n" + insertion + "\n\n" + lines[-1] + "\n"
+    return stripped + "\n\n" + insertion + "\n"
+
+
+def _apply_disclosure_compliance_postpass(text: str, *, run_id: str | None) -> str:
+    if not synthesis_text_suggests_disclosure_table_without_llm_p_up(text):
+        return text
+    rid = run_id or "unknown_run_id"
+    logger.warning(
+        "synthesis_disclosure_compliance: missing `%s` while disclosure-style metrics "
+        "present (run_id=%s) — appending compliance notice before OVERALL_CONFIDENCE",
+        _LLM_DERIVED_P_UP_SUBSTR,
+        rid,
+    )
+    return _insert_markdown_before_final_overall_confidence(text, _SYNTHESIS_DISCLOSURE_COMPLIANCE_NOTICE)
 
 
 def detect_max_tokens_truncation(raw: Any) -> tuple[bool, str | None]:
@@ -165,16 +216,41 @@ class SynthesisResult:
     prompt: str
 
 
+def _prepend_computed_sigma_reference_to_artifact(
+    body: str,
+    *,
+    computed_sigma_bands_markdown: str | None,
+) -> str:
+    """Prefix synthesis.md with deterministic server σ markdown (models are not required to echo it)."""
+    block = (computed_sigma_bands_markdown or "").strip()
+    if not block:
+        return body
+    preamble = (
+        "## Server σ reference (deterministic)\n\n"
+        "Verbatim `format_computed_sigma_bands_markdown` output — same block injected into equity and "
+        f"synthesizer prompts (`### Server-computed {_GS} bands`).\n\n"
+        f"{block}\n\n---\n\n"
+    )
+    return preamble + body
+
+
 def format_synthesis_artifact_markdown(
     *,
     synthesis: SynthesisResult,
     responses: dict[str, ProviderResponse],
+    computed_sigma_bands_markdown: str | None = None,
 ) -> str:
     model = synthesis.response.model
     if not model.startswith("error:"):
-        return synthesis.response.text.rstrip() + "\n"
+        return _prepend_computed_sigma_reference_to_artifact(
+            synthesis.response.text.rstrip() + "\n",
+            computed_sigma_bands_markdown=computed_sigma_bands_markdown,
+        )
     if model == "error:AllProvidersFailed":
-        return synthesis.response.text.rstrip() + "\n"
+        return _prepend_computed_sigma_reference_to_artifact(
+            synthesis.response.text.rstrip() + "\n",
+            computed_sigma_bands_markdown=computed_sigma_bands_markdown,
+        )
     parts = [
         "# Synthesis degraded",
         "",
@@ -187,7 +263,11 @@ def format_synthesis_artifact_markdown(
     ]
     for name, resp in responses.items():
         parts.append(f"### {name} (model `{resp.model}`)\n\n{resp.text}\n")
-    return "\n".join(parts).rstrip() + "\n"
+    degraded = "\n".join(parts).rstrip() + "\n"
+    return _prepend_computed_sigma_reference_to_artifact(
+        degraded,
+        computed_sigma_bands_markdown=computed_sigma_bands_markdown,
+    )
 
 
 class Synthesizer:
@@ -218,6 +298,7 @@ class Synthesizer:
         per_provider_sigma_checks_markdown: str | None = None,
         computed_sigma_bands_markdown: str | None = None,
         t0_blend_preset: T0BlendPreset = "default",
+        run_id: str | None = None,
     ) -> SynthesisResult:
         healthy, failed = partition_provider_responses(responses)
 
@@ -369,4 +450,8 @@ class Synthesizer:
                 resp.usage.output_tokens,
                 max_output_tokens,
             )
+        if not str(resp.model).startswith("error:"):
+            patched = _apply_disclosure_compliance_postpass(resp.text, run_id=run_id)
+            if patched != resp.text:
+                resp = replace(resp, text=patched)
         return SynthesisResult(response=resp, prompt=synthesis_prompt)

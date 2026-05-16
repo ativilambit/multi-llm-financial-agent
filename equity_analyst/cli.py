@@ -137,9 +137,10 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="run_profile",
         choices=["production", "dev"],
         default=None,
-        help="Run profile: with ``env=production``, only ``production`` persists to Postgres; "
-        "``dev`` skips DB (local smoke). With ``env=test``, ``dev`` still persists rows tagged "
-        "``runs.env=test``. Default from RunConfig / EQUITY_RUN_PROFILE / RUN_PROFILE (default dev).",
+        help="Deprecated: sets ``run_profile`` only (Postgres persistence vs local smoke when "
+        "``env=production``). Prefer YAML ``run_profile`` or ``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE`` "
+        "for batches, and **``--env``** for deployment / Drive tier (``production`` | ``test``). "
+        "This flag still works but logs a warning.",
     )
     run.add_argument(
         "--t0-blend",
@@ -190,7 +191,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-output-tokens",
         type=int,
         default=None,
-        help="Override RunConfig.max_output_tokens for fan-out providers (default from YAML or 16000)",
+        help="Override RunConfig.max_output_tokens for fan-out providers (default from YAML or 32000)",
     )
     run.add_argument(
         "--verifier-max-output-tokens",
@@ -253,23 +254,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Google Drive folder ID for this run's upload root (overrides drive_root_folder_id / env).",
     )
     run.add_argument(
+        "--env",
         "--environment",
         "--drive-env",
-        dest="run_environment",
-        choices=["production", "test"],
-        default=None,
-        help="**Google Drive only** (which subfolder under ``drive_root_folder_id``): ``production`` → ``prod``; "
-        "``test`` → ``test``. Same as ``--drive-env``. Overrides ``run_environment`` / ``RUN_ENVIRONMENT``. "
-        "**Does not** change DB/deployment tier — for that use ``--env`` / ``EQUITY_ENV`` / YAML ``env``.",
-    )
-    run.add_argument(
-        "--env",
         dest="equity_env",
         choices=["production", "test"],
         default=None,
-        help="**Deployment / DB tier** (``runs.env``, default ``run_profile`` when ``test``): Postgres row tagging, "
-        "dev vs prod defaults. Overrides ``EQUITY_ENV`` and YAML ``env``. "
-        "**Does not** change Google Drive folder — for Drive use ``--drive-env`` / ``--environment``.",
+        help="Run tier ``production`` or ``test``: one switch sets **both** Postgres ``runs.env`` "
+        "(deployment tier, including ``run_profile`` defaults when ``test``) **and** Google Drive "
+        "routing (child folder ``prod`` vs ``test`` under ``drive_root_folder_id``). Canonical flag "
+        "is ``--env``; ``--environment`` is an alias; ``--drive-env`` is deprecated but equivalent. "
+        "When passed, overrides YAML ``env`` and ``run_environment`` and wins over ``EQUITY_ENV`` and "
+        "``RUN_ENVIRONMENT`` for both fields. To use different values for DB vs Drive, set "
+        "``env`` and ``run_environment`` in YAML only (CLI always sets both together).",
     )
     run.add_argument(
         "--drive-auth-mode",
@@ -719,9 +716,16 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
     if getattr(args, "no_db", False):
         patch["db_enabled"] = False
     if getattr(args, "run_profile", None) is not None:
+        logger.warning(
+            "CLI --profile is deprecated (sets run_profile only). Prefer --env for production|test "
+            "tier (Postgres runs.env + Drive routing), and EQUITY_RUN_PROFILE / RUN_PROFILE or YAML "
+            "run_profile for persistence profile.",
+        )
         patch["run_profile"] = args.run_profile
     if getattr(args, "equity_env", None) is not None:
-        patch["env"] = str(args.equity_env)
+        tier = str(args.equity_env)
+        patch["env"] = tier
+        patch["run_environment"] = tier
     if getattr(args, "t0_blend_preset", None) is not None:
         patch["t0_blend_preset"] = normalize_t0_blend_preset(str(args.t0_blend_preset))
     if getattr(args, "max_weekly_lookahead_days", None) is not None:
@@ -758,8 +762,6 @@ def _apply_cli_config_overrides(cfg: RunConfig, args: argparse.Namespace) -> Run
         patch["drive_auth_mode"] = str(args.drive_auth_mode)
     if getattr(args, "pdf_output_enabled", None) is not None:
         patch["pdf_output_enabled"] = bool(args.pdf_output_enabled)
-    if getattr(args, "run_environment", None) is not None:
-        patch["run_environment"] = str(args.run_environment)
     if getattr(args, "extract_predictions", None) is not None:
         patch["prediction_extract_enabled"] = bool(args.extract_predictions)
     if getattr(args, "keep_checkpoint", False):

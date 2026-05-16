@@ -213,34 +213,100 @@ def compute_sigma_bands_server_side(
     )
 
 
-def format_computed_sigma_bands_markdown(table: ComputedSigmaBandsTable) -> str:
+def _format_market_implied_options_anchor_markdown(oc_data: dict[str, Any] | None) -> str:
+    """Short chain-derived anchor (ATM straddle % / $, IV) for the same prompt block as structural σ."""
+    intro = (
+        "**Market-implied (options)** — from the **verified** chain at the server-resolved event expiry; "
+        "compare to **1σ ±%** / **±1σ $** rows above (structural ladder mixes this jump with diffusion by **N**)."
+    )
+    if oc_data is None or not oc_data.get("options_chain_available"):
+        return "\n".join(
+            [
+                "",
+                intro,
+                "",
+                "- *ATM straddle % / IV anchor:* not available for this run (no verified options chain in the bundle).",
+            ],
+        )
+
+    exp_used = oc_data.get("expiry_used")
+    row: dict[str, Any] | None = None
+    for ex in oc_data.get("selected_expiries") or []:
+        if isinstance(ex, dict) and str(ex.get("expiry_date") or "") == str(exp_used or ""):
+            row = ex
+            break
+    if row is None:
+        se = oc_data.get("selected_expiries") or []
+        if se and isinstance(se[0], dict):
+            row = se[0]
+
+    bullets: list[str] = []
+    lit = oc_data.get("lit_event_straddle_move_pct")
+    if isinstance(lit, (int, float)) and float(lit) > 0:
+        eu = f"`{exp_used}`" if exp_used else "listed expiry"
+        bullets.append(f"- **ATM straddle implied move (spot %):** **{float(lit):.2f}%** at expiry {eu}.")
+
+    if row is not None:
+        sm = row.get("atm_straddle_mid")
+        if isinstance(sm, (int, float)) and float(sm) > 0:
+            ed = row.get("expiry_date")
+            bullets.append(f"- **ATM straddle mid:** **${float(sm):.2f}** (`expiry_date={ed!r}`).")
+        civ = row.get("atm_call_iv")
+        piv = row.get("atm_put_iv")
+        iv_bits: list[str] = []
+        if isinstance(civ, (int, float)):
+            iv_bits.append(f"call **{float(civ):.4f}**")
+        if isinstance(piv, (int, float)):
+            iv_bits.append(f"put **{float(piv):.4f}**")
+        if iv_bits:
+            bullets.append("- **ATM IV (same expiry row):** " + " / ".join(iv_bits) + " (decimals as in chain).")
+
+    if not bullets:
+        bullets.append(
+            "- *ATM straddle % / IV anchor:* not available for this run (chain present but event-week ATM "
+            "straddle / IV not populated in server bundle).",
+        )
+    return "\n".join(["", intro, "", *bullets])
+
+
+def format_computed_sigma_bands_markdown(
+    table: ComputedSigmaBandsTable,
+    *,
+    options_chain_data: dict[str, Any] | None = None,
+) -> str:
     """Human-readable table for equity / synthesizer prompts."""
     lines = [
         "**Server-computed σ bands (variance-additive)** — use **verbatim** in σ JSON and prose when this block is present.",
+        "",
+        "**Direction vs scale:** **`P(up)%`** = probability mass **above** the anchor from bounded **daily drift** "
+        "at that horizon (direction vs the priced anchor); **`1σ ±%`** and **`±1σ $`** = **structural move size** "
+        "(half-width of the variance-additive Gaussian envelope) — **not** the same object as P(up).",
         "",
         f"- Anchor: **${table.anchor_price:.2f}** (`anchor_type={table.anchor_type!r}`)",
         f"- `event_jump` (σ-ladder jump term): **{table.event_jump_pct:.2f}%**",
         f"- `daily_vol`: **{table.daily_vol_pct:.2f}%/day** ({table.daily_vol_source})",
         f"- `daily_drift_pct` (bounded, for P(up)): **{table.daily_drift_pct:+.4f}%/day** ({table.drift_source_note})",
         "",
-        "| Date | N | 1σ ±% | 2σ ±% | 3σ ±% | 1σ $ low | 1σ $ high | P(up)% |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Date | N | 1σ ±% | P(up)% | ±1σ $ band | 2σ ±% | 3σ ±% |",
+        "|---|---:|---:|---:|:---|---:|---:|",
     ]
     lines.append(
-        "- **N column:** NYSE weekdays **strictly after** the earnings **calendar** date through that row "
+        "- **Session columns:** **`1σ ±%`** / **±1σ $** = move size at that session; **`P(up)%`** sits beside them as "
+        "direction vs anchor. **N:** NYSE weekdays **strictly after** the earnings **calendar** date through that row "
         "(`n=0` on the earnings calendar session = raw `event_jump` only; then T+1, T+2, …).",
     )
     for s in table.sessions:
+        band = f"${s.one_sigma_low_dollar:.2f} – ${s.one_sigma_high_dollar:.2f}"
         lines.append(
             f"| {s.session_date.isoformat()} | {s.n_trading} | {s.one_sigma_half_width_pct:.2f} | "
-            f"{s.two_sigma_half_width_pct:.2f} | {s.three_sigma_half_width_pct:.2f} | "
-            f"{s.one_sigma_low_dollar:.2f} | {s.one_sigma_high_dollar:.2f} | {s.prob_up_pct:.1f} |",
+            f"{s.prob_up_pct:.1f} | {band} | {s.two_sigma_half_width_pct:.2f} | {s.three_sigma_half_width_pct:.2f} |",
         )
     lines.append("")
     lines.append(
         "Emit `sigma_summary` JSON whose `sessions[*].one_sigma_half_width_pct` / `three_sigma_half_width_pct` "
         "and dollar ranges match these rows within **±1 percentage point** on the % columns."
     )
+    lines.append(_format_market_implied_options_anchor_markdown(options_chain_data))
     return "\n".join(lines)
 
 
@@ -361,7 +427,7 @@ def try_build_computed_sigma_bundle(
         return False, "", None, ""
     tag = f"event_jump={ej_for_sigma:.2f}% daily_vol={dv:.2f}%/day ({dv_src})"
 
-    md = format_computed_sigma_bands_markdown(table)
+    md = format_computed_sigma_bands_markdown(table, options_chain_data=oc_data)
     post: list[str] = []
     if diffusion_only or ej_for_sigma == 0.0:
         post.append(

@@ -134,6 +134,7 @@ def test_computed_sigma_bands_table_injected_when_chain_and_hv30_available(
     )
     assert ok is True
     assert "Server-computed" in md
+    assert "Market-implied (options)" in md
     assert isinstance(tbl, dict)
     assert tbl["sessions"]
 
@@ -254,6 +255,29 @@ def test_format_computed_sigma_bands_markdown_contains_rows() -> None:
     md = format_computed_sigma_bands_markdown(t)
     assert "2026-05-13" in md
     assert "11.31" in md or "4.54" in md
+    assert "Direction vs scale" in md
+    assert "| 1σ ±% | P(up)% | ±1σ $ band |" in md
+    assert "Market-implied (options)" in md
+    assert "not available for this run" in md
+
+    oc = {
+        "options_chain_available": True,
+        "expiry_used": "2026-05-15",
+        "lit_event_straddle_move_pct": 11.31,
+        "selected_expiries": [
+            {
+                "expiry_date": "2026-05-15",
+                "atm_straddle_mid": 20.25,
+                "atm_call_iv": 0.55,
+                "atm_put_iv": 0.52,
+            },
+        ],
+    }
+    md2 = format_computed_sigma_bands_markdown(t, options_chain_data=oc)
+    assert "ATM straddle implied move" in md2
+    assert "11.31%" in md2
+    assert "ATM straddle mid" in md2
+    assert "$20.25" in md2
 
 
 def test_verify_emitted_sigma_bands_missing_json_message() -> None:

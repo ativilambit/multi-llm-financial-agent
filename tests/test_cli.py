@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -25,16 +26,17 @@ def test_cli_max_output_tokens_override(tmp_path: Path) -> None:
                 "next_trading_day": "n",
                 "followup_open_date": "f",
                 "providers": ["openai"],
+                "max_output_tokens": 24_000,
             }
         ),
         encoding="utf-8",
     )
     parser = _build_parser()
-    args = parser.parse_args(["run", "--config", str(yml), "--max-output-tokens", "32000"])
+    args = parser.parse_args(["run", "--config", str(yml), "--max-output-tokens", "48000"])
     base = _load_cfg(args)
-    assert base.max_output_tokens == 16_000
+    assert base.max_output_tokens == 24_000
     cfg = _apply_cli_config_overrides(base, args)
-    assert cfg.max_output_tokens == 32_000
+    assert cfg.max_output_tokens == 48_000
 
 
 def test_cli_no_pdf_sets_run_config_false(tmp_path: Path) -> None:
@@ -227,10 +229,12 @@ def test_cli_run_environment_override(tmp_path: Path) -> None:
     base = _load_cfg(args)
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.run_environment == "test"
+    assert cfg.env == "test"
 
     args2 = parser.parse_args(["run", "--config", str(yml), "--environment", "production"])
     cfg2 = _apply_cli_config_overrides(_load_cfg(args2), args2)
     assert cfg2.run_environment == "production"
+    assert cfg2.env == "production"
 
 
 def test_cli_drive_env_alias_matches_environment(tmp_path: Path) -> None:
@@ -259,6 +263,69 @@ def test_cli_drive_env_alias_matches_environment(tmp_path: Path) -> None:
     args = parser.parse_args(["run", "--config", str(yml), "--drive-env", "test"])
     cfg = _apply_cli_config_overrides(_load_cfg(args), args)
     assert cfg.run_environment == "test"
+    assert cfg.env == "test"
+
+
+def test_cli_yaml_may_split_env_and_run_environment_without_cli(tmp_path: Path) -> None:
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "env": "production",
+                "run_environment": "test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml)])
+    cfg = _apply_cli_config_overrides(_load_cfg(args), args)
+    assert cfg.env == "production"
+    assert cfg.run_environment == "test"
+
+
+def test_cli_env_overrides_both_when_yaml_split(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EQUITY_ENV", raising=False)
+    monkeypatch.delenv("RUN_ENVIRONMENT", raising=False)
+    yml = tmp_path / "c.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "symbol": "X",
+                "today_low": 1,
+                "today_high": 2,
+                "current_price": 1.5,
+                "today_date": "d",
+                "today_session": "s",
+                "earnings_date": "e",
+                "earnings_timing": "t",
+                "target_dates": [],
+                "next_trading_day": "n",
+                "followup_open_date": "f",
+                "providers": ["openai"],
+                "env": "production",
+                "run_environment": "test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--config", str(yml), "--env", "production"])
+    cfg = _apply_cli_config_overrides(_load_cfg(args), args)
+    assert cfg.env == "production"
+    assert cfg.run_environment == "production"
 
 
 def test_cli_equity_env_test_sets_dev_keeps_db_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -294,6 +361,7 @@ def test_cli_equity_env_test_sets_dev_keeps_db_on(tmp_path: Path, monkeypatch: p
     assert base.db_enabled is True
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.env == "test"
+    assert cfg.run_environment == "test"
     assert cfg.run_profile == "dev"
     assert cfg.db_enabled is True
 
@@ -326,6 +394,7 @@ def test_cli_equity_env_test_keeps_profile_when_explicit(tmp_path: Path, monkeyp
     base = _load_cfg(args)
     cfg = _apply_cli_config_overrides(base, args)
     assert cfg.env == "test"
+    assert cfg.run_environment == "test"
     assert cfg.run_profile == "production"
 
 
@@ -358,7 +427,9 @@ def test_cli_drive_auth_mode_override(tmp_path: Path) -> None:
     assert cfg.drive_auth_mode == "oauth_user"
 
 
-def test_cli_run_profile_flag_overrides_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_run_profile_flag_overrides_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.delenv("EQUITY_RUN_PROFILE", raising=False)
     monkeypatch.delenv("RUN_PROFILE", raising=False)
     yml = tmp_path / "c.yaml"
@@ -386,5 +457,7 @@ def test_cli_run_profile_flag_overrides_yaml(tmp_path: Path, monkeypatch: pytest
     args = parser.parse_args(["run", "--config", str(yml), "--profile", "production"])
     base = _load_cfg(args)
     assert base.run_profile == "dev"
-    cfg = _apply_cli_config_overrides(base, args)
+    with caplog.at_level(logging.WARNING, logger="equity_analyst.cli"):
+        cfg = _apply_cli_config_overrides(base, args)
     assert cfg.run_profile == "production"
+    assert any("CLI --profile is deprecated" in r.message for r in caplog.records)

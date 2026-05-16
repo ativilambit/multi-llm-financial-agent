@@ -26,7 +26,7 @@
 #
 # Per-provider options (when using object form under `providers:`):
 # - model: API model id for that backend (default is each provider's built-in default, e.g. Opus for Anthropic)
-# - max_output_tokens: Optional cap for this provider's completion only (default: global `max_output_tokens`, 16000)
+# - max_output_tokens: Optional cap for this provider's completion only (default: global `max_output_tokens`, 32000)
 # - web_search: true|false — override CLI/run default for this provider only (default: inherit run default)
 # - request_timeout_s: Per-provider asyncio/generate timeout in seconds (default: global `request_timeout_s`, 180s).
 #   OpenAI uses streaming Responses for long web-search runs; raise this globally or per provider if you still hit timeouts.
@@ -94,7 +94,7 @@ synthesizer:
   request_timeout_s: 240
 
 # Optional tuning (defaults shown):
-# max_output_tokens: 16000
+# max_output_tokens: 32000
 #   — default completion budget for each fan-out provider (parallel answers).
 # synthesizer_max_output_tokens: 24000
 #   — much larger than max_output_tokens: synthesis must reconcile all providers across 13 sections.

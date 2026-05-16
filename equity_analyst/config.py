@@ -438,7 +438,11 @@ class RunConfig(BaseModel):
         description="Completion budget for facts-packet extraction markdown.",
     )
 
-    max_output_tokens: int = Field(default=16_000, ge=256, le=128_000)
+    # Fan-out completion budget (Anthropic → Messages API ``max_tokens``; OpenAI/Gemini/Grok use
+    # their respective max-output fields). Long tickers with web search can exceed ~16k output
+    # tokens and truncate mid-section (e.g. claude.md); raise globally or set
+    # ``providers[].max_output_tokens`` per backend.
+    max_output_tokens: int = Field(default=32_000, ge=256, le=128_000)
     request_timeout_s: float = Field(default=180.0, gt=0)
     verifier_max_output_tokens: int = Field(
         default=16_384,
@@ -568,7 +572,9 @@ class RunConfig(BaseModel):
     run_environment: RunEnvironment = Field(
         default="production",
         description="Drive upload routing: production uses child folder ``prod``; test uses ``test`` "
-        "(created under drive_root_folder_id when uploads run).",
+        "(created under drive_root_folder_id when uploads run). Usually matches ``env``; YAML may "
+        "set them independently. CLI ``--env`` (aliases ``--environment``, ``--drive-env``) sets "
+        "**both** ``env`` and ``run_environment`` to the same value.",
     )
     drive_auth_mode: DriveAuthMode = Field(
         default="service_account",
@@ -587,15 +593,19 @@ class RunConfig(BaseModel):
         default="dev",
         description="Persistence profile: ``production`` allows Postgres writes when ``env`` is ``production``; "
         "``dev`` still writes to Postgres when ``env`` is ``test`` (test-tier runs; filter ``runs.env``). "
-        "``dev`` + ``env=production`` skips Postgres (local smoke). Override with CLI ``--profile`` or env "
-        "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE`` (ignored when ``env=test`` unless YAML sets ``run_profile``).",
+        "``dev`` + ``env=production`` skips Postgres (local smoke). Prefer env "
+        "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE`` or YAML ``run_profile``; deprecated CLI "
+        "``--profile`` still overrides for one invocation (logs a warning). "
+        "``EQUITY_RUN_PROFILE`` / ``RUN_PROFILE`` are ignored when ``env=test`` unless YAML sets "
+        "``run_profile``.",
     )
     env: RunEnvironment = Field(
         default="production",
-        description="Deployment tier: ``test`` defaults ``run_profile=dev`` when not overridden by CLI "
-        "``--profile``; Postgres follows ``db_enabled`` (default on, same as production). Rows are tagged with "
-        "``runs.env``. Separate from ``run_environment`` (Drive upload folder routing). YAML ``env``, env "
-        "``EQUITY_ENV``, or CLI ``--env`` (CLI wins).",
+        description="Deployment tier: ``test`` defaults ``run_profile=dev`` when not overridden by "
+        "deprecated CLI ``--profile`` or explicit YAML ``run_profile``; Postgres follows ``db_enabled`` "
+        "(default on, same as production). Rows are tagged with "
+        "``runs.env``. YAML ``env`` / env ``EQUITY_ENV``; CLI ``--env`` (aliases ``--environment``, "
+        "``--drive-env``) sets this **and** ``run_environment`` together (CLI wins over both YAML keys).",
     )
     t0_blend_preset: T0BlendPreset = Field(
         default="default",

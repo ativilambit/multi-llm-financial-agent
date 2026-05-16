@@ -43,7 +43,8 @@ JOBS=""
 ITERATIVE=1
 MAX_ITERATIONS=3
 LOG_LEVEL="INFO"
-# Deployment tier: "production" (default) forwards --profile production; "test" forwards --env test.
+# Deployment tier: "production" (default) forwards --env production and sets
+# EQUITY_RUN_PROFILE=production for the python child; "test" forwards --env test only.
 TIER_ENV="production"
 
 HAVE_DATE=0
@@ -281,8 +282,9 @@ Run options:
   --no-iterative          Skip --iterative; run a single fan-out + synthesis pass.
   --max-iterations N      Forward to --max-iterations N (default 3, iterative only).
   --log-level LEVEL       Forward to --log-level (DEBUG|INFO|WARNING|ERROR; default INFO).
-  --env production|test   Forward to python --env (test: dev profile + no Postgres unless DB_ENABLED=1
-                          or YAML db_enabled: true). Default production uses --profile production.
+  --env production|test   Forward to python --env (sets runs.env + Drive routing; test tier
+                          defaults run_profile dev). Default production also sets
+                          EQUITY_RUN_PROFILE=production for the subprocess (batch Postgres).
   -h, --help              Show this help and exit.
 
 Default symbol order (with default --date 2026-05-10):
@@ -514,7 +516,7 @@ build_args() {
   if [ "$TIER_ENV" = "test" ]; then
     _args="$_args --env test"
   else
-    _args="$_args --profile production"
+    _args="$_args --env production"
   fi
   if [ "$ITERATIVE" -eq 1 ]; then
     _args="$_args --iterative --max-iterations $MAX_ITERATIONS"
@@ -564,11 +566,19 @@ run_one() {
   # shellcheck disable=SC2086
   if [ "$MODE" = "sequential" ]; then
     echo "[STREAM] $symbol  log=$log_file" >&2
-    "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS 2>&1 | tee "$log_file"
+    if [ "$TIER_ENV" = "test" ]; then
+      "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS 2>&1 | tee "$log_file"
+    else
+      EQUITY_RUN_PROFILE=production "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS 2>&1 | tee "$log_file"
+    fi
     # Do not use `local rc=$PIPESTATUS[0]` — `local` resets PIPESTATUS before the assignment reads it.
     rc="${PIPESTATUS[0]}"
   else
-    "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS >"$log_file" 2>&1
+    if [ "$TIER_ENV" = "test" ]; then
+      "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS >"$log_file" 2>&1
+    else
+      EQUITY_RUN_PROFILE=production "$PYTHON_BIN" -m equity_analyst run --config "$config" $EXTRA_ARGS >"$log_file" 2>&1
+    fi
     rc=$?
   fi
   set -e

@@ -119,10 +119,14 @@ def test_sections_9_and_11_narrative_probability_disclosure_in_prompts() -> None
     assert "LLM-derived P(up) (advisory, non-Φ)" in j2
     assert "| Metric | Value |" in j2
     assert "Blend advisory" in j2
+    assert "omission is forbidden" in j2
+    assert "partial advisory tables without that row are invalid output" in j2
+    assert "MUST — `LLM-derived P(up)` in §9 and §11 disclosure tables" in synth
     assert "Narrative probability disclosure (report §9 prose)" in synth
     assert "Narrative probability disclosure (report §11 prose)" in synth
     assert "| Metric | Value |" in synth
     assert "LLM-derived P(up)" in synth
+    assert "MUST — `LLM-derived P(up)` row in §9 / §11 disclosure tables" in inv
     assert "Sections 9 and 11" in inv and "Unbounded P(up)" in inv
     assert "LLM-derived P(up)" in inv
 
@@ -360,6 +364,7 @@ def test_equity_and_synthesizer_prompts_reference_server_computed_sigma_bands() 
     assert "computed_sigma_bands_available" in j2
     assert "computed_sigma_bands_markdown" in j2
     assert "verbatim" in j2.lower()
+    assert "direction vs the anchor" in j2.lower()
     assert "Pre-computed σ bands" in j2 or "pre-computed" in j2.lower()
     assert "Server-computed σ bands" in synth
 

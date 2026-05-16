@@ -2338,7 +2338,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                 ]
             pcs = [ProviderConfig.model_validate(d) for d in pcs_raw]
             cfg_req_timeout = float(state.get("request_timeout_s", 180.0))
-            cfg_mot = int(state.get("max_output_tokens", 16_000))
+            cfg_mot = int(state.get("max_output_tokens", 32_000))
             retry_default = int(state.get("retry_max_attempts", 3))
             retry_max = int(state.get("retry_max_attempts_fan_out", retry_default))
             retry_base = float(state.get("retry_base_delay_s", 2.0))
@@ -2708,6 +2708,7 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                         t0_blend_preset=normalize_t0_blend_preset(
                             state.get("t0_blend_preset", "default")
                         ),
+                        run_id=out.name,
                     ),
                     timeout=timeout_syn,
                 )
@@ -2747,7 +2748,11 @@ def _make_refinement_nodes(registry: ProviderRegistry) -> dict[str, Any]:
                     "detail": f"excluded_failed_providers={sorted(failed_only)}",
                 }
             )
-        text = format_synthesis_artifact_markdown(synthesis=result, responses=resp_map)
+        text = format_synthesis_artifact_markdown(
+            synthesis=result,
+            responses=resp_map,
+            computed_sigma_bands_markdown=csb_md or None,
+        )
         iter_dir = out / "iterations"
         syn_path = iter_dir / f"iteration_{round_idx + 1}_synthesis.md"
         syn_body = text + "\n"

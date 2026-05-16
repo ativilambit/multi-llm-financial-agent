@@ -244,7 +244,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 
 ## 6. Configuration knobs
 
-**Precedence (typical):** CLI flags → explicit YAML → environment (only for fields where `RunConfig` model validators wire env, and **only if** the YAML key was not explicitly set). The **`run`** subcommand’s **`--profile`** flag overrides **`run_profile`** for that invocation (same idea as **`--no-db`** for **`db_enabled`**).
+**Precedence (typical):** CLI flags → explicit YAML → environment (only for fields where `RunConfig` model validators wire env; **`run_profile`** is also overridden by **`EQUITY_RUN_PROFILE` / `RUN_PROFILE`** when **`env≠test`**). Deprecated **`run --profile`** overrides **`run_profile`** for that invocation (same idea as **`--no-db`** for **`db_enabled`**) and logs a warning—prefer **`--env`** for **`production`/`test`** tier and YAML / env for **`run_profile`**.
 
 ### RunConfig / env (representative table)
 
@@ -270,7 +270,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 | `retry_max_attempts_fan_out` | `RETRY_MAX_ATTEMPTS_FAN_OUT` | **5** | Per-provider API retries in iterative **`fan_out`** only (see Anthropic matrix in §5). |
 | `per_provider_sigma_variance_check` | — | **true** | When false, skip per-provider σ variance math in **`fan_out`** (escape hatch; logs once). |
 | `sigma_variance_check_quorum_for_error` | `SIGMA_VARIANCE_CHECK_QUORUM_FOR_ERROR` | **2** | Minimum providers per round failing the applicable σ check (variance `passed=False` or `missing_literals`) before router emits fan-out follow-ups for that signal; **1** restores single-provider escalation. |
-| `run_profile` | `EQUITY_RUN_PROFILE` / `RUN_PROFILE` | **dev** | With **`env=production`**, **`production`** enables Postgres persistence; **`dev`** skips DB. With **`env=test`**, **`dev`** still writes rows tagged **`runs.env=test`**. CLI **`run --profile`** overrides for one invocation. |
+| `run_profile` | `EQUITY_RUN_PROFILE` / `RUN_PROFILE` | **dev** | With **`env=production`**, **`production`** enables Postgres persistence; **`dev`** skips DB. With **`env=test`**, **`dev`** still writes rows tagged **`runs.env=test`**. Deprecated CLI **`run --profile`** overrides for one invocation (warning); prefer env vars or YAML. |
 | `env` | `EQUITY_ENV` | **production** | **`test`** tier: default **`run_profile=dev`** when not overridden; Postgres follows **`db_enabled`** (default on). YAML **`env`** or CLI **`--env`**. |
 | `db_enabled` | `DB_ENABLED` | **true** | When false, skips Postgres regardless of **`run_profile`** / **`env`**. |
 | `max_weekly_lookahead_days` | `MAX_WEEKLY_LOOKAHEAD_DAYS` / `EQUITY_MAX_WEEKLY_LOOKAHEAD_DAYS` | **14** | Calendar-day window after earnings for preferring a **weekly** listed expiry before falling back to **standard monthly** (`options_chain.py` / CLI **`--max-weekly-lookahead-days`**). |
@@ -297,7 +297,7 @@ Implementation: **`compute_refinement_route_command`** in `equity_analyst/iterat
 
 ```bash
 source .venv/bin/activate
-python -m equity_analyst run --config configs/<sym>_<date>.yaml --iterative --max-iterations 3 --profile production
+EQUITY_RUN_PROFILE=production python -m equity_analyst run --config configs/<sym>_<date>.yaml --iterative --max-iterations 3 --env production
 ```
 
 Use **`--log-level DEBUG`** for provider request shapes; **`--dry-run`** renders prompt without API calls (iterative dry-run does not create `outputs/` — see `README.md`).

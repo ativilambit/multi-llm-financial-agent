@@ -10,9 +10,12 @@ from equity_analyst.prompt_parts import _load_prompt_file
 from equity_analyst.providers.base import LLMProvider
 from equity_analyst.synthesizer import (
     SYNTHESIS_SYSTEM_PROMPT,
+    SynthesisResult,
     Synthesizer,
     detect_max_tokens_truncation,
+    format_synthesis_artifact_markdown,
     provider_finish_reason_label,
+    synthesis_text_suggests_disclosure_table_without_llm_p_up,
 )
 from equity_analyst.synthesizer_blend import inject_t0_blend_into_synthesizer_system_prompt
 from equity_analyst.types import ProviderResponse, ProviderUsage
@@ -41,6 +44,28 @@ class _RecordingProvider(LLMProvider):
             provider_name="recording",
             model="fake-model",
             text="synth",
+            usage=ProviderUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            raw=None,
+        )
+
+
+class _BodyProvider(LLMProvider):
+    """Returns a fixed synthesis body (for post-pass behavior tests)."""
+
+    name = "body"
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.last_prompt: str | None = None
+
+    async def generate(
+        self, prompt: str, *, enable_web_search: bool = True, max_output_tokens: int | None = None
+    ) -> ProviderResponse:
+        self.last_prompt = prompt
+        return ProviderResponse(
+            provider_name="body",
+            model="fixture-model",
+            text=self._text,
             usage=ProviderUsage(input_tokens=1, output_tokens=1, total_tokens=2),
             raw=None,
         )
@@ -105,6 +130,57 @@ async def test_computed_sigma_bands_in_synthesizer_prompt_when_chain_available()
     assert "Server-computed" in p.last_prompt
     assert "Fixture server σ table" in p.last_prompt
 
+
+def test_format_synthesis_artifact_prepends_server_sigma_when_provided() -> None:
+    syn = SynthesisResult(
+        response=ProviderResponse(
+            provider_name="gemini",
+            model="m",
+            text="## Model synthesis body",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+        prompt="x",
+    )
+    csb = "**Direction vs scale:** fixture line\n\n**Market-implied (options)** — fixture"
+    out = format_synthesis_artifact_markdown(
+        synthesis=syn,
+        responses={},
+        computed_sigma_bands_markdown=csb,
+    )
+    assert out.startswith("## Server σ reference")
+    assert "Direction vs scale" in out
+    assert "Market-implied (options)" in out
+    assert "## Model synthesis body" in out
+
+    bare = format_synthesis_artifact_markdown(synthesis=syn, responses={})
+    assert bare == "## Model synthesis body\n"
+
+
+def test_format_synthesis_artifact_degraded_includes_provider_bodies() -> None:
+    syn = SynthesisResult(
+        response=ProviderResponse(
+            provider_name="gemini",
+            model="error:Timeout",
+            text="synthesis unavailable",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+        prompt="x",
+    )
+    responses = {
+        "openai": ProviderResponse(
+            provider_name="openai",
+            model="gpt",
+            text="provider body",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+    }
+    out = format_synthesis_artifact_markdown(synthesis=syn, responses=responses)
+    assert "# Synthesis degraded" in out
+    assert "### openai" in out
+    assert "provider body" in out
 
 @pytest.mark.asyncio
 async def test_synthesizer_passes_summarize_flag_to_maybe_summarize(
@@ -435,4 +511,61 @@ def test_synthesizer_prompt_mentions_provider_sigma_check_resolution() -> None:
     assert "passed=False" in SYNTHESIS_SYSTEM_PROMPT
     assert "suspect" in SYNTHESIS_SYSTEM_PROMPT.lower()
     assert "variance identity" in SYNTHESIS_SYSTEM_PROMPT.lower()
+
+
+def test_synthesis_disclosure_gap_heuristic() -> None:
+    assert not synthesis_text_suggests_disclosure_table_without_llm_p_up("")
+    partial = "| Metric | Value |\n|---|---|\n| Session | T0 |\n"
+    assert not synthesis_text_suggests_disclosure_table_without_llm_p_up(partial)
+    gap = (
+        "| Metric | Value |\n|---|---|\n"
+        "| Φ-official (bounded drift) | 50% |\n"
+        "| P_mix_up (advisory) | 50.1% |\n\n"
+        "OVERALL_CONFIDENCE: 0.71\n"
+    )
+    assert synthesis_text_suggests_disclosure_table_without_llm_p_up(gap)
+    fixed = (
+        "| Metric | Value |\n|---|---|\n"
+        "| LLM-derived P(up) (advisory, non-Φ) | 52% |\n"
+        "| Φ-official (bounded drift) | 50% |\n"
+        "| P_mix_up (advisory) | 50.1% |\n"
+    )
+    assert not synthesis_text_suggests_disclosure_table_without_llm_p_up(fixed)
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_disclosure_compliance_notice_before_overall_confidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING)
+    fixture_text = (
+        "# Synthesis: TEST Equity/Options Analysis\n\n"
+        "| Metric | Value |\n|--------|-------|\n"
+        "| Φ-official (bounded drift) | 50.0% |\n"
+        "| P_mix_up (advisory) | 50.5% |\n\n"
+        "OVERALL_CONFIDENCE: 0.72\n"
+    )
+    p = _BodyProvider(fixture_text)
+    s = Synthesizer(p)
+    responses = {
+        "openai": ProviderResponse(
+            provider_name="openai",
+            model="gpt",
+            text="x",
+            usage=ProviderUsage(),
+            raw=None,
+        ),
+    }
+    out = await s.synthesize(
+        original_prompt="ORIG",
+        responses=responses,
+        enable_web_search=False,
+        run_id="fixture_run_123",
+    )
+    text = out.response.text
+    assert "Synthesis compliance notice (automated)" in text
+    assert "LLM-derived P(up)" in text
+    assert text.rstrip("\n").split("\n")[-1] == "OVERALL_CONFIDENCE: 0.72"
+    assert "synthesis_disclosure_compliance" in caplog.text
+    assert "fixture_run_123" in caplog.text
 
